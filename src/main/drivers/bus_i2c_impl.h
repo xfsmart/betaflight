@@ -56,8 +56,12 @@ typedef struct i2cHardware_s {
 #if PLATFORM_TRAIT_RCC
     rccPeriphTag_t rcc;
 #endif
+#if defined(FT32F4)
+    uint8_t irqn;  /* Single IRQ vector for FT32F4 */
+#else
     uint8_t ev_irq;
     uint8_t er_irq;
+#endif
 } i2cHardware_t;
 
 extern const i2cHardware_t i2cHardware[];

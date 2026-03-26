@@ -61,6 +61,11 @@
 #define ADC_TAG_MAP_COUNT 10
 #endif
 
+#if defined(FT32F4)
+#undef ADC_TAG_MAP_COUNT
+#define ADC_TAG_MAP_COUNT 16
+#endif
+
 typedef struct adcTagMap_s {
     ioTag_t tag;
     uint8_t devices;
@@ -89,7 +94,7 @@ typedef struct adcDevice_s {
 #endif
 #if !defined(USE_DMA_SPEC)
     dmaResource_t* dmaResource;
-#if defined(STM32F4) || defined(STM32F7) || defined(STM32H7) || defined(STM32G4) || defined(APM32F4) || defined(STM32N6)
+#if defined(STM32F4) || defined(STM32F7) || defined(STM32H7) || defined(STM32G4) || defined(APM32F4) || defined(STM32N6) || defined(FT32F4)
     uint32_t channel;
 #endif
 #endif // !defined(USE_DMA_SPEC)

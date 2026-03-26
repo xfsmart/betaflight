@@ -23,5 +23,5 @@
 #if defined(STM32H7) || defined(STM32N6)
 typedef uint16_t rccPeriphTag_t;
 #else
-typedef uint8_t rccPeriphTag_t;
+typedef uint16_t rccPeriphTag_t;  // Changed to uint16_t to support timer bits > 7
 #endif

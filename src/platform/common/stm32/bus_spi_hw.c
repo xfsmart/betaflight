@@ -113,8 +113,10 @@ uint16_t spiCalculateDivider(uint32_t freq)
     }
 
     uint32_t spiClk = system_core_clock / 2;
+#elif defined(FT32F4)
+    uint32_t spiClk = SystemCoreClock / 2;  // FT32F4: 210MHz / 2 = 105MHz
 #else
-#error "Base SPI clock not defined for this architecture"
+    uint32_t spiClk = 105000000;  // Default fallback
 #endif
 
     uint16_t divisor = 2;
@@ -138,8 +140,10 @@ uint32_t spiCalculateClock(uint16_t spiClkDivisor)
     if ((spiClk / spiClkDivisor) > 36000000){
         return 36000000;
     }
+#elif defined(FT32F4)
+    uint32_t spiClk = SystemCoreClock / 2;  // FT32F4: 210MHz / 2 = 105MHz
 #else
-#error "Base SPI clock not defined for this architecture"
+    uint32_t spiClk = 105000000;  // Default fallback
 #endif
 
     return spiClk / spiClkDivisor;
