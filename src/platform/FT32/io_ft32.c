@@ -19,10 +19,9 @@
 
 /*
  * FT32F4 GPIO Implementation
- * 
+ *
  * This implementation uses direct register access (BSRR, IDR, ODR)
- * to maintain compatibility with STM32F407 and Betaflight coding style.
- * FT32F4 GPIO registers are fully compatible with STM32F4.
+ * for GPIO operations.
  */
 
 #include "platform.h"

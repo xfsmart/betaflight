@@ -108,7 +108,7 @@ typedef uint16_t rccPeriphTag_t;
 
 #if defined(FT32F4)
 
-/* GPIO configuration macros - matching STM32F4 StdPeriph */
+/* GPIO configuration macros */
 #define IO_CONFIG(mode, speed, otype, pupd) ((mode) | ((speed) << 2) | ((otype) << 4) | ((pupd) << 5))
 
 #define IOCFG_OUT_PP         IO_CONFIG(GPIO_Mode_OUT, GPIO_Speed_50MHz, GPIO_OType_PP, GPIO_PuPd_NOPULL)
@@ -144,6 +144,14 @@ typedef uint16_t rccPeriphTag_t;
 #define I2C_TRAIT_AF_PIN        1
 #define I2C_TRAIT_HANDLE        1
 #define I2C_HandleTypeDef       i2c_handle_type
+
+// Define i2cHalHandle_t structure (required for I2C_TRAIT_HANDLE)
+// Must be defined after I2C_HandleTypeDef typedef
+struct i2cHalHandle_s {
+    I2C_HandleTypeDef hal;
+};
+typedef struct i2cHalHandle_s i2cHalHandle_t;
+
 #define NVIC_PRIO_I2C           NVIC_PRIO_I2C_EV
 #define SPI_TRAIT_AF_PIN        1
 #define UARTHARDWARE_MAX_PINS   4
@@ -176,17 +184,6 @@ typedef uint16_t rccPeriphTag_t;
 #define MAX_SPI_PIN_SEL 4
 
 #endif
-
-
-// RCC bus type tags (matching rcc_ft32f4.c switch statement)
-#define RCC_BUS_AHB1 0
-#define RCC_BUS_APB1 1
-#define RCC_BUS_APB2 2
-
-// RCC peripheral tag encoding macros (RCC_ENCODE and *_VALUE are defined in rcc.h)
-#define RCC_APB1(periph) RCC_ENCODE(RCC_APB1_VALUE, RCC_APB1ENR_ ## periph ## EN)
-#define RCC_AHB1(periph) RCC_ENCODE(RCC_AHB1_VALUE, RCC_AHB1ENR_ ## periph ## EN)
-#define RCC_APB2(periph) RCC_ENCODE(RCC_APB2_VALUE, RCC_APB2ENR_ ## periph ## EN)
 
 #define GPIO_PIN_RESET 0
 #define GPIO_PIN_SET 1

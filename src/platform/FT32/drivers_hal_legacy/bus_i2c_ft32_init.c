@@ -158,7 +158,6 @@ void i2cInit(i2cDevice_e device)
 
     /*
      * Note: FT32F4 I2C peripheral does not support analog/digital noise filters.
-     * This is a hardware difference compared to STM32G4/F7/H7.
      * No analog filter configuration call is needed here.
      */
 

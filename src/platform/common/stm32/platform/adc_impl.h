@@ -196,3 +196,11 @@ void adcGetChannelValues(void);
 #define TEMPSENSOR_CAL1_V                  (1.27f)
 #define TEMPSENSOR_SLOPE                   (-4.13f /* mV/C */)
 #endif
+
+#ifdef FT32F4
+// FT32F4 has single-point calibration at 25°C only
+#define VREFINT_CAL_VREF                   (3300U)
+#define TEMPSENSOR_CAL_VREFANALOG          (3300U)
+#define TEMPSENSOR_CAL1_TEMP               (25U)
+// adcTSCAL2 is set equal to adcTSCAL1 (no second calibration point)
+#endif

@@ -1,6 +1,6 @@
 /*
  * FT32F4 persistent storage implementation
- * Uses FT32F4 backup domain registers (similar to STM32 RTC backup registers)
+ * Uses FT32F4 backup domain registers
  */
 
 #include <stdint.h>

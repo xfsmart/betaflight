@@ -81,9 +81,7 @@
 #define DEF_TIM_OUTPUT(ch)                    CONCAT(DEF_TIM_OUTPUT__, DEF_TIM_CH_GET(ch))
 #define DEF_TIM_OUTPUT__D(chan_n, n_channel)   PP_IIF(n_channel, TIMER_OUTPUT_N_CHANNEL, TIMER_OUTPUT_NONE)
 
-// GPIO AF definitions for timer peripheral mapping
-// FT32F4 AF assignments identical to STM32F4
-// Source: ft32f4xx_gpio.h
+// GPIO AF values for timer peripheral mapping
 #define GPIO_AF_TIM1   GPIO_AF_1    // AF1: TIM1/TIM2
 #define GPIO_AF_TIM2   GPIO_AF_1    // AF1: TIM1/TIM2
 #define GPIO_AF_TIM3   GPIO_AF_2    // AF2: TIM3/TIM4/TIM5
@@ -98,7 +96,7 @@
 #define GPIO_AF_TIM14  GPIO_AF_9    // AF9: TIM12/TIM13/TIM14
 
 #define DEF_TIM(tim, chan, pin, out, dmaopt) {                  \
-    tim,                                                        \
+    (timerResource_t *)tim,                                     \
     TIMER_GET_IO_TAG(pin),                                      \
     DEF_TIM_CHANNEL(CH_ ## chan),                               \
     (DEF_TIM_OUTPUT(CH_ ## chan) | out),                        \

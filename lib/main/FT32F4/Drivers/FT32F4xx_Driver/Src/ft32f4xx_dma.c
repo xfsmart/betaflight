@@ -54,7 +54,7 @@ void DMA_Init(DMA_Channel_TypeDef* DMAy_Channelx, DMA_InitTypeDef* Init)
   assert_param(IS_DMA_DST_HS_IF_POL(Init->DstHsIfPol));
   assert_param(IS_DMA_SRC_HS_SEL(Init->SrcHsSel));
   assert_param(IS_DMA_DST_HS_SEL(Init->DstHsSel));
-  assert_param(IS_DMA_CHANNEL_POLARITY(Init->Polarity));
+  assert_param(IS_DMA_CHANNEL_PRIORITY(Init->Priority));
   assert_param(IS_DMA_DST_HANDSHAKE_INTERFACE_SEL(Init->DstHsIfPeriphSel));
   assert_param(IS_DMA_SRC_HANDSHAKE_INTERFACE_SEL(Init->SrcHsIfPeriphSel));
 
@@ -108,7 +108,7 @@ void DMA_Init(DMA_Channel_TypeDef* DMAy_Channelx, DMA_InitTypeDef* Init)
                         (Init->DstHsIfPol     << 18U) |
                         (Init->SrcHsSel       << 11U) |
                         (Init->DstHsSel       << 10U) |
-                        (Init->Polarity       << 5U ));
+                        (Init->Priority         << 5U ));
 
   if(Init->ReloadDst == ENABLE)
   {
@@ -206,8 +206,8 @@ void DMA_StructInit (DMA_InitTypeDef* DMA_InitStruct)
   /* Initialize the DMA destination software or handware handshaking */
   DMA_InitStruct->DstHsSel = DMA_DSTHSSEL_HARDWARE;
 
-  /* Initialize the DMA channel polarity */
-  DMA_InitStruct->Polarity = DMA_CH_POLARITY_0;
+  /* Initialize the DMA channel priority */
+  DMA_InitStruct->Priority = DMA_CH_PRIORITY_0;
 
   /* Initialize the destination peripheral request */
   DMA_InitStruct->DstHsIfPeriphSel = DMA_DST_HANDSHAKE_INTERFACE_SEL_0;

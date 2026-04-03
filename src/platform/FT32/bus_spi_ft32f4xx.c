@@ -56,14 +56,12 @@ static SPI_InitTypeDef defaultInit = {
  * @param  instance: SPI instance (used to determine APB bus)
  * @param  divisor: Clock divisor (2-256)
  * @retval BR register bits
- * 
- * Note: FT32F4 SPI BR bits are the same as STM32F4
  * BR[2:0] = f(FFS(divisor) - 2) << 3
  */
 static uint16_t spiDivisorToBRbits(const SPI_TypeDef *instance, uint16_t divisor)
 {
     // SPI2 and SPI3 are on APB1 which PCLK is half that of APB2
-    // FT32F4 has the same clock structure as STM32F4
+    // APB1 = 52.5MHz, APB2 = 105MHz - RM V1.00 图 6-2, 页码 101 (FT32F405 主频 210MHz, APB1=/4, APB2=/2)
     if (instance == SPI2 || instance == SPI3) {
         divisor /= 2; // Safe for divisor == 0 or 1
     }
@@ -113,21 +111,20 @@ void spiInitDevice(spiDevice_e device)
     IOConfigGPIOAF(IOGetByTag(spi->mosi), SPI_IO_AF_CFG, spi->mosiAF);
 
     // Init SPI hardware
-    SPI_DeInit(spi->dev);
+    SPI_DeInit((SPI_TypeDef*)spi->dev);
 
     // Disable SPI DMA requests by default
     // DMA will be enabled in spiInternalStartDMA() when needed
-    SPI_DMACmd(spi->dev, SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN, DISABLE);
+    SPI_DMACmd((SPI_TypeDef*)spi->dev, SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN, DISABLE);
     
-    SPI_Init(spi->dev, &defaultInit);
-    SPI_Cmd(spi->dev, ENABLE);
+    SPI_Init((SPI_TypeDef*)spi->dev, &defaultInit);
+    SPI_Cmd((SPI_TypeDef*)spi->dev, ENABLE);
 }
 
 /**
  * @brief  Reset SPI DMA descriptors
  * @param  bus: pointer to bus device structure
- * 
- * Note: FT32F4 uses DMA Channel architecture (not Stream like STM32F4)
+ *
  * DMA mapping per FT32F4 Reference Manual Table 10-1/10-2:
  * - SPI1: DMA2, Peripheral 3, Tx=Ch3/5, Rx=Ch0/2
  * - SPI2: DMA2, Peripheral 3, Tx=Ch6, Rx=Ch1
@@ -135,26 +132,40 @@ void spiInitDevice(spiDevice_e device)
  */
 void spiInternalResetDescriptors(busDevice_t *bus)
 {
+    // Convert opaque spiResource_t* to SPI_TypeDef*
+    SPI_TypeDef *instance = (SPI_TypeDef *)bus->busType_u.spi.instance;
     DMA_InitTypeDef *dmaInitTx = bus->dmaInitTx;
 
     DMA_StructInit(dmaInitTx);
     dmaInitTx->TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_M2P_DMA;
-    dmaInitTx->DstAddress = (uint32_t)&bus->busType_u.spi.instance->DR;
+    dmaInitTx->DstAddress = (uint32_t)&instance->DR;
     dmaInitTx->SrcAddrMode = DMA_SRC_ADDRMODE_INC;
     dmaInitTx->DstAddrMode = DMA_DST_ADDRMODE_HOLD;
     dmaInitTx->SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_8BITS;
     dmaInitTx->DstTransferWidth = DMA_DST_TRANSFERWIDTH_8BITS;
+
+    // Configure hardware handshaking interface for SPI Tx (Memory to Peripheral)
+    // DstHardwareInterface: DMA channel number (0-7) - selects which CHSEL field to write
+    // DstHsIfPeriphSel: Peripheral request ID - value to write to CHSEL
+    dmaInitTx->DstHardwareInterface = bus->dmaTx->stream;
+    dmaInitTx->DstHsIfPeriphSel = bus->dmaTx->channel;
 
     if (bus->dmaRx) {
         DMA_InitTypeDef *dmaInitRx = bus->dmaInitRx;
 
         DMA_StructInit(dmaInitRx);
         dmaInitRx->TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_P2M_DMA;
-        dmaInitRx->SrcAddress = (uint32_t)&bus->busType_u.spi.instance->DR;
+        dmaInitRx->SrcAddress = (uint32_t)&instance->DR;
         dmaInitRx->SrcAddrMode = DMA_SRC_ADDRMODE_HOLD;
         dmaInitRx->DstAddrMode = DMA_DST_ADDRMODE_INC;
         dmaInitRx->SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_8BITS;
         dmaInitRx->DstTransferWidth = DMA_DST_TRANSFERWIDTH_8BITS;
+
+        // Configure hardware handshaking interface for SPI Rx (Peripheral to Memory)
+        // SrcHardwareInterface: DMA channel number (0-7) - selects which CHSEL field to write
+        // SrcHsIfPeriphSel: Peripheral request ID - value to write to CHSEL
+        dmaInitRx->SrcHardwareInterface = bus->dmaRx->stream;
+        dmaInitRx->SrcHsIfPeriphSel = bus->dmaRx->channel;
     }
 }
 
@@ -170,11 +181,24 @@ void spiInternalResetStream(dmaChannelDescriptor_t *descriptor)
     DMA_Cmd(channelRegs, DISABLE);
 
     // Clear any pending interrupt flags
-    DMA_CLEAR_FLAG(descriptor, DMA_IT_TCIF | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_TEIF);
+    DMA_CLEAR_FLAG(descriptor, DMA_IT_TCIF | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
 }
 
-bool spiInternalReadWriteBufPolled(SPI_TypeDef *instance, const uint8_t *txData, uint8_t *rxData, int len)
+/**
+ * @brief  SPI polled read/write transfer
+ * @param  spiInstance: opaque SPI instance handle (spiResource_t*)
+ * @param  txData: transmit buffer (NULL for dummy bytes)
+ * @param  rxData: receive buffer (NULL to discard received data)
+ * @param  len: number of bytes to transfer
+ * @retval true on success
+ * 
+ * Note: Performs byte-by-byte SPI transfer using polling method.
+ * Uses FT32 standard library functions (SPI_GetFlagStatus, SPI_SendData8, etc.)
+ */
+bool spiInternalReadWriteBufPolled(spiResource_t *spiInstance, const uint8_t *txData, uint8_t *rxData, int len)
 {
+    // Convert opaque spiResource_t* to SPI_TypeDef*
+    SPI_TypeDef *instance = (SPI_TypeDef *)spiInstance;
     uint8_t b;
 
     while (len--) {
@@ -246,6 +270,9 @@ void spiInternalStartDMA(const extDevice_t *dev)
     dmaChannelDescriptor_t *dmaRx = dev->bus->dmaRx;
     DMA_ARCH_TYPE *channelTx = (DMA_ARCH_TYPE *)dmaTx->ref;
     
+    // Convert opaque spiResource_t* to SPI_TypeDef*
+    SPI_TypeDef *instance = (SPI_TypeDef *)dev->bus->busType_u.spi.instance;
+    
     if (dmaRx) {
         DMA_ARCH_TYPE *channelRx = (DMA_ARCH_TYPE *)dmaRx->ref;
 
@@ -253,8 +280,8 @@ void spiInternalStartDMA(const extDevice_t *dev)
         dmaRx->userParam = (uint32_t)dev;
 
         // Clear transfer flags
-        DMA_CLEAR_FLAG(dmaTx, DMA_IT_TEIF | DMA_IT_TCIF);
-        DMA_CLEAR_FLAG(dmaRx, DMA_IT_TEIF | DMA_IT_TCIF);
+        DMA_CLEAR_FLAG(dmaTx, DMA_IT_ERR | DMA_IT_TCIF);
+        DMA_CLEAR_FLAG(dmaRx, DMA_IT_ERR | DMA_IT_TCIF);
 
         // Disable channels to enable update
         DMA_Cmd(channelTx, DISABLE);
@@ -272,14 +299,14 @@ void spiInternalStartDMA(const extDevice_t *dev)
         DMA_Cmd(channelRx, ENABLE);
 
         // Enable SPI DMA requests
-        SPI_DMACmd(dev->bus->busType_u.spi.instance, SPI_CR2_TXDMAEN, ENABLE);
-        SPI_DMACmd(dev->bus->busType_u.spi.instance, SPI_CR2_RXDMAEN, ENABLE);
+        SPI_DMACmd(instance, SPI_CR2_TXDMAEN, ENABLE);
+        SPI_DMACmd(instance, SPI_CR2_RXDMAEN, ENABLE);
     } else {
         // Set callback parameter
         dmaTx->userParam = (uint32_t)dev;
 
         // Clear transfer flags
-        DMA_CLEAR_FLAG(dmaTx, DMA_IT_TEIF | DMA_IT_TCIF);
+        DMA_CLEAR_FLAG(dmaTx, DMA_IT_ERR | DMA_IT_TCIF);
 
         // Disable channel to enable update
         DMA_Cmd(channelTx, DISABLE);
@@ -293,7 +320,7 @@ void spiInternalStartDMA(const extDevice_t *dev)
         DMA_Cmd(channelTx, ENABLE);
 
         // Enable SPI DMA Tx request
-        SPI_DMACmd(dev->bus->busType_u.spi.instance, SPI_CR2_TXDMAEN, ENABLE);
+        SPI_DMACmd(instance, SPI_CR2_TXDMAEN, ENABLE);
     }
 }
 
@@ -307,7 +334,8 @@ void spiInternalStopDMA(const extDevice_t *dev)
 {
     dmaChannelDescriptor_t *dmaTx = dev->bus->dmaTx;
     dmaChannelDescriptor_t *dmaRx = dev->bus->dmaRx;
-    SPI_TypeDef *instance = dev->bus->busType_u.spi.instance;
+    // Convert opaque spiResource_t* to SPI_TypeDef*
+    SPI_TypeDef *instance = (SPI_TypeDef *)dev->bus->busType_u.spi.instance;
     DMA_ARCH_TYPE *channelTx = (DMA_ARCH_TYPE *)dmaTx->ref;
 
     if (dmaRx) {
@@ -322,8 +350,8 @@ void spiInternalStopDMA(const extDevice_t *dev)
         SPI_DMACmd(instance, SPI_CR2_RXDMAEN, DISABLE);
 
         // Clear flags
-        DMA_CLEAR_FLAG(dmaTx, DMA_IT_TEIF | DMA_IT_TCIF);
-        DMA_CLEAR_FLAG(dmaRx, DMA_IT_TEIF | DMA_IT_TCIF);
+        DMA_CLEAR_FLAG(dmaTx, DMA_IT_ERR | DMA_IT_TCIF);
+        DMA_CLEAR_FLAG(dmaRx, DMA_IT_ERR | DMA_IT_TCIF);
     } else {
         // Ensure current transmission is complete
         while (SPI_GetFlagStatus(instance, SPI_FLAG_BSY));
@@ -340,7 +368,7 @@ void spiInternalStopDMA(const extDevice_t *dev)
         SPI_DMACmd(instance, SPI_CR2_TXDMAEN, DISABLE);
 
         // Clear flags
-        DMA_CLEAR_FLAG(dmaTx, DMA_IT_TEIF | DMA_IT_TCIF);
+        DMA_CLEAR_FLAG(dmaTx, DMA_IT_ERR | DMA_IT_TCIF);
     }
 }
 
@@ -348,7 +376,8 @@ void spiInternalStopDMA(const extDevice_t *dev)
 void spiSequenceStart(const extDevice_t *dev)
 {
     busDevice_t *bus = dev->bus;
-    SPI_TypeDef *instance = bus->busType_u.spi.instance;
+    // Convert opaque spiResource_t* to SPI_TypeDef*
+    SPI_TypeDef *instance = (SPI_TypeDef *)bus->busType_u.spi.instance;
     bool dmaSafe = dev->useDMA;
     uint32_t xferLen = 0;
     uint32_t segmentCount = 0;
@@ -359,7 +388,7 @@ void spiSequenceStart(const extDevice_t *dev)
 
     // Switch bus speed
     if (dev->busType_u.spi.speed != bus->busType_u.spi.speed) {
-        spiSetDivisorBRreg(bus->busType_u.spi.instance, dev->busType_u.spi.speed);
+        spiSetDivisorBRreg(instance, dev->busType_u.spi.speed);
         bus->busType_u.spi.speed = dev->busType_u.spi.speed;
     }
 

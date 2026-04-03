@@ -43,7 +43,6 @@
  * 
  * Note: After enabling a peripheral clock, a dummy read is performed
  *       to ensure the clock is stable before the peripheral is accessed.
- *       This follows the same pattern as AT32F43x and STM32F4.
  */
 void RCC_ClockCmd(rccPeriphTag_t periphTag, FunctionalState NewState)
 {
@@ -78,17 +77,17 @@ void RCC_ClockCmd(rccPeriphTag_t periphTag, FunctionalState NewState)
 
     // Process based on bus type
     switch (tag) {
-        case RCC_AHB1_VALUE:
+        case RCC_AHB1:
             // AHB1 peripherals: DMA1, DMA2, GPIOA-GPIOH, etc.
             __FT_RCC_CLK(AHB1ENR, mask, NewState);
             break;
 
-        case RCC_APB1_VALUE:
+        case RCC_APB1:
             // APB1 peripherals: TIM2-TIM7, I2C1-3, USART2-3, etc.
             __FT_RCC_CLK(APB1ENR, mask, NewState);
             break;
 
-        case RCC_APB2_VALUE:
+        case RCC_APB2:
             // APB2 peripherals: TIM1, TIM8, USART1, SPI1, etc.
             __FT_RCC_CLK(APB2ENR, mask, NewState);
             break;
@@ -113,7 +112,6 @@ void RCC_ClockCmd(rccPeriphTag_t periphTag, FunctionalState NewState)
  * @retval None
  * 
  * Note: Reset control follows the same bit positions as clock enable.
- *       This is consistent across FT32F4, AT32F43x, and STM32F4.
  */
 void RCC_ResetCmd(rccPeriphTag_t periphTag, FunctionalState NewState)
 {
@@ -137,17 +135,17 @@ void RCC_ResetCmd(rccPeriphTag_t periphTag, FunctionalState NewState)
 
     // Process based on bus type
     switch (tag) {
-        case RCC_AHB1_VALUE:
+        case RCC_AHB1:
             // AHB1 peripherals reset
             __FT_RCC_RESET(AHB1RSTR, mask, NewState);
             break;
 
-        case RCC_APB1_VALUE:
+        case RCC_APB1:
             // APB1 peripherals reset
             __FT_RCC_RESET(APB1RSTR, mask, NewState);
             break;
 
-        case RCC_APB2_VALUE:
+        case RCC_APB2:
             // APB2 peripherals reset
             __FT_RCC_RESET(APB2RSTR, mask, NewState);
             break;

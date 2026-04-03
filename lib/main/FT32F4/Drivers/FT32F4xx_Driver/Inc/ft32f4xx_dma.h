@@ -131,8 +131,8 @@ typedef struct
   uint32_t DstHsSel;                /*!< Specifies the destination software or handware handshaking select for DMAy Channelx.
                                          This parameter can be a value of @ref DMA_dst_hs_select  */
 
-  uint32_t Polarity;                /*!< Specifies the channel polarity for DMAy Channelx.
-                                         This parameter can be a value of @ref DMA_channel_polarity  */
+  uint32_t Priority;                /*!< Specifies the channel polarity for DMAy Channelx.
+                                         This parameter can be a value of @ref DMA_channel_priority  */
 
   uint32_t SrcHsIfPeriphSel;        /*!< Specifies the peripheral request for the handshake interface.
                                       This parameter can be a value of @ref DMA_src_handshake_interface_channel_select */
@@ -416,49 +416,56 @@ typedef enum
   */
 
 
-///** @defgroup  DMA_fifo_mode_select
+//** @defgroup  DMA_fifo_mode_select
 //  * @{
 //  */
 //#define DMA_FIFOMODE_DISABLE  0U
 //#define DMA_FIFOMODE_ENABLE   1U
 ////#define DMA_FIFOMODE_ENABLE   DMA_CFG_FIFO_MODE
 //
-//                                       ((STATE) == DMA_FIFOMODE_ENABLE ))
-///**
+//#define IS_DMA_FIFO_MODE_STATE(STATE) (((STATE) == DMA_FIFOMODE_DISABLE) || ((STATE) == DMA_FIFOMODE_ENABLE ))
+//
+//**
 //  * @}
 //  */
 
 
-///** @defgroup  DMA_fc_mode
+//** @defgroup  DMA_fc_mode
 //  * @{
 //  */
 //#define DMA_FLOWCTLMODE_DISABLE  0U
 //#define DMA_FLOWCTLMODE_ENABLE   1U
 ////#define DMA_FLOWCTLMODE_ENABLE   DMA_CFG_FCMODE
-//                                    ((STATE) == DMA_FLOWCTLMODE_ENABLE ))
-///**
+//
+//#define IS_DMA_FCMODE_STATE(STATE) (((STATE) == DMA_FLOWCTLMODE_DISABLE) || ((STATE) == DMA_FLOWCTLMODE_ENABLE ))
+//
+//**
 //  * @}
 //  */
 
 
-///** @defgroup  DMA_reload_destination
+//** @defgroup  DMA_reload_destination
 //  * @{
 //  */
 //#define DMA_RELOADDST_DISABLE  0U
 //#define DMA_RELOADDST_ENABLE   1U
-//                                        ((STATE) == DMA_RELOADDST_ENABLE ))
-///**
+//
+//#define IS_DMA_RELOAD_DST_STATE(STATE) (((STATE) == DMA_RELOADDST_DISABLE) || ((STATE) == DMA_RELOADDST_ENABLE ))
+//
+//**
 //  * @}
 //  */
 //
 //
-///** @defgroup  DMA_reload_source
+//** @defgroup  DMA_reload_source
 //  * @{
 //  */
 //#define DMA_RELOADSRC_DISABLE  0U
 //#define DMA_RELOADSRC_ENABLE   1U
-//                                        ((STATE) == DMA_RELOADSRC_ENABLE ))
-///**
+//
+//#define IS_DMA_RELOAD_SRC_STATE(STATE) (((STATE) == DMA_RELOADSRC_DISABLE) || ((STATE) == DMA_RELOADSRC_ENABLE ))
+//
+//**
 //  * @}
 //  */
 
@@ -528,26 +535,26 @@ typedef enum
   */
 
 
-/** @defgroup  DMA_channel_polarity
+/** @defgroup  DMA_channel_priority
   * @{
   */
-#define DMA_CH_POLARITY_0  0U
-#define DMA_CH_POLARITY_1  1U
-#define DMA_CH_POLARITY_2  2U
-#define DMA_CH_POLARITY_3  3U
-#define DMA_CH_POLARITY_4  4U
-#define DMA_CH_POLARITY_5  5U
-#define DMA_CH_POLARITY_6  6U
-#define DMA_CH_POLARITY_7  7U
+#define DMA_CH_PRIORITY_0  0U
+#define DMA_CH_PRIORITY_1  1U
+#define DMA_CH_PRIORITY_2  2U
+#define DMA_CH_PRIORITY_3  3U
+#define DMA_CH_PRIORITY_4  4U
+#define DMA_CH_PRIORITY_5  5U
+#define DMA_CH_PRIORITY_6  6U
+#define DMA_CH_PRIORITY_7  7U
 
-#define IS_DMA_CHANNEL_POLARITY(POLARITY) (((POLARITY) == DMA_CH_POLARITY_0) || \
-                                           ((POLARITY) == DMA_CH_POLARITY_1) || \
-                                           ((POLARITY) == DMA_CH_POLARITY_2) || \
-                                           ((POLARITY) == DMA_CH_POLARITY_3) || \
-                                           ((POLARITY) == DMA_CH_POLARITY_4) || \
-                                           ((POLARITY) == DMA_CH_POLARITY_5) || \
-                                           ((POLARITY) == DMA_CH_POLARITY_6) || \
-                                           ((POLARITY) == DMA_CH_POLARITY_7))
+#define IS_DMA_CHANNEL_PRIORITY(PRIORITY) (((PRIORITY) == DMA_CH_PRIORITY_0) || \
+                                           ((PRIORITY) == DMA_CH_PRIORITY_1) || \
+                                           ((PRIORITY) == DMA_CH_PRIORITY_2) || \
+                                           ((PRIORITY) == DMA_CH_PRIORITY_3) || \
+                                           ((PRIORITY) == DMA_CH_PRIORITY_4) || \
+                                           ((PRIORITY) == DMA_CH_PRIORITY_5) || \
+                                           ((PRIORITY) == DMA_CH_PRIORITY_6) || \
+                                           ((PRIORITY) == DMA_CH_POLARITY_7))
 /**
   * @}
   */

@@ -32,9 +32,7 @@
 #include "drivers/timer.h"
 #include "platform/timer.h"
 
-// FT32F405 Timer Definitions
-// Source: FT32F405_407xx_RM_V1.00_cn.pdf Chapter 17-20
-// Interrupt vectors from ft32f407xe.h
+// Timer Definitions
 const timerDef_t timerDefinitions[HARDWARE_TIMER_DEFINITION_COUNT] = {
     { .TIMx = TIM1,  .rcc = RCC_APB2(TIM1),  .inputIrq = TIM1_CC_IRQn},
     { .TIMx = TIM2,  .rcc = RCC_APB1(TIM2),  .inputIrq = TIM2_IRQn},
@@ -54,7 +52,6 @@ const timerDef_t timerDefinitions[HARDWARE_TIMER_DEFINITION_COUNT] = {
 
 #if defined(USE_TIMER_MGMT)
 // Full timer-channel-pin mapping table
-// FT32F4 AF assignments are identical to STM32F40_41xxx
 // Source: FT32F405_407xx_DS_V1.02_cn.pdf Table "Alternate function mapping"
 const timerHardware_t fullTimerHardware[FULL_TIMER_CHANNEL_COUNT] = {
 //PORTA
@@ -150,7 +147,7 @@ const timerHardware_t fullTimerHardware[FULL_TIMER_CHANNEL_COUNT] = {
 // APB prescaler != 1, timer clock = 2 * PCLKx
 // APB2 timers: 2 * 105MHz = 210MHz = SystemCoreClock
 // APB1 timers: 2 * 52.5MHz = 105MHz = SystemCoreClock / 2
-uint32_t timerClockFromInstance(const void *tim)
+uint32_t timerClockFromInstance(const timerResource_t *tim)
 {
     const TIM_TypeDef *tim_ptr = (const TIM_TypeDef *)tim;
     if (tim_ptr == TIM1 || tim_ptr == TIM8 || tim_ptr == TIM9 || tim_ptr == TIM10 || tim_ptr == TIM11) {

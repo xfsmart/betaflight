@@ -46,7 +46,7 @@ const i2cHardware_t i2cHardware[I2CDEV_COUNT] = {
 #ifdef USE_I2C_DEVICE_1
     {
         .device = I2CDEV_1,
-        .reg = I2C1,
+        .reg = (i2cResource_t *)I2C1,
         .sclPins = {
             I2CPINDEF(PB6,  GPIO_AF_4),
             I2CPINDEF(PB8,  GPIO_AF_4),
@@ -62,7 +62,7 @@ const i2cHardware_t i2cHardware[I2CDEV_COUNT] = {
 #ifdef USE_I2C_DEVICE_2
     {
         .device = I2CDEV_2,
-        .reg = I2C2,
+        .reg = (i2cResource_t *)I2C2,
         .sclPins = {
             I2CPINDEF(PB10, GPIO_AF_4),
         },
@@ -76,7 +76,7 @@ const i2cHardware_t i2cHardware[I2CDEV_COUNT] = {
 #ifdef USE_I2C_DEVICE_3
     {
         .device = I2CDEV_3,
-        .reg = I2C3,
+        .reg = (i2cResource_t *)I2C3,
         .sclPins = {
             I2CPINDEF(PA8,  GPIO_AF_4),
         },
@@ -90,6 +90,10 @@ const i2cHardware_t i2cHardware[I2CDEV_COUNT] = {
 };
 
 i2cDevice_t i2cDevice[I2CDEV_COUNT];
+
+// Static HAL handle storage for I2C devices
+// Required because i2cDevice[].halHandle is a pointer (see bus_i2c_impl.h)
+static struct i2cHalHandle_s i2cHalHandles[I2CDEV_COUNT];
 
 // Initialize I2C peripheral
 // device: I2C device identifier (I2CDEV_1, I2CDEV_2, I2CDEV_3)
@@ -119,12 +123,17 @@ void i2cInit(i2cDevice_e device)
     i2cUnstick(scl, sda);
 
     // Init pins
-
     IOConfigGPIOAF(scl, pDev->pullUp ? IOCFG_I2C_PU : IOCFG_I2C, pDev->sclAF);
     IOConfigGPIOAF(sda, pDev->pullUp ? IOCFG_I2C_PU : IOCFG_I2C, pDev->sdaAF);
 
-    // Init I2C peripheral
-    i2c_handle_type  *pHandle = &pDev->handle;
+    // Assign halHandle pointer to static storage
+    pDev->halHandle = &i2cHalHandles[device];
+
+    // Init I2C peripheral using halHandle (matching bus_i2c_impl.h definition)
+    // i2cDevice[device].halHandle is of type i2cHalHandle_t*
+    // i2cHalHandle_t contains I2C_HandleTypeDef hal member
+    // FT32F4: I2C_HandleTypeDef is typedef'd to i2c_handle_type in platform.h
+    i2c_handle_type *pHandle = &pDev->halHandle->hal;
     memset(pHandle, 0, sizeof(*pHandle));
 
     I2C_TypeDef *i2cx = (I2C_TypeDef *)pDev->hardware->reg;
@@ -152,7 +161,7 @@ void i2cInit(i2cDevice_e device)
     
     I2C_Init(i2cx, &I2C_InitStruct);
 
-    // NVIC init
+    // NVIC init - FT32F4 uses single IRQ for both event and error interrupts
     NVIC_InitTypeDef NVIC_InitStructure;
     NVIC_InitStructure.NVIC_IRQChannel = hardware->irqn;
     NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(NVIC_PRIO_I2C);

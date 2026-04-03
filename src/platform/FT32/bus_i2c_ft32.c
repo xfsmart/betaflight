@@ -39,48 +39,40 @@
 // I2C bus timeout: ~7.5us at 210MHz
 #define I2C_TIMEOUT                      0x627
 
+// FT32F4 uses a single IRQ vector for both event and error interrupts
+// According to spec: I2C1_IRQn (IRQ 31), I2C2_IRQn (IRQ 32), I2C3_IRQn (IRQ 65)
+// merge event and error handling into one IRQ handler
+
 #ifdef USE_I2C_DEVICE_1
 void I2C1_IRQHandler(void)
 {
-    i2c_handle_type *hi2c = &i2cDevice[I2CDEV_1].handle;
+    i2c_handle_type *hi2c = &i2cDevice[I2CDEV_1].halHandle->hal;
     
+    // FT32F4: Single IRQ handles both event and error interrupts
     i2c_evt_irq_handler(hi2c);
-    
-    if (I2C_GetFlagStatus(hi2c->i2cx, I2C_FLAG_BERR) ||
-        I2C_GetFlagStatus(hi2c->i2cx, I2C_FLAG_ARLO) ||
-        I2C_GetFlagStatus(hi2c->i2cx, I2C_FLAG_OVR)) {
-        i2c_err_irq_handler(hi2c);
-    }
+    i2c_err_irq_handler(hi2c);
 }
 #endif
 
 #ifdef USE_I2C_DEVICE_2
 void I2C2_IRQHandler(void)
 {
-    i2c_handle_type *hi2c = &i2cDevice[I2CDEV_2].handle;
+    i2c_handle_type *hi2c = &i2cDevice[I2CDEV_2].halHandle->hal;
     
+    // FT32F4: Single IRQ handles both event and error interrupts
     i2c_evt_irq_handler(hi2c);
-    
-    if (I2C_GetFlagStatus(hi2c->i2cx, I2C_FLAG_BERR) ||
-        I2C_GetFlagStatus(hi2c->i2cx, I2C_FLAG_ARLO) ||
-        I2C_GetFlagStatus(hi2c->i2cx, I2C_FLAG_OVR)) {
-        i2c_err_irq_handler(hi2c);
-    }
+    i2c_err_irq_handler(hi2c);
 }
 #endif
 
 #ifdef USE_I2C_DEVICE_3
 void I2C3_IRQHandler(void)
 {
-    i2c_handle_type *hi2c = &i2cDevice[I2CDEV_3].handle;
+    i2c_handle_type *hi2c = &i2cDevice[I2CDEV_3].halHandle->hal;
     
+    // FT32F4: Single IRQ handles both event and error interrupts
     i2c_evt_irq_handler(hi2c);
-    
-    if (I2C_GetFlagStatus(hi2c->i2cx, I2C_FLAG_BERR) ||
-        I2C_GetFlagStatus(hi2c->i2cx, I2C_FLAG_ARLO) ||
-        I2C_GetFlagStatus(hi2c->i2cx, I2C_FLAG_OVR)) {
-        i2c_err_irq_handler(hi2c);
-    }
+    i2c_err_irq_handler(hi2c);
 }
 #endif
 
@@ -93,7 +85,7 @@ static bool i2cHandleHardwareFailure(i2cDevice_e device)
 {
     i2cErrorCount++;
     
-    i2c_handle_type *pHandle = &i2cDevice[device].handle;
+    i2c_handle_type *pHandle = &i2cDevice[device].halHandle->hal;
     if (!pHandle->i2cx) {
         return false;
     }
@@ -105,11 +97,12 @@ static bool i2cHandleHardwareFailure(i2cDevice_e device)
     // Attempt bus recovery: generate STOP condition to release bus
     I2C_GenerateSTOP(pHandle->i2cx, ENABLE);
     
-    // Small delay for bus stabilization (approximately 1us at 210MHz)
-    for (volatile int i = 0; i < 100; i++);
+    // Wait for STOPF flag to be set (STOP condition completed)
+    // Uses Betaflight timeout pattern: microsISR() + cmpTimeUs()
+    i2c_wait_flag(pHandle, I2C_STOPF_FLAG, I2C_EVENT_CHECK_NONE, I2C_TIMEOUT);
     
-    // Clear STOPF flag after STOP generation
-    I2C_ClearFlag(pHandle->i2cx, I2C_FLAG_STOPF);
+    // Clear STOPF flag
+    i2c_flag_clear(pHandle->i2cx, I2C_STOPF_FLAG);
     
     return false;
 }
@@ -131,7 +124,7 @@ bool i2cWrite(i2cDevice_e device, uint8_t addr_, uint8_t reg_, uint8_t data)
         return false;
     }
 
-    i2c_handle_type *pHandle = &i2cDevice[device].handle;
+    i2c_handle_type *pHandle = &i2cDevice[device].halHandle->hal;
 
     if (!pHandle->i2cx) {
         return false;
@@ -175,7 +168,7 @@ bool i2cWriteBuffer(i2cDevice_e device, uint8_t addr_, uint8_t reg_, uint8_t len
         return false;
     }
 
-    i2c_handle_type *pHandle = &i2cDevice[device].handle;
+    i2c_handle_type *pHandle = &i2cDevice[device].halHandle->hal;
 
     if (!pHandle->i2cx) {
         return false;
@@ -213,7 +206,7 @@ bool i2cRead(i2cDevice_e device, uint8_t addr_, uint8_t reg_, uint8_t len, uint8
         return false;
     }
 
-    i2c_handle_type *pHandle = &i2cDevice[device].handle;
+    i2c_handle_type *pHandle = &i2cDevice[device].halHandle->hal;
 
     if (!pHandle->i2cx) {
         return false;
@@ -257,7 +250,7 @@ bool i2cReadBuffer(i2cDevice_e device, uint8_t addr_, uint8_t reg_, uint8_t len,
         return false;
     }
 
-    i2c_handle_type *pHandle = &i2cDevice[device].handle;
+    i2c_handle_type *pHandle = &i2cDevice[device].halHandle->hal;
 
     if (!pHandle->i2cx) {
         return false;
@@ -289,7 +282,7 @@ bool i2cReadBuffer(i2cDevice_e device, uint8_t addr_, uint8_t reg_, uint8_t len,
 // Returns: true if bus is busy or in error state, false if ready
 bool i2cBusy(i2cDevice_e device, bool *error)
 {
-    i2c_handle_type *pHandle = &i2cDevice[device].handle;
+    i2c_handle_type *pHandle = &i2cDevice[device].halHandle->hal;
 
     if (error) {
         *error = pHandle->error_code;

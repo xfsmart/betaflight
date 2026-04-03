@@ -50,7 +50,7 @@ INCLUDE_DIRS += \
         $(LIB_MAIN_DIR)/FT32F4/Drivers/FT32F4xx_Driver/Inc \
         $(LIB_MAIN_DIR)/CMSIS/Core/Include
 
-# Architecture flags - Cortex-M4 with FPU (same as STM32F4/APM32F4)
+# Architecture flags - Cortex-M4 with FPU
 ARCH_FLAGS      = -mthumb -mcpu=cortex-m4 -march=armv7e-m -mfloat-abi=hard -mfpu=fpv4-sp-d16
 
 DEVICE_FLAGS    = -DHSE_VALUE=$(HSE_VALUE) -DFT32F4 -Wno-unused-variable
@@ -84,14 +84,14 @@ MCU_COMMON_SRC = \
         common/stm32/mco.c \
         $(LIB_MAIN_DIR)/FT32F4/CMSIS/cm4/device_support/system_ft32f4xx.c \
         FT32/system_ft32f4xx.c \
-        FT32/rcc_ft32f4.c \
+        FT32/rcc_ft32f4xx.c \
         FT32/dma_ft32f4xx.c \
         FT32/persistent_ft32.c \
         FT32/drivers_stubs.c \
         FT32/io_ft32.c \
         FT32/bus_i2c_ft32.c \
         FT32/bus_i2c_ft32_init.c \
-        FT32/bus_spi_ft32.c \
+        FT32/bus_spi_ft32f4xx.c \
         FT32/adc_ft32f4xx.c \
         FT32/exti_ft32f4xx.c \
         FT32/timer_ft32f4xx.c \

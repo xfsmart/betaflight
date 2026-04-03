@@ -240,7 +240,7 @@ static void i2c_dma_config(i2c_handle_type* hi2c, DMA_Channel_TypeDef* dma_chann
   ft32_dma_init.DstHsIfPol = 0;
   ft32_dma_init.SrcHsSel = 0;
   ft32_dma_init.DstHsSel = 0;
-  ft32_dma_init.Polarity = 0;
+  ft32_dma_init.Priority = 0;
   ft32_dma_init.SrcHsIfPeriphSel = 0;
   ft32_dma_init.DstHsIfPeriphSel = 0;
   

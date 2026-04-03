@@ -41,7 +41,6 @@
 #include "pg/adc.h"
 
 // FT32F4 calibration data addresses
-// Source: FT32F405_407xx_DS_V1.02_cn.pdf Table 3-4/3-5 (page 30)
 #define VREFINT_CAL_ADDR  0x1FFF0A18  // VREFINT calibration at 25°C, VDDA = 3.3V
 #define TS_CAL1_ADDR      0x1FFF0A1C  // Temperature sensor calibration at 25°C (±5°C)
 
@@ -50,7 +49,6 @@ const adcDevice_t adcHardware[] = {
         .ADCx = ADC1,
         .rccADC = RCC_APB2Periph_ADC,
     },
-#if !defined(STM32F411xE)
     {
         .ADCx = ADC2,
         .rccADC = RCC_APB2Periph_ADC,
@@ -58,27 +56,26 @@ const adcDevice_t adcHardware[] = {
     {
         .ADCx = ADC3,
         .rccADC = RCC_APB2Periph_ADC,
-    }
-#endif
+    },
 };
 
 const adcTagMap_t adcTagMap[] = {
-    { DEFIO_TAG_E__PC0, ADC_DEVICES_123, ADC_CHANNEL_10 },
-    { DEFIO_TAG_E__PC1, ADC_DEVICES_123, ADC_CHANNEL_11 },
-    { DEFIO_TAG_E__PC2, ADC_DEVICES_123, ADC_CHANNEL_12 },
-    { DEFIO_TAG_E__PC3, ADC_DEVICES_123, ADC_CHANNEL_13 },
-    { DEFIO_TAG_E__PC4, ADC_DEVICES_12,  ADC_CHANNEL_14 },
-    { DEFIO_TAG_E__PC5, ADC_DEVICES_12,  ADC_CHANNEL_15 },
-    { DEFIO_TAG_E__PB0, ADC_DEVICES_12,  ADC_CHANNEL_8  },
-    { DEFIO_TAG_E__PB1, ADC_DEVICES_12,  ADC_CHANNEL_9  },
-    { DEFIO_TAG_E__PA0, ADC_DEVICES_123, ADC_CHANNEL_0  },
-    { DEFIO_TAG_E__PA1, ADC_DEVICES_123, ADC_CHANNEL_1  },
-    { DEFIO_TAG_E__PA2, ADC_DEVICES_123, ADC_CHANNEL_2  },
-    { DEFIO_TAG_E__PA3, ADC_DEVICES_123, ADC_CHANNEL_3  },
-    { DEFIO_TAG_E__PA4, ADC_DEVICES_12,  ADC_CHANNEL_4  },
-    { DEFIO_TAG_E__PA5, ADC_DEVICES_12,  ADC_CHANNEL_5  },
-    { DEFIO_TAG_E__PA6, ADC_DEVICES_12,  ADC_CHANNEL_6  },
-    { DEFIO_TAG_E__PA7, ADC_DEVICES_12,  ADC_CHANNEL_7  },
+    { DEFIO_TAG_E__PC0, ADC_DEVICES_123, ADC_CHANNEL_1  },
+    { DEFIO_TAG_E__PC1, ADC_DEVICES_123, ADC_CHANNEL_2  },
+    { DEFIO_TAG_E__PC2, ADC_DEVICES_123, ADC_CHANNEL_3  },
+    { DEFIO_TAG_E__PC3, ADC_DEVICES_123, ADC_CHANNEL_4  },
+    { DEFIO_TAG_E__PA0, ADC_DEVICES_12,  ADC_CHANNEL_5  },
+    { DEFIO_TAG_E__PA1, ADC_DEVICES_12,  ADC_CHANNEL_6  },
+    { DEFIO_TAG_E__PA2, ADC_DEVICES_12,  ADC_CHANNEL_7  },
+    { DEFIO_TAG_E__PA3, ADC_DEVICES_12,  ADC_CHANNEL_8  },
+    { DEFIO_TAG_E__PA4, ADC_DEVICES_12,  ADC_CHANNEL_9  },
+    { DEFIO_TAG_E__PA5, ADC_DEVICES_12,  ADC_CHANNEL_10 },
+    { DEFIO_TAG_E__PA6, ADC_DEVICES_12,  ADC_CHANNEL_11 },
+    { DEFIO_TAG_E__PA7, ADC_DEVICES_12,  ADC_CHANNEL_12 },
+    { DEFIO_TAG_E__PC4, ADC_DEVICES_12,  ADC_CHANNEL_13 },
+    { DEFIO_TAG_E__PC5, ADC_DEVICES_12,  ADC_CHANNEL_14 },
+    { DEFIO_TAG_E__PB0, ADC_DEVICES_12,  ADC_CHANNEL_15 },
+    { DEFIO_TAG_E__PB1, ADC_DEVICES_12,  ADC_CHANNEL_16 },
 };
 
 static void adcInitDevice(ADC_TypeDef *adcdev, int channelCount)
@@ -90,7 +87,7 @@ static void adcInitDevice(ADC_TypeDef *adcdev, int channelCount)
     ADC_InitStructure.Resolution               = ADC_RESOLUTION_12B;
     ADC_InitStructure.ContinuousConvMode       = ENABLE;
     ADC_InitStructure.ExternalTrigConv         = ADC12_EXTERNALTRIG_TIM1_CC1;
-    ADC_InitStructure.ExternalTrigConvEdge     = 0;
+    ADC_InitStructure.ExternalTrigConvEdge     = ADC_SOFTWARE_START;
     ADC_InitStructure.DataAlign                = ADC_DATAALIGN_RIGHT;
     ADC_InitStructure.NbrOfConversion          = channelCount;
     ADC_InitStructure.GainCompensation         = 0;
@@ -106,45 +103,44 @@ static void adcInitInternalInjected(const adcConfig_t *config)
     ADC_VrefintCmd(ENABLE);
     ADC_INJ_DiscModeCmd(ADC1, DISABLE);
     ADC_AutoInjectedModeCmd(ADC1, DISABLE);
-    
+
     ADC_InjectedConfTypeDef InjectedConfig = {
-        .InjectedSamplingTime = ADC_SAMPLETIME_640_5CYCLES,  // 640.5 cycles = 24.4us @ 26.25MHz (meets 10us minimum)
+        .InjectedNbrOfConversion = 2,
+        .InjectedSamplingTime = ADC_SAMPLETIME_640_5CYCLES,
         .InjectedSingleDiff = ADC_SINGLE_ENDED,
         .InjectedOffsetNumber = ADC_OFFSET_NONE,
         .InjectedOffset = 0,
         .InjectedOffsetSign = 0,
         .InjectedOffsetSaturation = DISABLE,
+        .ExternalTrigInjecConvEdge = 0,
+        .ExternalTrigInjecConv = ADC_INJECTED_SOFTWARE_START,
     };
-    
+
     InjectedConfig.InjectedChannel = ADC1_CHANNEL_VREFINT;
     InjectedConfig.InjectedRank = 1;
     ADC_InjectedChannelConfig(ADC1, &InjectedConfig);
-    
+
     InjectedConfig.InjectedChannel = ADC13_CHANNEL_TENOSENSOR;
     InjectedConfig.InjectedRank = 2;
     ADC_InjectedChannelConfig(ADC1, &InjectedConfig);
 
     adcVREFINTCAL = config->vrefIntCalibration ? config->vrefIntCalibration : *(uint16_t *)VREFINT_CAL_ADDR;
     adcTSCAL1 = config->tempSensorCalibration1 ? config->tempSensorCalibration1 : *(uint16_t *)TS_CAL1_ADDR;
-    
-    // FT32F4 temperature sensor parameters
-    // Source: FT32F405_407xx_RM_V1.00_cn.pdf section 12.3.31 (page 331)
-    // Formula: T = (VSENSE - V25) / Avg_Slope + 25
-    // V25 = 0.76V, Avg_Slope = 2.5mV/°C
-    // Convert to ADC counts @ 12-bit, 3.3V:
-    //   V25_counts = 0.76 * 4096 / 3.3 = 945 counts
-    //   Avg_Slope_counts = 2.5mV/°C / (3300mV/4096) = 3.10 counts/°C
-    // adcTSSlopeK is in units of 0.1°C per count: -10 / 3.10 = -3.22 ≈ -32
-    adcTSSlopeK = -32;  // -3.2°C per ADC count (from FT32F4 RM)
-    
-    adcTSCAL2 = adcTSCAL1;  // FT32F4 has only one calibration point
+
+    // Temperature sensor parameters: V25 = 0.76V, Avg_Slope = 2.6mV/°C
+    // Negative tempco: VSENSE decreases as temperature increases
+    // adcTSSlopeK unit: 0.001°C/count
+    // Calculation: -1000 / (2.6 / (3300/4096)) = -1000 / 3.227 = -309.9 ≈ -310
+    adcTSSlopeK = -310;  // -0.310°C per ADC count
+
+    adcTSCAL2 = adcTSCAL1;  // Single calibration point at 25°C
 }
 
-// Note on sampling time for temperature sensor and vrefint:
+// Sampling time for temperature sensor and vrefint:
 // Both sources require minimum sample time of 10us.
-// FT32F405: HCLK = 210MHz, ADC clock = 26.25MHz (prescaler = 8)
+// HCLK = 210MHz, ADC clock = 26.25MHz (prescaler = 8)
 // tcycle = 1/26.25MHz = 0.038us, 10us = 262 cycles
-// FT32F4 max sample time: 640.5 cycles = 24.4us (meets 10us minimum requirement)
+// Max sample time: 640.5 cycles = 24.4us (meets 10us minimum requirement)
 
 static bool adcInternalConversionInProgress = false;
 
@@ -235,21 +231,15 @@ void adcInit(const adcConfig_t *config)
     RCC_APB2PeriphClockCmd(adc.rccADC, ENABLE);
 
     // Configure ADC common parameters
-    // FT32F4 splits STM32's ADC_CommonInit() into two functions:
-    // 1. ADC_ClockModeConfig() - ADC prescaler
-    // 2. ADC_MultiModeConfig() - multi-ADC mode parameters
-    
-    // ADC clock configuration
-    // FT32F405: HCLK = 210MHz (Source: FT32F405_407xx_DS_V1.02_cn.pdf page 2)
-    // ADC max clock: 36MHz, use DIV8: 210MHz / 8 = 26.25MHz (within limit)
+    // ADC clock: HCLK = 210MHz, DIV8 = 26.25MHz (max 80MHz per datasheet)
     ADC_ClockModeConfig(ADC_CLOCK_ASYNC_DIV8);
-    
-    // Multi-ADC mode configuration (independent mode)
+
+    // Multi-ADC mode: independent mode, DMA disabled, 5 cycles sampling delay
     ADC_MultiModeTypeDef multiModeConfig = {
-        .Mode = 0,              // Independent mode
-        .DMAAccessMode = 0,     // DMA disabled for multi-ADC
-        .DMAMode = 0,           // Not used when DMAAccessMode is disabled
-        .TwoSamplingDelay = 5,  // 5 cycles delay (match STM32F4)
+        .Mode = ADC_MODE_INDEPENDENT,
+        .DMAAccessMode = ADC_DMAACCESSMODE_DISABLED,
+        .DMAMode = ADC_DMAMODE_ONESHOT,
+        .TwoSamplingDelay = ADC_TWOSAMPLINGDELAY_5CYCLES,
     };
     ADC_MultiModeConfig(&multiModeConfig);
 
@@ -309,6 +299,7 @@ void adcInit(const adcConfig_t *config)
 
     DMA_StructInit(&DMA_InitStructure);
     DMA_InitStructure.TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_P2M_DMA;
+    DMA_InitStructure.SrcDstMasterSel = DMA_SRCMASTER1_DSTMASTER2;
     DMA_InitStructure.SrcAddress = (uint32_t)&adc.ADCx->DR;
     DMA_InitStructure.DstAddress = (uint32_t)adcValues;
     DMA_InitStructure.BlockTransSize = configuredAdcChannels;
@@ -316,6 +307,13 @@ void adcInit(const adcConfig_t *config)
     DMA_InitStructure.DstAddrMode = DMA_DST_ADDRMODE_INC;
     DMA_InitStructure.SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_16BITS;
     DMA_InitStructure.DstTransferWidth = DMA_DST_TRANSFERWIDTH_16BITS;
+
+    // Configure hardware handshaking interface for ADC peripheral
+    // SrcHardwareInterface: DMA channel number (0-7)
+    // SrcHsIfPeriphSel: Peripheral request number within the channel
+    DMA_InitStructure.SrcHardwareInterface = DMA_CODE_STREAM(dmaSpec->code);
+    DMA_InitStructure.SrcHsIfPeriphSel = dmaSpec->channel;
+    DMA_InitStructure.Priority = DMA_CH_PRIORITY_7;  // Highest priority
 
     xDMA_Init(dmaSpec->ref, &DMA_InitStructure);
     xDMA_Cmd(dmaSpec->ref, ENABLE);
