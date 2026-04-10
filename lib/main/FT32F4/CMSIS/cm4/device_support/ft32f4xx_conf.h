@@ -39,18 +39,20 @@ extern "C" {
 #define GPIO_MODULE_ENABLED      /* Implemented */
 #define I2C_MODULE_ENABLED       /* Implemented */
 #define RCC_MODULE_ENABLED       /* TODO: Implement when needed */
+#define SYSCFG_MODULE_ENABLED    /* EXTI requires SYSCFG */
 /* #define CORTEX_MODULE_ENABLED */
 #define EXTI_MODULE_ENABLED
-#define DMA_MODULE_ENABLED 
-/* #define FLASH_MODULE_ENABLED */
+#define DMA_MODULE_ENABLED
+#define FLASH_MODULE_ENABLED
 /* #define CRC_MODULE_ENABLED */
 /* #define WDT_MODULE_ENABLED */
 /* #define WWDT_MODULE_ENABLED */
-/* #define PWC_MODULE_ENABLED */
+#define PWC_MODULE_ENABLED
+#define RTC_MODULE_ENABLED
 #define ADC_MODULE_ENABLED
 /* #define CAN_MODULE_ENABLED */
-/* #define USART_MODULE_ENABLED */
-/* #define UART_MODULE_ENABLED */
+#define USART_MODULE_ENABLED
+#define UART_MODULE_ENABLED
 #define SPI_MODULE_ENABLED
 /* #define TMR_MODULE_ENABLED */
 /* #define SDIO_MODULE_ENABLED */
@@ -139,6 +141,10 @@ extern "C" {
   #include "ft32f4xx_exti.h"
 #endif /* EXTI_MODULE_ENABLED */
 
+#ifdef SYSCFG_MODULE_ENABLED
+  #include "ft32f4xx_syscfg.h"
+#endif /* SYSCFG_MODULE_ENABLED */
+
 #ifdef DMA_MODULE_ENABLED
   #include "ft32f4xx_dma.h"
 #endif /* DMA_MODULE_ENABLED */
@@ -160,8 +166,12 @@ extern "C" {
 #endif /* WWDT_MODULE_ENABLED */
 
 #ifdef PWC_MODULE_ENABLED
-  #include "ft32f4xx_pwc.h"
+  #include "ft32f4xx_pwr.h"
 #endif /* PWC_MODULE_ENABLED */
+
+#ifdef RTC_MODULE_ENABLED
+  #include "ft32f4xx_rtc.h"
+#endif /* RTC_MODULE_ENABLED */
 
 #ifdef ADC_MODULE_ENABLED
   #include "ft32f4xx_adc.h"

@@ -19,7 +19,11 @@ STDPERIPH_SRC   = \
         ft32f4xx_spi.c \
         ft32f4xx_dma.c \
         ft32f4xx_adc.c \
-        ft32f4xx_tim.c
+        ft32f4xx_tim.c \
+        ft32f4xx_usart.c \
+        ft32f4xx_rtc.c \
+        ft32f4xx_pwr.c \
+        ft32f4xx_flash.c
 
 VPATH   := $(VPATH):$(STDPERIPH_DIR)/Src
 
@@ -59,7 +63,9 @@ ifeq ($(TARGET_MCU),FT32F405)
 DEVICE_FLAGS    += -DFT32F405xE -DFT32F405
 LD_SCRIPT       = $(LINKER_DIR)/ft32_flash_f405.ld
 STARTUP_SRC     = FT32/startup/gcc/startup_ft32f405xx.s
-MCU_FLASH_SIZE  := 1024
+MCU_FLASH_SIZE  := 512
+# Inline limit for 512KB constrained target (same as STM32F411)
+DEVICE_FLAGS    += -finline-limit=20
 
 else ifeq ($(TARGET_MCU),FT32F407)
 DEVICE_FLAGS    += -DFT32F407xx -DFT32F407
@@ -97,18 +103,50 @@ MCU_COMMON_SRC = \
         FT32/timer_ft32f4xx.c \
         FT32/timer_ft32_stdperiph.c \
         FT32/dma_reqmap_mcu.c \
-        FT32/stubs_ft32f4xx.c \
+        FT32/serial_uart_stdperiph.c \
+        FT32/serial_uart_ft32f4xx.c \
+        FT32/light_ws2811strip_ft32f4xx.c \
+        FT32/pwm_output_hw_ft32f4xx.c \
+        FT32/dshot_bitbang.c \
+        FT32/dshot_bitbang_stdperiph.c \
+        common/stm32/dshot_bitbang_shared.c \
+        common/stm32/config_flash.c \
+        common/stm32/debug_pin.c \
+        FT32/debug.c \
+        common/stm32/serial_uart_hw.c \
+        common/stm32/serial_uart_pinconfig.c \
         common/stm32/adc_impl.c \
+        common/stm32/ledstrip_ws2811_stm32.c \
+        common/stm32/pwm_output_beeper.c \
+        common/stm32/rx_pwm_hw.c \
         drivers/adc.c \
+        drivers/bus_spi_config.c \
+        drivers/serial_pinconfig.c \
         common/stm32/bus_i2c_pinconfig.c \
         common/stm32/bus_spi_pinconfig.c \
         common/stm32/bus_spi_hw.c \
         drivers/bus_i2c_timing.c \
+        drivers/dshot_bitbang_decode.c \
         $(DEVICE_STDPERIPH_SRC) \
         $(DEVICE_I2C_APP_SRC)
 
+# Size optimization for non-critical paths (same pattern as STM32F411)
 SIZE_OPTIMISED_SRC += \
-        common/stm32/bus_i2c_pinconfig.c
+        drivers/bus_spi_config.c \
+        drivers/serial_pinconfig.c \
+        common/stm32/bus_i2c_pinconfig.c \
+        common/stm32/config_flash.c \
+        common/stm32/bus_spi_pinconfig.c \
+        common/stm32/pwm_output_beeper.c \
+        common/stm32/serial_uart_pinconfig.c
+
+# Speed optimization for critical paths (same pattern as STM32F411)
+SPEED_OPTIMISED_SRC += \
+        common/stm32/system.c \
+        common/stm32/bus_spi_hw.c \
+        FT32/pwm_output_hw_ft32f4xx.c \
+        common/stm32/dshot_bitbang_shared.c \
+        common/stm32/io_impl.c
 
 # FT32 standard library has unused variable warnings in adc driver
 $(OBJ_DIR)/$(STDPERIPH_DIR)/Src/ft32f4xx_adc.o: CFLAGS += -Wno-unused-variable

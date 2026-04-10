@@ -318,6 +318,8 @@ void configUnlock(void)
     DAL_FLASH_Unlock();
 #elif defined(AT32F4)
     flash_unlock();
+#elif defined(FT32F4)
+    FLASH_Unlock();
 #else
     FLASH_Unlock();
 #endif
@@ -331,6 +333,8 @@ void configLock(void)
         flash_lock();
 #elif defined(APM32F4)
         DAL_FLASH_Lock();
+#elif defined(FT32F4)
+        FLASH_Lock();
 #else
         FLASH_Lock();
 #endif
@@ -340,6 +344,8 @@ void configClearFlags(void)
 {
 #if defined(STM32F4)
     FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
+#elif defined(FT32F4)
+    FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_PGERR | FLASH_FLAG_PGSERR | FLASH_FLAG_WRPERR);
 #elif defined(STM32F7)
     // NOP
 #elif defined(STM32H7)
@@ -468,6 +474,19 @@ configStreamerResult_e configWriteWord(uintptr_t address, config_streamer_buffer
 
     STATIC_ASSERT(CONFIG_STREAMER_BUFFER_SIZE == sizeof(uint32_t),  "CONFIG_STREAMER_BUFFER_SIZE does not match written size");
     const FLASH_Status status = FLASH_ProgramWord(address, *buffer);
+    if (status != FLASH_COMPLETE) {
+        return CONFIG_RESULT_ADDRESS_INVALID;
+    }
+#elif defined(FT32F4)
+    if (address % FLASH_PAGE_SIZE == 0) {
+        const FLASH_Status status = FLASH_ErasePage(address, 1);
+        if (status != FLASH_COMPLETE) {
+            return CONFIG_RESULT_FAILURE;
+        }
+    }
+
+    STATIC_ASSERT(CONFIG_STREAMER_BUFFER_SIZE == sizeof(uint32_t),  "CONFIG_STREAMER_BUFFER_SIZE does not match written size");
+    const FLASH_Status status = FLASH_Program_oneWord(address, *buffer);
     if (status != FLASH_COMPLETE) {
         return CONFIG_RESULT_ADDRESS_INVALID;
     }

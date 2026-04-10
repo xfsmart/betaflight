@@ -90,6 +90,9 @@
 #elif defined(AT32F435)
 #define BB_GPIO_PULLDOWN GPIO_PULL_DOWN
 #define BB_GPIO_PULLUP GPIO_PULL_UP
+#elif defined(FT32F4)
+#define BB_GPIO_PULLDOWN GPIO_PuPd_DOWN
+#define BB_GPIO_PULLUP   GPIO_PuPd_UP
 #else
 #define BB_GPIO_PULLDOWN GPIO_PuPd_DOWN
 #define BB_GPIO_PULLUP   GPIO_PuPd_UP
@@ -114,6 +117,11 @@ typedef struct dmaRegCache_s {
     uint32_t NDATA;
     uint32_t PADDR;
     uint32_t M0ADDR;
+#elif defined(FT32F4)
+    // FT32 DesignWare DMA register cache (no LLP support)
+    uint32_t SAR;
+    uint32_t DAR;
+    uint32_t CTL;
 #elif defined(STM32N6)
     // TODO: N6 HPDMA/GPDMA register cache - placeholder for future implementation
     uint32_t placeholder;

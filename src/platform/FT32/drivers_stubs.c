@@ -13,105 +13,18 @@
 #include "drivers/timer.h"
 #include "drivers/dma.h"
 #include "drivers/dma_reqmap.h"
+#include "drivers/motor.h"
+#include "drivers/dshot.h"
+#include "drivers/timer.h"
+#include "drivers/resource.h"
 
-/* UART stubs */
-void uartReconfigure(serialPort_t *instance)
-{
-    (void)instance;
-    // FT32F4: Not yet implemented
-}
-
-/* MPU stubs */
-bool isMPUSoftReset(void)
-{
-    return false;
-}
-
-/* DSHOT telemetry - this is a global variable */
+/* DSHOT telemetry - global variable */
 bool useDshotTelemetry = false;
 
-/* WS2811 LED strip stub */
-void ws2811LedStripInit(uint8_t ioTag, uint8_t ledFormat)
-{
-    (void)ioTag;
-    (void)ledFormat;
-    // FT32F4: Not yet implemented
-}
+/* DSHOT DMA handler cycle counters - for CLI debugging */
+FAST_DATA_ZERO_INIT dshotTelemetryCycleCounters_t dshotDMAHandlerCycleCounters;
 
-/* Persistent object stub */
-void persistentObjectInit(void)
-{
-    // FT32F4: Not yet implemented
-}
-
-/* DSHOT bitbang stub */
-bool isDshotBitbangActive(const void *motorDevConfig)
-{
-    (void)motorDevConfig;
-    return false;
-}
-
-/* Serial UART stub */
-void *serialUART(void *uart, uint32_t baudRate, uint8_t mode, uint8_t options)
-{
-    (void)uart;
-    (void)baudRate;
-    (void)mode;
-    (void)options;
-    return NULL;
-}
-
-/* Serial pin config PG variable */
-#include "pg/pg.h"
-#include "drivers/serial.h"
-PG_REGISTER(serialPinConfig_t, serialPinConfig, PG_SERIAL_PIN_CONFIG, 0);
-
-/* PWM beeper stub - correct signature */
-void pwmWriteBeeper(bool on)
-{
-    (void)on;
-    // FT32F4: Not yet implemented
-}
-
-/* WS2811 LED strip stubs */
-void ws2811LedStripStartTransfer(void)
-{
-    // FT32F4: Not yet implemented
-}
-
-void ws2811LedStripUpdateTransferBuffer(const void *color, unsigned ledIndex)
-{
-    (void)color;
-    (void)ledIndex;
-    // FT32F4: Not yet implemented
-}
-
-void ws2811LedStripHardwareInit(void)
-{
-    // FT32F4: Not yet implemented
-}
-
-/* Servo stub - correct signature */
-void servoWrite(uint8_t servoIndex, float value)
-{
-    (void)servoIndex;
-    (void)value;
-    // FT32F4: Not yet implemented
-}
-
-/* DSHOT bitbang timer stubs - correct signature */
-const void *dshotBitbangTimerGetAllocatedByNumberAndChannel(int8_t timerNumber, uint16_t timerChannel)
-{
-    (void)timerNumber;
-    (void)timerChannel;
-    return NULL;
-}
-
-void *dshotBitbangTimerGetOwner(void *timer)
-{
-    (void)timer;
-    return NULL;
-}
+/* Serial pin config is now in drivers/serial_pinconfig.c */
 
 /* Transponder stub - correct signature */
 void transponderIrUpdateData(const uint8_t *data)
@@ -135,6 +48,14 @@ bool usbCableIsInserted(void)
 // fullTimerHardware is defined in timer_ft32f4xx.c
 
 /* Transponder stubs */
+#include "drivers/transponder_ir.h"
+bool transponderIrInit(const ioTag_t ioTag, const transponderProvider_e provider)
+{
+    (void)ioTag;
+    (void)provider;
+    return false;
+}
+
 void transponderIrDisable(void)
 {
     // FT32F4: Not yet implemented
@@ -142,10 +63,19 @@ void transponderIrDisable(void)
 
 void transponderIrTransmit(void)
 {
-    // FT32F4: Not yet implemented
+}
+
+bool transponderIrIsReady(void)
+{
+    return false;
 }
 
 /* USB VCP stubs */
+void usbCableDetectInit(void)
+{
+    // FT32F4: Not yet implemented
+}
+
 void *usbVcpOpen(void)
 {
     return NULL;
@@ -153,6 +83,18 @@ void *usbVcpOpen(void)
 
 bool usbVcpIsConnected(void)
 {
+    return false;
+}
+
+void usbVcpInit(void)
+{
+}
+
+/* DSHOT PWM stub - requires DMA and timer support */
+bool dshotPwmDevInit(motorDevice_t *device, const motorDevConfig_t *motorConfig)
+{
+    (void)device;
+    (void)motorConfig;
     return false;
 }
 

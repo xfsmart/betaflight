@@ -22,12 +22,11 @@
 
 #include "platform.h"
 
-// FT32F4 使用基于 Channel 的 DMA 架构
-// 每个通道可以配置外设请求映射
-// Citation: spec.json -> channel_mapping
+// FT32F4 uses channel-based DMA architecture
+// Each channel can be configured with peripheral request mapping
 
-// 外设 DMA 选项最大值
+// Max peripheral DMA options
 #define MAX_PERIPHERAL_DMA_OPTIONS 2
 
-// 定时器 DMA 选项最大值
+// Max timer DMA options
 #define MAX_TIMER_DMA_OPTIONS 3

@@ -37,12 +37,16 @@
 #include "drivers/dma.h"
 #include "drivers/sensor.h"
 #include "drivers/adc.h"
+#include "drivers/time.h"
 #include "platform/adc_impl.h"
 #include "pg/adc.h"
 
 // FT32F4 calibration data addresses
 #define VREFINT_CAL_ADDR  0x1FFF0A18  // VREFINT calibration at 25°C, VDDA = 3.3V
 #define TS_CAL1_ADDR      0x1FFF0A1C  // Temperature sensor calibration at 25°C (±5°C)
+
+// ADC calibration timeout (typical calibration takes ~10 cycles at 26.25MHz)
+#define ADC_CAL_TIMEOUT_US  1000  // 1ms should be more than enough
 
 const adcDevice_t adcHardware[] = {
     {
@@ -320,7 +324,12 @@ void adcInit(const adcConfig_t *config)
 
     // ADC calibration (FT32F4 specific)
     ADC_StartSingleCalibration(adc.ADCx);
-    while (ADC_GetFlagStatus(adc.ADCx, ADC_FLAG_ADCAL) != RESET);
+    timeUs_t calStartTime = microsISR();
+    while (ADC_GetFlagStatus(adc.ADCx, ADC_FLAG_ADCAL) != RESET) {
+        if (cmpTimeUs(microsISR(), calStartTime) > ADC_CAL_TIMEOUT_US) {
+            break;  // Timeout - continue anyway
+        }
+    }
 
     // Start conversions
     ADC_REG_StartOfConversion(adc.ADCx);

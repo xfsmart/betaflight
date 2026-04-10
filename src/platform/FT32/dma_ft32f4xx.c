@@ -31,8 +31,6 @@
 #include "platform/dma.h"
 #include "drivers/resource.h"
 
-#include "ft32f4xx_dma.h"
-
 /*
  * DMA channel descriptors
  *

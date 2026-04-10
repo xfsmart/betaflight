@@ -31,10 +31,6 @@
 #include "drivers/io_impl.h"
 #include "drivers/exti.h"
 
-#include "ft32f4xx_rcc.h"
-#include "ft32f4xx_exti.h"
-#include "ft32f4xx_syscfg.h"
-
 typedef struct {
     extiCallbackRec_t* handler;
 } extiChannelRec_t;
@@ -64,6 +60,7 @@ static uint32_t triggerLookupTable[] = {
 
 #define EXTI_REG_IMR (EXTI->IMR)
 #define EXTI_REG_PR  (EXTI->PR)
+#define EXTI_REG_PR_CLEAR(mask) do { EXTI_REG_PR = (mask); } while(0)
 
 void EXTIInit(void)
 {
@@ -113,8 +110,8 @@ void EXTIConfig(IO_t io, extiCallbackRec_t *cb, int irqPriority, ioConfig_t conf
 
         NVIC_InitTypeDef NVIC_InitStruct;
         NVIC_InitStruct.NVIC_IRQChannel = extiGroupIRQn[group];
-        NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = irqPriority;
-        NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0;
+        NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(irqPriority);
+        NVIC_InitStruct.NVIC_IRQChannelSubPriority = NVIC_PRIORITY_SUB(irqPriority);
         NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
         NVIC_Init(&NVIC_InitStruct);
     }
@@ -154,7 +151,7 @@ void EXTIDisable(IO_t io)
     }
 
     EXTI_REG_IMR &= ~extiLine;
-    EXTI_REG_PR = extiLine;
+    EXTI_REG_PR_CLEAR(extiLine);
 }
 
 #define EXTI_EVENT_MASK 0xFFFF
@@ -163,7 +160,7 @@ static void EXTI_IRQHandler(uint32_t mask)
 {
     uint32_t exti_active = (EXTI_REG_IMR & EXTI_REG_PR) & mask;
 
-    EXTI_REG_PR = exti_active;
+    EXTI_REG_PR_CLEAR(exti_active);
 
     while (exti_active) {
         unsigned idx = 31 - __builtin_clz(exti_active);

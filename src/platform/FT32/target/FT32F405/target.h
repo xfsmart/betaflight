@@ -57,7 +57,6 @@
 #define USE_EXTI
 #define USE_GYRO_EXTI
 
-// #define USE_I2C  // Defined in Makefile
 #define USE_I2C
 #define USE_I2C_DEVICE_1
 #define USE_I2C_DEVICE_2
@@ -68,13 +67,10 @@
 #define USE_ADC
 
 #define USE_BEEPER
-#define USE_LED_STRIP
 #define USE_TIMER
 
+// DSHOT basic support only
 #define USE_DSHOT
-#define USE_DSHOT_TELEMETRY
-#define USE_DSHOT_BITBANG
-#define USE_DSHOT_DMAR
 
 #undef USE_RX_PPM
 #undef USE_RX_PWM

@@ -90,8 +90,7 @@ static bool i2cHandleHardwareFailure(i2cDevice_e device)
         return false;
     }
     
-    // Clear all error flags according to RM Section 26.7.8 (ICR register)
-    // BERR: Bus Error, ARLO: Arbitration Lost, OVR: Overrun/Underrun, NACKF: NACK Flag
+    // Clear all error flags (BERR, ARLO, OVR, NACKF)
     I2C_ClearFlag(pHandle->i2cx, I2C_FLAG_BERR | I2C_FLAG_ARLO | I2C_FLAG_OVR | I2C_FLAG_NACKF);
     
     // Attempt bus recovery: generate STOP condition to release bus

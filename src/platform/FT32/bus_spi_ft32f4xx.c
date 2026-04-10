@@ -35,6 +35,7 @@
 #include "drivers/bus_spi_impl.h"
 #include "drivers/exti.h"
 #include "drivers/io.h"
+#include "drivers/time.h"
 #include "platform/rcc.h"
 
 #define SPI_DMA_THRESHOLD 8
@@ -61,7 +62,7 @@ static SPI_InitTypeDef defaultInit = {
 static uint16_t spiDivisorToBRbits(const SPI_TypeDef *instance, uint16_t divisor)
 {
     // SPI2 and SPI3 are on APB1 which PCLK is half that of APB2
-    // APB1 = 52.5MHz, APB2 = 105MHz - RM V1.00 图 6-2, 页码 101 (FT32F405 主频 210MHz, APB1=/4, APB2=/2)
+    // APB1 = 52.5MHz, APB2 = 105MHz (FT32F405: 210MHz, APB1=/4, APB2=/2)
     if (instance == SPI2 || instance == SPI3) {
         divisor /= 2; // Safe for divisor == 0 or 1
     }
@@ -125,10 +126,10 @@ void spiInitDevice(spiDevice_e device)
  * @brief  Reset SPI DMA descriptors
  * @param  bus: pointer to bus device structure
  *
- * DMA mapping per FT32F4 Reference Manual Table 10-1/10-2:
- * - SPI1: DMA2, Peripheral 3, Tx=Ch3/5, Rx=Ch0/2
- * - SPI2: DMA2, Peripheral 3, Tx=Ch6, Rx=Ch1
- * - SPI3: DMA1, Peripheral 0, Tx=Ch5/7, Rx=Ch0/2
+ * DMA channel mapping:
+ * - SPI1: DMA2 Channel 3 (Tx and Rx share same channel)
+ * - SPI2: DMA1 Channel 6 (Tx), Channel 1 (Rx)
+ * - SPI3: DMA1 Channel 5 (Tx), Channel 0 (Rx)
  */
 void spiInternalResetDescriptors(busDevice_t *bus)
 {
@@ -200,13 +201,24 @@ bool spiInternalReadWriteBufPolled(spiResource_t *spiInstance, const uint8_t *tx
     // Convert opaque spiResource_t* to SPI_TypeDef*
     SPI_TypeDef *instance = (SPI_TypeDef *)spiInstance;
     uint8_t b;
+    timeUs_t startTime;
 
     while (len--) {
         b = txData ? *(txData++) : 0xFF;
-        while (SPI_GetFlagStatus(instance, SPI_FLAG_TXE) == RESET);
+        startTime = microsISR();
+        while (SPI_GetFlagStatus(instance, SPI_FLAG_TXE) == RESET) {
+            if (cmpTimeUs(microsISR(), startTime) > SPI_TIMEOUT_US) {
+                return false;  // Timeout
+            }
+        }
         SPI_SendData8(instance, b);
 
-        while (SPI_GetFlagStatus(instance, SPI_FLAG_RXNE) == RESET);
+        startTime = microsISR();
+        while (SPI_GetFlagStatus(instance, SPI_FLAG_RXNE) == RESET) {
+            if (cmpTimeUs(microsISR(), startTime) > SPI_TIMEOUT_US) {
+                return false;  // Timeout
+            }
+        }
         b = SPI_ReceiveData8(instance);
         if (rxData) {
             *(rxData++) = b;

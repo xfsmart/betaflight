@@ -67,6 +67,13 @@ static void enableRxIrq(const uartHardware_t *hardware)
         NVIC_Init(&NVIC_InitStructure);
 #elif defined(AT32F4)
         nvic_irq_enable(hardware->irqn, NVIC_PRIORITY_BASE(hardware->rxPriority), NVIC_PRIORITY_SUB(hardware->rxPriority));
+#elif defined(FT32F4)
+        NVIC_InitTypeDef NVIC_InitStructure;
+        NVIC_InitStructure.NVIC_IRQChannel = hardware->irqn;
+        NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(hardware->rxPriority);
+        NVIC_InitStructure.NVIC_IRQChannelSubPriority = NVIC_PRIORITY_SUB(hardware->rxPriority);
+        NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+        NVIC_Init(&NVIC_InitStructure);
 #elif defined(APM32F4)
         DAL_NVIC_SetPriority(hardware->irqn, NVIC_PRIORITY_BASE(hardware->rxPriority), NVIC_PRIORITY_SUB(hardware->rxPriority));
         DAL_NVIC_EnableIRQ(hardware->irqn);
@@ -157,7 +164,14 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
         // External inverter in bidir mode would be quite problematic anyway
         const ioConfig_t ioCfg = IO_CONFIG(
             GPIO_Mode_AF,
-            GPIO_Low_Speed,  // TODO: should use stronger drive
+            GPIO_Speed_50MHz,
+            pushPull ? GPIO_OType_PP : GPIO_OType_OD,
+            ((const unsigned[]){GPIO_PuPd_NOPULL, GPIO_PuPd_DOWN, GPIO_PuPd_UP})[pull]
+        );
+#elif defined(FT32F4)
+        const ioConfig_t ioCfg = IO_CONFIG(
+            GPIO_Mode_AF,
+            GPIO_Speed_50MHz,
             pushPull ? GPIO_OType_PP : GPIO_OType_OD,
             ((const unsigned[]){GPIO_PuPd_NOPULL, GPIO_PuPd_DOWN, GPIO_PuPd_UP})[pull]
         );
@@ -181,7 +195,7 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
                 uartTxMonitor(s);
 #endif
             } else {
-#if defined(STM32F4) || defined(APM32F4)
+#if defined(STM32F4) || defined(APM32F4) || defined(FT32F4)
                 // TODO: no need for pullup on TX only pin
                 const ioConfig_t ioCfg = IOCFG_AF_PP_UP;
 #else
@@ -192,7 +206,7 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
         }
 
         if ((mode & MODE_RX) && rxIO) {
-#if defined(STM32F4) || defined(APM32F4)
+#if defined(STM32F4) || defined(APM32F4) || defined(FT32F4)
             // no inversion possible on F4, always use pullup
             const ioConfig_t ioCfg = IOCFG_AF_PP_UP;
 #else
@@ -322,6 +336,8 @@ void uartEnableTxInterrupt(uartPort_t *uartPort)
     __HAL_UART_ENABLE_IT(&uartPort->halHandle->hal, UART_IT_TXE);
 #elif defined(USE_ATBSP_DRIVER)
     usart_interrupt_enable((usart_type *)uartPort->USARTx, USART_TDBE_INT, TRUE);
+#elif defined(FT32F4)
+    USART_ITConfig((USART_TypeDef *)uartPort->USARTx, USART_IT_TXRDY, ENABLE);
 #else
     USART_ITConfig((USART_TypeDef *)uartPort->USARTx, USART_IT_TXE, ENABLE);
 #endif

@@ -76,7 +76,7 @@ void dbgPinHi(int index)
 
     dbgPinState_t *dbgPinState = &dbgPinStates[index];
     if (dbgPinState->gpio) {
-#if defined(STM32F7) || defined(STM32H7)
+#if defined(STM32F7) || defined(STM32H7) || defined(FT32F4)
         dbgPinState->gpio->BSRR = dbgPinState->setBSRR;
 #else
         dbgPinState->gpio->BSRRL = dbgPinState->setBSRR;

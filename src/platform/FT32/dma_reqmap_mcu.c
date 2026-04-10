@@ -36,15 +36,12 @@
 #include "pg/timerio.h"
 
 /*
- * FT32F4 DMA 外设映射
- *
- * Citation: spec.json -> channel_mapping
- * - DMA1: RM V1.00 表 10-1
- * - DMA2: RM V1.00 表 10-2
+ * FT32F4 DMA peripheral mapping
+ * DMA1/DMA2 channel mapping table
  */
 
-// DMA 通道定义宏（本地版本，只在当前文件有效）
-// FT32 使用 DMA1_Channel0..DMA1_Channel7 格式，channel 字段存储通道号 (0-7)
+// DMA channel definition macro (local version)
+// FT32 uses DMA1_Channel0..DMA1_Channel7 format, channel field stores channel number (0-7)
 #define DMA(d, c) { DMA_CODE(d, c, 0), (dmaResource_t *)DMA ## d ## _Channel ## c, 0 }
 
 typedef struct dmaPeripheralMapping_s {
@@ -59,14 +56,14 @@ typedef struct dmaTimerMapping_s {
     dmaChannelSpec_t channelSpec[MAX_TIMER_DMA_OPTIONS];
 } dmaTimerMapping_t;
 
-// DMA 通道定义宏（本地版本，使用不同名称避免与 dma_reqmap_mcu.h 冲突）
-// FT32 使用 DMA1_Channel0..DMA1_Channel7 格式，channel 字段存储通道号 (0-7)
+// DMA channel definition macro (local version, different name to avoid conflict with dma_reqmap_mcu.h)
+// FT32 uses DMA1_Channel0..DMA1_Channel7 format, channel field stores channel number (0-7)
 #define FT32_DMA(d, s, c) { DMA_CODE(d, s, c), (dmaResource_t *)DMA ## d ## _Channel ## s, (c) }
 
 /*
- * 外设 DMA 映射表
- * 
- * 基于 spec.json channel_mapping 字段：
+ * Peripheral DMA mapping table
+ *
+ * DMA1/DMA2 channel assignment:
  * - DMA1 Channel_4: UART5_RX, USART3_RX, TIM3_CH4, TIM3_CH1
  * - DMA1 Channel_5: UART7_TX, UART7_RX, TIM3_CH2, TIM3_UP, TIM3_TRIG, TIM5_CH3, TIM5_CH4
  * - DMA1 Channel_6: TIM5_CH1, TIM5_CH2, TIM5_UP, TIM5_TRIG
@@ -82,109 +79,93 @@ typedef struct dmaTimerMapping_s {
  */
 static const dmaPeripheralMapping_t dmaPeripheralMapping[] = {
 #ifdef USE_SPI
-    // SPI1: DMA2 Channel_3 (SPI1_RX), DMA2 Channel_3 (SPI1_TX)
-    // Citation: spec.json -> channel_mapping.DMA2.Channel_3
-    { DMA_PERIPH_SPI_SDO,  SPIDEV_1,  { FT32_DMA(2, 3, 3), FT32_DMA(2, 3, 3) } },
-    { DMA_PERIPH_SPI_SDI,  SPIDEV_1,  { FT32_DMA(2, 3, 3), FT32_DMA(2, 3, 3) } },
-    
-    // SPI2: DMA1 Channel 6 (TX), Channel 1 (RX) - RM V1.00 表 10-1, 页码 189
-    // Citation: spi_dma_mapping.json -> mapping.SPI2
-    { DMA_PERIPH_SPI_SDO,  SPIDEV_2,  { FT32_DMA(1, 6, 3) } },
-    { DMA_PERIPH_SPI_SDI,  SPIDEV_2,  { FT32_DMA(1, 1, 3) } },
-    
-    // SPI3: DMA1 Channel 5 (TX), Channel 0 (RX) - RM V1.00 表 10-1, 页码 189
-    // Citation: spi_dma_mapping.json -> mapping.SPI3
+    // SPI1: DMA2 Channel_0 (SPI1_RX), DMA2 Channel_3 (SPI1_TX)
+    { DMA_PERIPH_SPI_SDO,  SPIDEV_1,  { FT32_DMA(2, 3, 3), FT32_DMA(2, 5, 3) } },
+    { DMA_PERIPH_SPI_SDI,  SPIDEV_1,  { FT32_DMA(2, 0, 3), FT32_DMA(2, 2, 3) } },
+
+    // SPI2: DMA2 Channel_1 (RX), DMA2 Channel_6 (TX)
+    { DMA_PERIPH_SPI_SDO,  SPIDEV_2,  { FT32_DMA(2, 6, 3) } },
+    { DMA_PERIPH_SPI_SDI,  SPIDEV_2,  { FT32_DMA(2, 1, 3) } },
+
+    // SPI3: DMA1 Channel_0 (RX), DMA1 Channel_5 (TX)
     { DMA_PERIPH_SPI_SDO,  SPIDEV_3,  { FT32_DMA(1, 5, 0) } },
     { DMA_PERIPH_SPI_SDI,  SPIDEV_3,  { FT32_DMA(1, 0, 0) } },
 #endif // USE_SPI
 
 #ifdef USE_ADC
-    // ADC1: DMA2 Channel_0
-    // Citation: spec.json -> channel_mapping.DMA2.Channel_0
-    { DMA_PERIPH_ADC,     ADCDEV_1,  { FT32_DMA(2, 0, 0), FT32_DMA(2, 0, 0) } },
-    
-    // ADC2: DMA2 Channel_1
-    // Citation: spec.json -> channel_mapping.DMA2.Channel_1
-    { DMA_PERIPH_ADC,     ADCDEV_2,  { FT32_DMA(2, 1, 1), FT32_DMA(2, 1, 1) } },
-    
-    // ADC3: DMA2 Channel_2
-    // Citation: spec.json -> channel_mapping.DMA2.Channel_2
-    { DMA_PERIPH_ADC,     ADCDEV_3,  { FT32_DMA(2, 2, 2), FT32_DMA(2, 2, 2) } },
+    // ADC1: DMA2 Channel_0 (PeriphSel=0) or DMA2 Channel_4 (PeriphSel=0)
+    { DMA_PERIPH_ADC,     ADCDEV_1,  { FT32_DMA(2, 0, 0), FT32_DMA(2, 4, 0) } },
+
+    // ADC2: DMA2 Channel_2 (PeriphSel=1) or DMA2 Channel_3 (PeriphSel=1)
+    { DMA_PERIPH_ADC,     ADCDEV_2,  { FT32_DMA(2, 2, 1), FT32_DMA(2, 3, 1) } },
+
+    // ADC3: DMA2 Channel_0 (PeriphSel=2) or DMA2 Channel_1 (PeriphSel=2)
+    { DMA_PERIPH_ADC,     ADCDEV_3,  { FT32_DMA(2, 0, 2), FT32_DMA(2, 1, 2) } },
 #endif
 
 #ifdef USE_SDCARD_SDIO
-    // SDIO: DMA2 Channel_4
-    // Citation: spec.json -> channel_mapping.DMA2.Channel_4
-    { DMA_PERIPH_SDIO,    0,         { FT32_DMA(2, 4, 4), FT32_DMA(2, 4, 4) } },
+    // SDIO: DMA2 Channel_3 (PeriphSel=4) or DMA2 Channel_6 (PeriphSel=4)
+    { DMA_PERIPH_SDIO,    0,         { FT32_DMA(2, 3, 4), FT32_DMA(2, 6, 4) } },
 #endif
 
 #ifdef USE_UART1
-    // USART1_TX: DMA2 Channel_6
-    // USART1_RX: DMA2 Channel_4
-    // Citation: spec.json -> channel_mapping.DMA2.Channel_6, Channel_4
-    { DMA_PERIPH_UART_TX, UARTDEV_1, { FT32_DMA(2, 6, 4) } },
-    { DMA_PERIPH_UART_RX, UARTDEV_1, { FT32_DMA(2, 4, 4), FT32_DMA(2, 4, 4) } },
+    // USART1_RX: DMA2 Channel_2 (PeriphSel=4) or DMA2 Channel_5 (PeriphSel=4)
+    // USART1_TX: DMA2 Channel_7 (PeriphSel=4)
+    { DMA_PERIPH_UART_TX, UARTDEV_1, { FT32_DMA(2, 7, 4) } },
+    { DMA_PERIPH_UART_RX, UARTDEV_1, { FT32_DMA(2, 2, 4), FT32_DMA(2, 5, 4) } },
 #endif
 
 #ifdef USE_UART2
-    // USART2 需要根据 FT32 手册确认映射
-    // 这里使用常见映射（需要验证）
+    // USART2_RX: DMA1 Channel_5 (PeriphSel=4)
+    // USART2_TX: DMA1 Channel_6 (PeriphSel=4)
     { DMA_PERIPH_UART_TX, UARTDEV_2, { FT32_DMA(1, 6, 4) } },
     { DMA_PERIPH_UART_RX, UARTDEV_2, { FT32_DMA(1, 5, 4) } },
 #endif
 
 #ifdef USE_UART3
-    // USART3_TX: DMA1 Channel_7
-    // USART3_RX: DMA1 Channel_4
-    // Citation: spec.json -> channel_mapping.DMA1.Channel_7, Channel_4
-    { DMA_PERIPH_UART_TX, UARTDEV_3, { FT32_DMA(1, 7, 4) } },
-    { DMA_PERIPH_UART_RX, UARTDEV_3, { FT32_DMA(1, 4, 4) } },
+    // USART3_RX: DMA1 Channel_1 (PeriphSel=4)
+    // USART3_TX: DMA1 Channel_4 (PeriphSel=7)
+    { DMA_PERIPH_UART_TX, UARTDEV_3, { FT32_DMA(1, 4, 7) } },
+    { DMA_PERIPH_UART_RX, UARTDEV_3, { FT32_DMA(1, 1, 4) } },
 #endif
 
 #ifdef USE_UART4
-    // UART4_TX: DMA1 Channel_4 (需要验证)
-    // UART4_RX: DMA1 Channel_2
-    // Citation: spec.json -> channel_mapping.DMA1.Channel_2
-    { DMA_PERIPH_UART_TX, UARTDEV_4, { FT32_DMA(1, 4, 4) } },
-    { DMA_PERIPH_UART_RX, UARTDEV_4, { FT32_DMA(1, 2, 4) } },
+    // UART4_RX: DMA1 Channel_2 (PeriphSel=2)
+    // UART4_TX: DMA1 Channel_4 (PeriphSel=2)
+    { DMA_PERIPH_UART_TX, UARTDEV_4, { FT32_DMA(1, 4, 2) } },
+    { DMA_PERIPH_UART_RX, UARTDEV_4, { FT32_DMA(1, 2, 2) } },
 #endif
 
 #ifdef USE_UART5
-    // UART5_TX: DMA1 Channel_7 (需要验证)
-    // UART5_RX: DMA1 Channel_4
-    // Citation: spec.json -> channel_mapping.DMA1.Channel_4, Channel_7
+    // UART5_RX: DMA1 Channel_0 (PeriphSel=4)
+    // UART5_TX: DMA1 Channel_7 (PeriphSel=4)
     { DMA_PERIPH_UART_TX, UARTDEV_5, { FT32_DMA(1, 7, 4) } },
-    { DMA_PERIPH_UART_RX, UARTDEV_5, { FT32_DMA(1, 4, 4) } },
+    { DMA_PERIPH_UART_RX, UARTDEV_5, { FT32_DMA(1, 0, 4) } },
 #endif
 
 #ifdef USE_UART6
-    // USART6_TX: DMA2 Channel_5
-    // USART6_RX: DMA2 Channel_5
-    // Citation: spec.json -> channel_mapping.DMA2.Channel_5
-    { DMA_PERIPH_UART_TX, UARTDEV_6, { FT32_DMA(2, 5, 5), FT32_DMA(2, 5, 5) } },
-    { DMA_PERIPH_UART_RX, UARTDEV_6, { FT32_DMA(2, 5, 5), FT32_DMA(2, 5, 5) } },
+    // USART6_RX: DMA2 Channel_2 (PeriphSel=5)
+    // USART6_TX: DMA2 Channel_6 (PeriphSel=5)
+    { DMA_PERIPH_UART_TX, UARTDEV_6, { FT32_DMA(2, 6, 5), FT32_DMA(2, 6, 5) } },
+    { DMA_PERIPH_UART_RX, UARTDEV_6, { FT32_DMA(2, 2, 5), FT32_DMA(2, 2, 5) } },
 #endif
 
 #ifdef USE_UART7
-    // UART7_TX: DMA1 Channel_5
-    // UART7_RX: DMA1 Channel_5
-    // Citation: spec.json -> channel_mapping.DMA1.Channel_5
-    { DMA_PERIPH_UART_TX, UARTDEV_7, { FT32_DMA(1, 5, 5) } },
-    { DMA_PERIPH_UART_RX, UARTDEV_7, { FT32_DMA(1, 5, 5) } },
+    // UART7_TX: DMA1 Channel_1 (PeriphSel=5)
+    // UART7_RX: DMA1 Channel_3 (PeriphSel=5)
+    { DMA_PERIPH_UART_TX, UARTDEV_7, { FT32_DMA(1, 1, 5) } },
+    { DMA_PERIPH_UART_RX, UARTDEV_7, { FT32_DMA(1, 3, 5) } },
 #endif
 
-// I2C DMA 映射暂不支持 - DMA_PERIPH_I2C_RX/TX 未在 dma_reqmap.h 中定义
-// 需要在 dma_reqmap.h 中添加 DMA_PERIPH_I2C_RX 和 DMA_PERIPH_I2C_TX 枚举
+// I2C DMA mapping not supported - DMA_PERIPH_I2C_RX/TX not defined in dma_reqmap.h
 #ifdef USE_I2C
     // I2C2_RX: DMA1 Channel_7
     // I2C2_TX: DMA1 Channel_7
-    // Citation: spec.json -> channel_mapping.DMA1.Channel_7
     // { DMA_PERIPH_I2C_RX,  I2CDEV_2,  { FT32_DMA(1, 7, 4) } },
     // { DMA_PERIPH_I2C_TX,  I2CDEV_2,  { FT32_DMA(1, 7, 4) } },
-    
+
     // I2C3_RX: DMA1 Channel_3
     // I2C3_TX: DMA1 Channel_3
-    // Citation: spec.json -> channel_mapping.DMA1.Channel_3
     // { DMA_PERIPH_I2C_RX,  I2CDEV_3,  { FT32_DMA(1, 3, 4) } },
     // { DMA_PERIPH_I2C_TX,  I2CDEV_3,  { FT32_DMA(1, 3, 4) } },
 #endif
@@ -195,47 +176,41 @@ static const dmaPeripheralMapping_t dmaPeripheralMapping[] = {
 #define TC(chan) DEF_TIM_CHANNEL(CH_ ## chan)
 
 /*
- * 定时器 DMA 映射表
- *
- * Citation: spec.json -> channel_mapping
+ * Timer DMA mapping table
  */
 static const dmaTimerMapping_t dmaTimerMapping[] = {
-    // TIM1: DMA2 Channel_6 (CH1, CH2, CH3), DMA2 Channel_3 (CH4)
-    // Citation: RM V1.00 表 10-2 页 190 - 外设 0 通道 6 (CH1/CH2/CH3), 外设 6 通道 3 (CH4)
-    { (timerResource_t *)TIM1, TC(CH1), { FT32_DMA(2, 6, 0) } },
-    { (timerResource_t *)TIM1, TC(CH2), { FT32_DMA(2, 6, 0) } },
-    { (timerResource_t *)TIM1, TC(CH3), { FT32_DMA(2, 6, 0) } },
-    { (timerResource_t *)TIM1, TC(CH4), { FT32_DMA(2, 3, 6) } },
+    // TIM1: DMA2 Channel_6 (PeriphSel=0) for CH1/CH2/CH3, DMA2 Channel_4 (PeriphSel=6) for CH4
+    // Alternative: DMA2 Channel_1/2/3/6 (PeriphSel=6)
+    { (timerResource_t *)TIM1, TC(CH1), { FT32_DMA(2, 6, 0), FT32_DMA(2, 1, 6), FT32_DMA(2, 3, 6) } },
+    { (timerResource_t *)TIM1, TC(CH2), { FT32_DMA(2, 6, 0), FT32_DMA(2, 2, 6) } },
+    { (timerResource_t *)TIM1, TC(CH3), { FT32_DMA(2, 6, 0), FT32_DMA(2, 6, 6) } },
+    { (timerResource_t *)TIM1, TC(CH4), { FT32_DMA(2, 4, 6) } },
 
-    // TIM2: DMA1 Channel_4 (CH1/CH2), Channel_0 (CH3), Channel_5/6 (CH4)
-    // Citation: RM V1.00 表 10-1 页 189 - 外设 3 通道 4 (CH1/CH2), 通道 0 (CH3), 通道 5/6 (CH4)
-    { (timerResource_t *)TIM2, TC(CH1), { FT32_DMA(1, 4, 3) } },
-    { (timerResource_t *)TIM2, TC(CH2), { FT32_DMA(1, 4, 3) } },
-    { (timerResource_t *)TIM2, TC(CH3), { FT32_DMA(1, 0, 3) } },
-    { (timerResource_t *)TIM2, TC(CH4), { FT32_DMA(1, 5, 3), FT32_DMA(1, 6, 3) } },
+    // TIM2: DMA1 Channel_5 (CH1), Channel_6 (CH2/CH4), Channel_1 (CH3), Channel_7 (CH4 alt)
+    { (timerResource_t *)TIM2, TC(CH1), { FT32_DMA(1, 5, 3) } },
+    { (timerResource_t *)TIM2, TC(CH2), { FT32_DMA(1, 6, 3) } },
+    { (timerResource_t *)TIM2, TC(CH3), { FT32_DMA(1, 1, 3) } },
+    { (timerResource_t *)TIM2, TC(CH4), { FT32_DMA(1, 6, 3), FT32_DMA(1, 7, 3) } },
 
-    // TIM3: DMA1 Channel_1 (CH1), Channel_2 (CH2), Channel_4 (CH3), Channel_0 (CH4)
-    // Citation: RM V1.00 表 10-1 页 189 - 外设 5 通道 1 (CH1), 通道 2 (CH2), 通道 4 (CH3), 通道 0 (CH4)
-    { (timerResource_t *)TIM3, TC(CH1), { FT32_DMA(1, 1, 5) } },
-    { (timerResource_t *)TIM3, TC(CH2), { FT32_DMA(1, 2, 5) } },
-    { (timerResource_t *)TIM3, TC(CH3), { FT32_DMA(1, 4, 5) } },
-    { (timerResource_t *)TIM3, TC(CH4), { FT32_DMA(1, 0, 5) } },
+    // TIM3: DMA1 Channel_4 (CH1), Channel_5 (CH2), Channel_7 (CH3), Channel_2 (CH4)
+    { (timerResource_t *)TIM3, TC(CH1), { FT32_DMA(1, 4, 5) } },
+    { (timerResource_t *)TIM3, TC(CH2), { FT32_DMA(1, 5, 5) } },
+    { (timerResource_t *)TIM3, TC(CH3), { FT32_DMA(1, 7, 5) } },
+    { (timerResource_t *)TIM3, TC(CH4), { FT32_DMA(1, 2, 5) } },
 
     // TIM4: DMA1 Channel_0 (CH1), DMA1 Channel_3 (CH2), DMA1 Channel_7 (CH3)
-    // Citation: spec.json -> channel_mapping.DMA1.Channel_0, Channel_3
     { (timerResource_t *)TIM4, TC(CH1), { FT32_DMA(1, 0, 2) } },
     { (timerResource_t *)TIM4, TC(CH2), { FT32_DMA(1, 3, 2) } },
     { (timerResource_t *)TIM4, TC(CH3), { FT32_DMA(1, 7, 2) } },
 
-    // TIM5: DMA1 Channel_2 (CH1), Channel_3 (CH2), Channel_0 (CH3), Channel_1 (CH4)
-    // Citation: RM V1.00 表 10-1 页 189 - 外设 6 通道 2 (CH1), 通道 3 (CH2), 通道 0 (CH3), 通道 1 (CH4)
+    // TIM5: DMA1 Channel_0 (CH3), Channel_1 (CH4), Channel_2 (CH1), Channel_4 (CH2)
     { (timerResource_t *)TIM5, TC(CH1), { FT32_DMA(1, 2, 6) } },
-    { (timerResource_t *)TIM5, TC(CH2), { FT32_DMA(1, 3, 6) } },
+    { (timerResource_t *)TIM5, TC(CH2), { FT32_DMA(1, 4, 6) } },
     { (timerResource_t *)TIM5, TC(CH3), { FT32_DMA(1, 0, 6) } },
     { (timerResource_t *)TIM5, TC(CH4), { FT32_DMA(1, 1, 6) } },
 
-    // TIM8: DMA2 Channel_2 (CH1/CH2/CH3), Channel_3 (CH2 备选), Channel_4 (CH3 备选), Channel_7 (CH4)
-    // Citation: RM V1.00 表 10-2 页 190 - 外设 0 通道 2 (CH1/CH2/CH3), 外设 7 通道 3/4/7 (CH2/CH3/CH4)
+    // TIM8: DMA2 Channel_2 (CH1/CH2/CH3 PeriphSel=0), Channel_3 (CH2 alt PeriphSel=7),
+    //       Channel_4 (CH3 alt PeriphSel=7), Channel_7 (CH4 PeriphSel=7)
     { (timerResource_t *)TIM8, TC(CH1), { FT32_DMA(2, 2, 0) } },
     { (timerResource_t *)TIM8, TC(CH2), { FT32_DMA(2, 2, 0), FT32_DMA(2, 3, 7) } },
     { (timerResource_t *)TIM8, TC(CH3), { FT32_DMA(2, 2, 0), FT32_DMA(2, 4, 7) } },
@@ -246,12 +221,12 @@ static const dmaTimerMapping_t dmaTimerMapping[] = {
 #undef DMA
 
 /*
- * 根据外设获取 DMA 通道规格
+ * Get DMA channel spec by peripheral
  *
- * @param device 外设类型
- * @param index 外设索引
- * @param opt DMA 选项索引
- * @return DMA 通道规格指针，失败返回 NULL
+ * @param device Peripheral type
+ * @param index Peripheral index
+ * @param opt DMA option index
+ * @return DMA channel spec pointer, NULL on failure
  */
 const dmaChannelSpec_t *dmaGetChannelSpecByPeripheral(dmaPeripheral_e device, uint8_t index, int8_t opt)
 {
@@ -269,10 +244,10 @@ const dmaChannelSpec_t *dmaGetChannelSpecByPeripheral(dmaPeripheral_e device, ui
 }
 
 /*
- * 根据 IO 标签获取 DMA 选项
+ * Get DMA option by IO tag
  *
- * @param ioTag IO 标签
- * @return DMA 选项值
+ * @param ioTag IO tag
+ * @return DMA option value
  */
 dmaoptValue_t dmaoptByTag(ioTag_t ioTag)
 {
@@ -290,12 +265,12 @@ dmaoptValue_t dmaoptByTag(ioTag_t ioTag)
 }
 
 /*
- * 根据定时器值获取 DMA 通道规格
+ * Get DMA channel spec by timer value
  *
- * @param tim 定时器资源指针
- * @param channel 定时器通道
- * @param dmaopt DMA 选项
- * @return DMA 通道规格指针，失败返回 NULL
+ * @param tim Timer resource pointer
+ * @param channel Timer channel
+ * @param dmaopt DMA option
+ * @return DMA channel spec pointer, NULL on failure
  */
 const dmaChannelSpec_t *dmaGetChannelSpecByTimerValue(timerResource_t *tim, uint8_t channel, dmaoptValue_t dmaopt)
 {
@@ -314,10 +289,10 @@ const dmaChannelSpec_t *dmaGetChannelSpecByTimerValue(timerResource_t *tim, uint
 }
 
 /*
- * 根据定时器硬件获取 DMA 通道规格
+ * Get DMA channel spec by timer hardware
  *
- * @param timer 定时器硬件指针
- * @return DMA 通道规格指针，失败返回 NULL
+ * @param timer Timer hardware pointer
+ * @return DMA channel spec pointer, NULL on failure
  */
 const dmaChannelSpec_t *dmaGetChannelSpecByTimer(const timerHardware_t *timer)
 {
@@ -330,10 +305,10 @@ const dmaChannelSpec_t *dmaGetChannelSpecByTimer(const timerHardware_t *timer)
 }
 
 /*
- * 根据定时器获取 DMA 选项
+ * Get DMA option by timer
  *
- * @param timer 定时器硬件指针
- * @return DMA 选项值，失败返回 DMA_OPT_UNUSED
+ * @param timer Timer hardware pointer
+ * @return DMA option value, DMA_OPT_UNUSED on failure
  */
 dmaoptValue_t dmaGetOptionByTimer(const timerHardware_t *timer)
 {

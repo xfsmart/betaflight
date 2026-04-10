@@ -29,10 +29,11 @@
 #include "drivers/system.h"
 #include "drivers/persistent.h"
 
-#define AIRCR_VECTKEY_MASK    ((uint32_t)0x05FA0000)
+// External declaration from common/stm32/system.c
+extern uint32_t cachedRccCsrValue;
+extern void cycleCounterInit(void);
 
-/* System Core Clock - defined in CMSIS system_ft32f4xx.c */
-// extern uint32_t SystemCoreClock;
+#define AIRCR_VECTKEY_MASK    ((uint32_t)0x05FA0000)
 
 void systemReset(void)
 {
@@ -78,7 +79,43 @@ void checkForBootLoaderRequest(void)
 
 void enableGPIOPowerUsageAndNoiseReductions(void)
 {
-    // FT32F4: Enable GPIO clocks for power optimization
-    // To be implemented based on FT32F4 RCC registers
 }
 
+bool isMPUSoftReset(void)
+{
+    if (cachedRccCsrValue & RCC_CSR_SFTRSTF)
+        return true;
+    else
+        return false;
+}
+
+void systemInit(void)
+{
+    // Initialize persistent objects (RTC backup domain)
+    persistentObjectInit();
+
+    // Check if we should jump to bootloader
+    checkForBootLoaderRequest();
+
+    // Configure NVIC preempt/priority groups
+    NVIC_PriorityGroupConfig(NVIC_PRIORITY_GROUPING);
+
+    // Cache RCC->CSR value for isMPUSoftReset()
+    cachedRccCsrValue = RCC->CSR;
+
+    // Clear reset flags by setting RMVF bit
+    RCC->CSR |= RCC_CSR_RMVF;
+
+    // Set vector table location
+    extern uint8_t isr_vector_table_base;
+    NVIC_SetVectorTable((uint32_t)&isr_vector_table_base, 0x0);
+
+    // Enable GPIO power optimizations
+    enableGPIOPowerUsageAndNoiseReductions();
+
+    // Initialize cycle counter for micros()
+    cycleCounterInit();
+
+    // Configure SysTick for 1ms interrupts
+    SysTick_Config(SystemCoreClock / 1000);
+}

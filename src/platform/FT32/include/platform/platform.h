@@ -156,6 +156,10 @@ typedef struct i2cHalHandle_s i2cHalHandle_t;
 #define SPI_TRAIT_AF_PIN        1
 #define UARTHARDWARE_MAX_PINS   4
 
+// USART data register addresses for DMA
+#define UART_REG_TXD(base)      (((USART_TypeDef *)(base))->THR)
+#define UART_REG_RXD(base)      (((USART_TypeDef *)(base))->RHR)
+
 // NVIC priority configuration (FT32F4 uses priority grouping 4)
 #define NVIC_PRIORITY_GROUPING  4
 

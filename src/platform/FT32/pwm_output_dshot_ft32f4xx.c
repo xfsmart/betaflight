@@ -36,7 +36,6 @@
 #include "drivers/time.h"
 #include "drivers/timer.h"
 #include "drivers/system.h"
-#include "ft32f4xx.h"
 
 #include "drivers/pwm_output.h"
 #include "drivers/dshot.h"
@@ -103,7 +102,7 @@ FAST_CODE void pwmDshotSetDirectionOutput(
     }
 
     xDMA_Init(dmaRef, pDmaInit);
-    xDMA_ITConfig(dmaRef, DMA_IT_TC, ENABLE);
+    xDMA_ITConfig(dmaRef, DMA_IT_TFR, ENABLE);
 }
 
 #ifdef USE_DSHOT_TELEMETRY
