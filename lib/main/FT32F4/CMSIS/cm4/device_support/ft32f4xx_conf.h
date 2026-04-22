@@ -54,9 +54,9 @@ extern "C" {
 #define USART_MODULE_ENABLED
 #define UART_MODULE_ENABLED
 #define SPI_MODULE_ENABLED
-/* #define TMR_MODULE_ENABLED */
-/* #define SDIO_MODULE_ENABLED */
-/* #define USB_MODULE_ENABLED */
+#define TMR_MODULE_ENABLED
+#define SDIO_MODULE_ENABLED
+#define USB_MODULE_ENABLED
 /* #define FSMC_MODULE_ENABLED */
 /* #define DEBUG_MODULE_ENABLED */
 
@@ -194,7 +194,7 @@ extern "C" {
 #endif /* SPI_MODULE_ENABLED */
 
 #ifdef TMR_MODULE_ENABLED
-  #include "ft32f4xx_tmr.h"
+  #include "ft32f4xx_tim.h"
 #endif /* TMR_MODULE_ENABLED */
 
 #ifdef SDIO_MODULE_ENABLED
@@ -202,7 +202,8 @@ extern "C" {
 #endif /* SDIO_MODULE_ENABLED */
 
 #ifdef USB_MODULE_ENABLED
-  #include "ft32f4xx_usb.h"
+  #include "ft32f4xx_usb_fs.h"
+  #include "ft32f4xx_usb_hs.h"
 #endif /* USB_MODULE_ENABLED */
 
 #ifdef FSMC_MODULE_ENABLED

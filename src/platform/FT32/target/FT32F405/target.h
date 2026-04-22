@@ -72,6 +72,10 @@
 // DSHOT basic support only
 #define USE_DSHOT
 
+// Enable SDCARD support (SDIO only, SPI not routed on this target)
+#define USE_SDCARD
+#define USE_SDCARD_SDIO
+
 #undef USE_RX_PPM
 #undef USE_RX_PWM
 #undef USE_RX_SPI

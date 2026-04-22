@@ -39,7 +39,7 @@
 #include "ft32f4xx_pcd_fs.h"
 #include "ft32f4xx_rcc.h"
 
-extern __IO uint8_t report;
+static __IO uint8_t report;
 /** @addtogroup FT32F4xx_DRIVER
   * @{
   */
@@ -70,8 +70,6 @@ extern __IO uint8_t report;
   */
 
 static USB_FS_StatusTypeDef PCD_FS_WriteEmptyTxFifo(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum);
-static void PCD_FS_EP_OutXferComplete_int(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum);
-static void PCD_FS_EP_OutSetupPacket_int(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum);
 /**
   * @{
   */

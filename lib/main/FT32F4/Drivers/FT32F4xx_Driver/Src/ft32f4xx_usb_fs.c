@@ -104,10 +104,7 @@ USB_FS_StatusTypeDef USB_FS_CoreInit(void)
   */
 static USB_FS_StatusTypeDef USB_FS_CoreReset(void)
 {
-  __IO uint32_t count = 0U;
-
   /* Core Soft Reset */
-  count = 0U;
   RCC_AHB2PeriphResetCmd(RCC_AHB2PeriphRst_USBOTGFS, ENABLE);
 
   USB_FS_Delayms(5U);  /* update delay */
@@ -611,10 +608,8 @@ void USB_FS_SetUSBInt(uint8_t cfg)
 
 void USB_FS_ClrUSBInt(void)
 {
-  uint8_t temp;
-
-  /*  flush pending interrupts */
-  temp = USB_FS->INTRUSB;
+  /* flush pending interrupts - reading clears the interrupt */
+  (void)USB_FS->INTRUSB;
 }
 /**
   * @brief  USB_FS_ClrEPInt
@@ -624,11 +619,9 @@ void USB_FS_ClrUSBInt(void)
 
 void USB_FS_ClrEPInt(void)
 {
-  uint8_t temp;
-
-  /*  flush pending interrupts */
-  temp = USB_FS->INTRTX1;
-  temp = USB_FS->INTRRX1;
+  /* flush pending interrupts - reading clears the interrupt */
+  (void)USB_FS->INTRTX1;
+  (void)USB_FS->INTRRX1;
 }
 
 /**
@@ -665,9 +658,7 @@ USB_FS_StatusTypeDef USB_FS_HEP_Init(uint8_t epnum, uint8_t dev_address,
                                      uint16_t xfersize)
 {
   USB_FS_StatusTypeDef ret = USB_FS_OK;
-  uint8_t HostCoreSpeed;
   uint8_t ep_num;
-  uint8_t ep_dir;
 
   ep_num = epnum & 0x7FU;
 
@@ -676,8 +667,6 @@ USB_FS_StatusTypeDef USB_FS_HEP_Init(uint8_t epnum, uint8_t dev_address,
   USB_FS_ClrUSBInt();
   USB_FS_ClrEPInt();
   USB_FS_SetEPInt(1 << ep_num);
-
-  HostCoreSpeed = USB_FS_GetSpeed();
 
   USB_FS_SetAddress(dev_address);
   if (ep_num != 0U)

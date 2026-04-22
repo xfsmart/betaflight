@@ -768,7 +768,9 @@ _TIM_IRQ_HANDLER(TIM5_IRQHandler, 5);
 _TIM_IRQ_HANDLER_UPDATE_ONLY(TIM6_IRQHandler, 6);
 #endif
 #if USED_TIMERS & TIM_N(7)
+#ifndef USE_VCP  /* USB CDC uses TIM7 for polling */
 _TIM_IRQ_HANDLER_UPDATE_ONLY(TIM7_IRQHandler, 7);
+#endif
 #endif
 
 #if USED_TIMERS & TIM_N(8)

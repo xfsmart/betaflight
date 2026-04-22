@@ -33,8 +33,7 @@
 // and includes all standard peripheral driver headers
 #include "ft32f4xx.h"
 
-// Include TIM standard library header separately (FT32 uses ft32f4xx_tim.h, not ft32f4xx_tmr.h)
-#include "ft32f4xx_tim.h"
+// TIM standard library header included via ft32f4xx.h → ft32f4xx_conf.h (TMR_MODULE_ENABLED)
 
 // NVIC and misc functions (required for interrupt priority configuration)
 // This must be included separately as it's not part of ft32f4xx.h
@@ -46,10 +45,10 @@
 // DMA platform definitions (required for DMA_ARCH_TYPE and DMA macros)
 #include "platform/dma.h"
 
-/* Chip Unique ID */
-#define U_ID_0 (*(uint32_t*)0x1FFF7A10)
-#define U_ID_1 (*(uint32_t*)0x1FFF7A14)
-#define U_ID_2 (*(uint32_t*)0x1FFF7A18)
+/* Chip Unique ID (FT32F4: 0x1FFF0A00-0x1FFF0A0B) */
+#define U_ID_0 (*(uint32_t*)0x1FFF0A00)
+#define U_ID_1 (*(uint32_t*)0x1FFF0A04)
+#define U_ID_2 (*(uint32_t*)0x1FFF0A08)
 
 #ifndef FT32F4
 #define FT32F4
@@ -79,6 +78,7 @@ typedef uint16_t rccPeriphTag_t;
 #define USE_TIMER_AF
 #define USE_DMA_SPEC
 #define USE_PERSISTENT_OBJECTS
+#define USE_USB_MSC
 
 #define USE_LATE_TASK_STATISTICS
 

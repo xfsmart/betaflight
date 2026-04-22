@@ -35,6 +35,7 @@
 #include "platform/rcc.h"
 #include "drivers/time.h"
 #include "drivers/timer.h"
+#include "platform/timer.h"
 #include "drivers/system.h"
 
 #include "drivers/pwm_output.h"
@@ -49,9 +50,9 @@ void dshotEnableChannels(unsigned motorCount)
 {
     for (unsigned i = 0; i < motorCount; i++) {
         if (dmaMotors[i].output & TIMER_OUTPUT_N_CHANNEL) {
-            TIM_CCxNCmd(dmaMotors[i].timerHardware->tim, dmaMotors[i].timerHardware->channel, TIM_CCxN_Enable);
+            TIM_CCxNCmd((TIM_TypeDef *)dmaMotors[i].timerHardware->tim, dmaMotors[i].timerHardware->channel, TIM_CCxN_Enable);
         } else {
-            TIM_CCxCmd(dmaMotors[i].timerHardware->tim, dmaMotors[i].timerHardware->channel, TIM_CCx_Enable);
+            TIM_CCxCmd((TIM_TypeDef *)dmaMotors[i].timerHardware->tim, dmaMotors[i].timerHardware->channel, TIM_CCx_Enable);
         }
     }
 }
@@ -71,7 +72,7 @@ FAST_CODE void pwmDshotSetDirectionOutput(
 #endif
 
     const timerHardware_t * const timerHardware = motor->timerHardware;
-    TIM_TypeDef *timer = timerHardware->tim;
+    TIM_TypeDef *timer = (TIM_TypeDef *)timerHardware->tim;
 
     dmaResource_t *dmaRef = motor->dmaRef;
 
@@ -114,7 +115,7 @@ static void pwmDshotSetDirectionInput(
     DMA_InitTypeDef* pDmaInit = &motor->dmaInitStruct;
 
     const timerHardware_t * const timerHardware = motor->timerHardware;
-    TIM_TypeDef *timer = timerHardware->tim;
+    TIM_TypeDef *timer = (TIM_TypeDef *)timerHardware->tim;
 
     dmaResource_t *dmaRef = motor->dmaRef;
 
@@ -151,16 +152,18 @@ void pwmCompleteDshotMotorUpdate(void)
         if (useBurstDshot) {
             xDMA_SetCurrDataCounter(dmaMotorTimers[i].dmaBurstRef, dmaMotorTimers[i].dmaBurstLength);
             xDMA_Cmd(dmaMotorTimers[i].dmaBurstRef, ENABLE);
-            TIM_DMAConfig(dmaMotorTimers[i].timer, TIM_DMABase_CCR1, TIM_DMABurstLength_4Transfers);
-            TIM_DMACmd(dmaMotorTimers[i].timer, TIM_DMA_Update, ENABLE);
+            TIM_TypeDef *tim = (TIM_TypeDef *)dmaMotorTimers[i].timer;
+            TIM_DMAConfig(tim, TIM_DMABase_CCR1, TIM_DMABurstLength_4Transfers);
+            TIM_DMACmd(tim, TIM_DMA_Update, ENABLE);
         } else
 #endif
         {
-            TIM_ARRPreloadConfig(dmaMotorTimers[i].timer, DISABLE);
-            dmaMotorTimers[i].timer->ARR = dmaMotorTimers[i].outputPeriod;
-            TIM_ARRPreloadConfig(dmaMotorTimers[i].timer, ENABLE);
-            TIM_SetCounter(dmaMotorTimers[i].timer, 0);
-            TIM_DMACmd(dmaMotorTimers[i].timer, dmaMotorTimers[i].timerDmaSources, ENABLE);
+            TIM_TypeDef *tim = (TIM_TypeDef *)dmaMotorTimers[i].timer;
+            TIM_ARRPreloadConfig(tim, DISABLE);
+            tim->ARR = dmaMotorTimers[i].outputPeriod;
+            TIM_ARRPreloadConfig(tim, ENABLE);
+            TIM_SetCounter(tim, 0);
+            TIM_DMACmd(tim, dmaMotorTimers[i].timerDmaSources, ENABLE);
             dmaMotorTimers[i].timerDmaSources = 0;
         }
     }
@@ -176,12 +179,12 @@ FAST_CODE static void motor_DMA_IRQHandler(dmaChannelDescriptor_t *descriptor)
 #ifdef USE_DSHOT_DMAR
         if (useBurstDshot) {
             xDMA_Cmd(motor->timerHardware->dmaTimUPRef, DISABLE);
-            TIM_DMACmd(motor->timerHardware->tim, TIM_DMA_Update, DISABLE);
+            TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, TIM_DMA_Update, DISABLE);
         } else
 #endif
         {
             xDMA_Cmd(motor->dmaRef, DISABLE);
-            TIM_DMACmd(motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
+            TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
         }
 
 #ifdef USE_DSHOT_TELEMETRY
@@ -189,7 +192,7 @@ FAST_CODE static void motor_DMA_IRQHandler(dmaChannelDescriptor_t *descriptor)
             pwmDshotSetDirectionInput(motor);
             xDMA_SetCurrDataCounter(motor->dmaRef, GCR_TELEMETRY_INPUT_LEN);
             xDMA_Cmd(motor->dmaRef, ENABLE);
-            TIM_DMACmd(motor->timerHardware->tim, motor->timerDmaSource, ENABLE);
+            TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, ENABLE);
             dshotDMAHandlerCycleCounters.changeDirectionCompletedAt = getCycleCounter();
         }
 #endif
@@ -211,7 +214,7 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
 
     dmaResource_t *dmaRef = NULL;
 #if defined(FT32F4)
-    uint32_t dmaChannel = 0;
+    __attribute__((unused)) uint32_t dmaChannel = 0;
 #endif
 #if defined(USE_DMA_SPEC)
     const dmaChannelSpec_t *dmaSpec = dmaGetChannelSpecByTimer(timerHardware);
@@ -248,9 +251,9 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
 #ifdef USE_DSHOT_DMAR
     if (useBurstDshot) {
         const resourceOwner_t *owner = dmaGetOwner(dmaIdentifier);
-        if (owner->owner == OWNER_TIMUP && owner->index == timerGetTIMNumber(timerHardware->tim)) {
+        if (owner->owner == OWNER_TIMUP && owner->index == timerGetTIMNumber(timerHardware)) {
             dmaIsConfigured = true;
-        } else if (!dmaAllocate(dmaIdentifier, OWNER_TIMUP, timerGetTIMNumber(timerHardware->tim))) {
+        } else if (!dmaAllocate(dmaIdentifier, OWNER_TIMUP, timerGetTIMNumber(timerHardware))) {
             return false;
         }
     } else
@@ -262,7 +265,7 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
     }
 
     motorDmaOutput_t * const motor = &dmaMotors[motorIndex];
-    TIM_TypeDef *timer = timerHardware->tim;
+    TIM_TypeDef *timer = (TIM_TypeDef *)timerHardware->tim;
 
     // Boolean configureTimer is always true when different channels of the same timer are processed in sequence,
     // causing the timer and the associated DMA initialized more than once.
@@ -292,10 +295,10 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
         TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
         TIM_TimeBaseStructInit(&TIM_TimeBaseStructure);
 
-        RCC_ClockCmd(timerRCC(timer), ENABLE);
+        RCC_ClockCmd(timerRCC(timerHardware->tim), ENABLE);
         TIM_Cmd(timer, DISABLE);
 
-        TIM_TimeBaseStructure.TIM_Prescaler = (uint16_t)(lrintf((float) timerClock(timer) / getDshotHz(pwmProtocolType) + 0.01f) - 1);
+        TIM_TimeBaseStructure.TIM_Prescaler = (uint16_t)(lrintf((float) timerClock(timerHardware) / getDshotHz(pwmProtocolType) + 0.01f) - 1);
         TIM_TimeBaseStructure.TIM_Period = (pwmProtocolType == MOTOR_PROTOCOL_PROSHOT1000 ? (MOTOR_NIBBLE_LENGTH_PROSHOT) : MOTOR_BITLENGTH) - 1;
         TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
         TIM_TimeBaseStructure.TIM_RepetitionCounter = 0;
@@ -358,7 +361,7 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
     DMAINIT.DstTransferWidth = DMA_DST_TRANSFERWIDTH_32BITS;
     DMAINIT.DstHardwareInterface = DMA_CODE_STREAM(dmaSpec->code);
     DMAINIT.DstHsIfPeriphSel = dmaSpec->channel;
-    DMAINIT.Priority = DMA_Priority_High;
+    DMAINIT.Priority = DMA_CH_PRIORITY_6;
     DMAINIT.FIFOMode = ENABLE;
     DMAINIT.ReloadDst = DISABLE;
     DMAINIT.ReloadSrc = DISABLE;
