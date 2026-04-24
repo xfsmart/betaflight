@@ -7,14 +7,13 @@
 **                512KByte FLASH, 128KByte RAM, 64KByte CCM
 **
 **  Note        : FT32F405 512KB Flash variant
-**                Reference: FT32F405_407xx RM Table 3-1 (p.62)
 **                Flash: 1024 pages × 512 bytes = 512KB
 **
 *****************************************************************************
 */
 
 /*
- * FT32F405 512KB Flash Layout (matching STM32F411 pattern)
+ * FT32F405 512KB Flash Layout
  * --------------------------------------------
  * 0x08000000 - 0x08003FFF : 16KB ISR vector, startup code (Pages 0-31)
  * 0x08004000 - 0x08007FFF : 16KB Config storage (Pages 32-63)

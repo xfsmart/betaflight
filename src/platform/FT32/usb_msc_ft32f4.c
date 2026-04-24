@@ -57,7 +57,7 @@
 
 extern USBD_HandleTypeDef       USBD_Device;
 
-#ifdef USB_OTG_HS_CORE
+#ifdef USB_OTG_FS_CORE
     extern PCD_FS_HandleTypeDef hpcd;
 #endif
 

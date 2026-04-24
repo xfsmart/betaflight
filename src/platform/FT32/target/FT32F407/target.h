@@ -22,15 +22,15 @@
 #pragma once
 
 #ifndef TARGET_BOARD_IDENTIFIER
-#define TARGET_BOARD_IDENTIFIER "FT405"
+#define TARGET_BOARD_IDENTIFIER "FT407"
 #endif
 
 #ifndef USBD_PRODUCT_STRING
-#define USBD_PRODUCT_STRING     "Betaflight FT32F405"
+#define USBD_PRODUCT_STRING     "Betaflight FT32F407"
 #endif
 
-#ifndef FT32F405
-#define FT32F405
+#ifndef FT32F407
+#define FT32F407
 #endif
 
 #define USE_VCP

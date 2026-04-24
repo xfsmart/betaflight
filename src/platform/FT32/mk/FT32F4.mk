@@ -133,7 +133,7 @@ else ifeq ($(TARGET_MCU),FT32F407)
 DEVICE_FLAGS    += -DFT32F407xx -DFT32F407
 LD_SCRIPT       = $(LINKER_DIR)/ft32_flash_f407.ld
 STARTUP_SRC     = FT32/startup/gcc/startup_ft32f407xx.s
-MCU_FLASH_SIZE  := 1024
+MCU_FLASH_SIZE  := 512
 
 else
 $(error TARGET_MCU [$(TARGET_MCU)] is not supported)
@@ -230,7 +230,7 @@ VCP_SRC = \
         FT32/serial_usb_vcp.c \
         drivers/usb_io.c
 
-# Size optimization for non-critical paths (same pattern as STM32F411)
+# Size optimization for non-critical paths
 SIZE_OPTIMISED_SRC += \
         drivers/bus_spi_config.c \
         drivers/serial_pinconfig.c \

@@ -124,8 +124,8 @@ static const dmaPeripheralMapping_t dmaPeripheralMapping[] = {
 
 #ifdef USE_UART3
     // USART3_RX: DMA1 Channel_1 (PeriphSel=4)
-    // USART3_TX: DMA1 Channel_4 (PeriphSel=7)
-    { DMA_PERIPH_UART_TX, UARTDEV_3, { FT32_DMA(1, 4, 7) } },
+    // USART3_TX: DMA1 Channel_3 (PeriphSel=4), alt DMA1 Channel_4 (PeriphSel=7)
+    { DMA_PERIPH_UART_TX, UARTDEV_3, { FT32_DMA(1, 3, 4), FT32_DMA(1, 4, 7) } },
     { DMA_PERIPH_UART_RX, UARTDEV_3, { FT32_DMA(1, 1, 4) } },
 #endif
 
@@ -146,8 +146,8 @@ static const dmaPeripheralMapping_t dmaPeripheralMapping[] = {
 #ifdef USE_UART6
     // USART6_RX: DMA2 Channel_2 (PeriphSel=5)
     // USART6_TX: DMA2 Channel_6 (PeriphSel=5)
-    { DMA_PERIPH_UART_TX, UARTDEV_6, { FT32_DMA(2, 6, 5), FT32_DMA(2, 6, 5) } },
-    { DMA_PERIPH_UART_RX, UARTDEV_6, { FT32_DMA(2, 2, 5), FT32_DMA(2, 2, 5) } },
+    { DMA_PERIPH_UART_TX, UARTDEV_6, { FT32_DMA(2, 6, 5) } },
+    { DMA_PERIPH_UART_RX, UARTDEV_6, { FT32_DMA(2, 2, 5) } },
 #endif
 
 #ifdef USE_UART7
