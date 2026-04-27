@@ -48,7 +48,7 @@ typedef uint16_t rccPeriphTag_t;
 #endif /* FT32F405 || FT32F407 */
 
 // ============================================================
-// Platform feature macros (per-series, like STM32 F4 block)
+// Platform feature macros (per-series)
 // ============================================================
 #ifdef FT32F4
 

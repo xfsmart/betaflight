@@ -235,7 +235,7 @@ void adcInit(const adcConfig_t *config)
     RCC_APB2PeriphClockCmd(adc.rccADC, ENABLE);
 
     // Configure ADC common parameters
-    // ADC clock: HCLK = 210MHz, DIV8 = 26.25MHz (max 80MHz per datasheet)
+    // ADC clock: HCLK = 210MHz, DIV8 = 26.25MHz
     ADC_ClockModeConfig(ADC_CLOCK_ASYNC_DIV8);
 
     // Multi-ADC mode: independent mode, DMA disabled, 5 cycles sampling delay

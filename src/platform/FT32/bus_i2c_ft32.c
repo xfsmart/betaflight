@@ -40,8 +40,8 @@
 #define I2C_TIMEOUT                      0x627
 
 // FT32F4 uses a single IRQ vector for both event and error interrupts
-// According to spec: I2C1_IRQn (IRQ 31), I2C2_IRQn (IRQ 32), I2C3_IRQn (IRQ 65)
-// merge event and error handling into one IRQ handler
+// I2C1_IRQn (IRQ 31), I2C2_IRQn (IRQ 32), I2C3_IRQn (IRQ 65)
+// Merge event and error handling into one IRQ handler
 
 #ifdef USE_I2C_DEVICE_1
 void I2C1_IRQHandler(void)

@@ -3,7 +3,7 @@
   * @file    usbd_cdc_vcp.h
   * @author  FMD
   * @brief   Header file for usbd_cdc_vcp.c on FT32F4.
-  *          Equivalent to STM32 vcpf4/usbd_cdc_vcp.h
+  *          USB CDC VCP interface declarations for virtual COM port
   ******************************************************************************
   */
 

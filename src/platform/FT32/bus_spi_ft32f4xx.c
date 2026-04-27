@@ -126,9 +126,9 @@ void spiInitDevice(spiDevice_e device)
  * @brief  Reset SPI DMA descriptors
  * @param  bus: pointer to bus device structure
  *
- * DMA channel mapping:
- * - SPI1: DMA2 Channel 3 (Tx and Rx share same channel)
- * - SPI2: DMA1 Channel 6 (Tx), Channel 1 (Rx)
+ * DMA channel mapping (PeriphSel=3 for all SPI):
+ * - SPI1: DMA2 Channel 3 (Tx), Channel 0 (Rx)
+ * - SPI2: DMA2 Channel 6 (Tx), Channel 1 (Rx)
  * - SPI3: DMA1 Channel 5 (Tx), Channel 0 (Rx)
  */
 void spiInternalResetDescriptors(busDevice_t *bus)

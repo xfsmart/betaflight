@@ -52,7 +52,6 @@ const timerDef_t timerDefinitions[HARDWARE_TIMER_DEFINITION_COUNT] = {
 
 #if defined(USE_TIMER_MGMT)
 // Full timer-channel-pin mapping table
-// Source: FT32F405_407xx_DS_V1.02_cn.pdf Table "Alternate function mapping"
 const timerHardware_t fullTimerHardware[FULL_TIMER_CHANNEL_COUNT] = {
 //PORTA
     DEF_TIM(TIM2, CH1,  PA0, 0, 0),

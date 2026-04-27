@@ -39,7 +39,7 @@
 #include "drivers/serial_uart_impl.h"
 
 /*
- * GPIO AF mapping (DS V1.02, Table 4-3 to 4-7):
+ * GPIO AF mapping:
  *   AF7 = USART1/2/3, UART7
  *   AF8 = UART4/5, LPUART, USART6
  */
@@ -52,7 +52,7 @@ const uartHardware_t uartHardware[UARTDEV_COUNT] = {
         .identifier = SERIAL_PORT_USART1,
         .reg = (usartResource_t *)USART1,
 #ifdef USE_DMA
-        .rxDMAResource = (dmaResource_t *)DMA2_Channel4,
+        .rxDMAResource = (dmaResource_t *)DMA2_Channel5,
         .txDMAResource = (dmaResource_t *)DMA2_Channel7,
 #endif
         .rxPins = { PIN_AF(PA10, GPIO_AF_7), PIN_AF(PB7, GPIO_AF_7) },

@@ -29,7 +29,7 @@
 #include "drivers/system.h"
 #include "drivers/persistent.h"
 
-// External declaration from common/stm32/system.c
+// External declaration from common system code
 extern uint32_t cachedRccCsrValue;
 extern void cycleCounterInit(void);
 
