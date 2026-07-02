@@ -60,7 +60,7 @@ extern "c" {
 
 #define USB_OTG_HS_CORE
 #define OTG_IRQ                          OTG_HS_IRQn
-#define OTG_IRQ_HANDLER                  OTG_HS_Handler
+#define OTG_IRQ_HANDLER                  OTG_HS_IRQHandler
 #define PCD_IRQHandler                   PCD_HS_IRQHandler
 #define HCD_IRQHandler                   HCD_HS_IRQHandler
 #define OTG_WKUP_IRQ                     OTG_HS_WKUP_IRQn
@@ -96,7 +96,7 @@ extern "c" {
 #endif
 
 #define OTG_IRQ                          OTG_FS_IRQn
-#define OTG_IRQ_HANDLER                  OTG_FS_Handler
+#define OTG_IRQ_HANDLER                  OTG_FS_IRQHandler
 #define PCD_IRQHandler                   PCD_FS_IRQHandler
 #define HCD_IRQHandler                   HCD_FS_IRQHandler
 #define OTG_WKUP_IRQ                     OTG_FS_WKUP_IRQn

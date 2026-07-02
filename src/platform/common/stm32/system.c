@@ -368,9 +368,10 @@ const mcuTypeInfo_t *getMcuTypeInfo(void)
         { .id = MCU_TYPE_APM32F405, .name = "APM32F405" },
 #elif defined(APM32F407)
         { .id = MCU_TYPE_APM32F407, .name = "APM32F407" },
-#elif defined(FT32F405) || defined(FT32F407)
-        // FT32F4 - use generic F40X type
-        { .id = MCU_TYPE_F40X, .name = "FT32F4" },
+#elif defined(FT32F405)
+        { .id = MCU_TYPE_FT32F405, .name = "FT32F405" },
+#elif defined(FT32F407)
+        { .id = MCU_TYPE_FT32F407, .name = "FT32F407" },
 #elif defined(STM32N657xx)
         { .id = MCU_TYPE_N657, .name = "STM32N657" },
 #else

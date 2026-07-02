@@ -33,7 +33,10 @@
 #define FT32F407
 #endif
 
+#define USE_USB
 #define USE_VCP
+#define USE_USB_CDC
+#define USE_USB_OTG_FS
 
 #define USE_UART1
 #define USE_UART2
@@ -41,6 +44,21 @@
 #define USE_UART4
 #define USE_UART5
 #define USE_UART6
+
+#define UART1_RX_PIN            PB7
+#define UART1_TX_PIN            PB6
+#define UART2_RX_PIN            PA3
+#define UART2_TX_PIN            PA2
+#define UART3_RX_PIN            PB11
+#define UART3_TX_PIN            PB10
+#define UART4_RX_PIN            PA1
+#define UART4_TX_PIN            PA0
+#define UART5_RX_PIN            PD2
+#define UART5_TX_PIN            PC12
+#define UART6_RX_PIN            PC7
+#define UART6_TX_PIN            PC6
+
+#define USE_MSP_UART            SERIAL_PORT_USART1
 
 #define TARGET_IO_PORTA         0xffff
 #define TARGET_IO_PORTB         0xffff

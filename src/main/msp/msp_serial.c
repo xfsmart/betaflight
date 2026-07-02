@@ -679,9 +679,11 @@ uint32_t mspSerialTxBytesFree(void)
         }
 
         // XXX Kludge!!! Avoid zombie VCP port (avoid VCP entirely for now)
+#ifndef USE_MSP_PUSH_OVER_VCP
         if (mspPort->port->identifier == SERIAL_PORT_USB_VCP) {
             continue;
         }
+#endif
 
         const uint32_t bytesFree = serialTxBytesFree(mspPort->port);
         if (bytesFree < ret) {

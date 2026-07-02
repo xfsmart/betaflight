@@ -40,10 +40,19 @@
 #include "usb_core.h"
 #include "usbd_def.h"
 #include "usbd_cdc_if.h"
+#include "usbd_core.h"
+#include "usbd_cdc.h"
+#ifdef USE_USBD_COMPOSITE
+#include "usbd_composite_builder.h"
+#endif
+#ifdef USE_USB_CDC_HID
+#include "usbd_hid.h"
+#endif
 
 /* External CDC functions declared in vcpf4/usbd_cdc_vcp.c */
 extern uint32_t CDC_Send_DATA(const uint8_t *ptrBuffer, uint32_t sendLength);
 extern uint32_t CDC_Send_FreeBytes(void);
+extern uint8_t CDC_Send_IsIdle(void);
 extern uint32_t CDC_Receive_DATA(uint8_t* recvBuf, uint32_t len);
 extern uint32_t CDC_Receive_BytesAvailable(void);
 extern uint8_t usbIsConfigured(void);
@@ -80,8 +89,6 @@ extern uint32_t BuffLength;
 extern volatile uint32_t UserTxBufPtrIn;
 extern volatile uint32_t UserTxBufPtrOut;
 
-#define  CDC_POLLING_INTERVAL 5
-
 static void usbVcpSetBaudRate(serialPort_t *instance, uint32_t baudRate)
 {
     UNUSED(instance);
@@ -112,7 +119,7 @@ static void usbVcpSetBaudRateCb(serialPort_t *instance, void (*cb)(serialPort_t 
 static bool isUsbVcpTransmitBufferEmpty(const serialPort_t *instance)
 {
     UNUSED(instance);
-    return true;
+    return CDC_Send_IsIdle() != 0U;
 }
 
 static uint32_t usbVcpAvailable(const serialPort_t *instance)
@@ -146,8 +153,16 @@ static void usbVcpWriteBuf(serialPort_t *instance, const void *data, int count)
     const uint8_t *p = data;
     while (count > 0) {
         uint32_t txed = CDC_Send_DATA(p, count);
-        count -= txed;
-        p += txed;
+        if (txed > 0) {
+            count -= txed;
+            p += txed;
+        } else {
+            /* no ring space right now: if USB dropped, stop; otherwise keep
+             * polling the ring until the 50ms deadline expires */
+            if (!(usbIsConnected() && usbIsConfigured())) {
+                break;
+            }
+        }
 
         if (millis() - start > USB_TIMEOUT) {
             break;
@@ -172,8 +187,14 @@ static bool usbVcpFlush(vcpPort_t *port)
     uint8_t *p = port->txBuf;
     while (count > 0) {
         uint32_t txed = CDC_Send_DATA(p, count);
-        count -= txed;
-        p += txed;
+        if (txed > 0) {
+            count -= txed;
+            p += txed;
+        } else {
+            if (!(usbIsConnected() && usbIsConfigured())) {
+                break;
+            }
+        }
 
         if (millis() - start > USB_TIMEOUT) {
             break;
@@ -228,6 +249,10 @@ static const struct serialPortVTable usbVTable[] = {
     }
 };
 
+/* CDC composite class id, set during composite init and consumed by the CDC
+ * data path in usbd_cdc_vcp.c. Zero (single-class) when composite is unused. */
+uint8_t g_cdcClassId = 0U;
+
 void usbVcpInit(void)
 {
     IOInit(IOGetByTag(IO_TAG(PA11)), OWNER_USB, 0);
@@ -242,10 +267,68 @@ void usbVcpInit(void)
     // Initialize USB BSP (clocks, GPIO)
     USB_OTG_BSP_Init();
 
-    // Enable USB global interrupt
-    USB_OTG_BSP_EnableInterrupt();
+    /* Under USE_USBD_COMPOSITE every runtime mode must register its class
+     * through the composite builder so the core serves the configuration
+     * descriptor from USBD_CMPSIT (NumClasses > 0). A plain USBD_Init with a
+     * single class would leave NumClasses == 0 and the core would dereference
+     * a NULL descriptor callback, breaking enumeration. */
+    if (USBD_Init(&USBD_Device, USB_OTG_FS_CORE_ID, OTG_USB_ID, NULL, &USBD_CDC_Desc) != USBD_OK)
+    {
+        return;
+    }
 
-    USBD_Init(&USBD_Device, USB_OTG_FS_CORE_ID, 0, &USBD_CDC, &USBD_CDC_Desc);
+    /* Endpoint address arrays are file-scope static so the composite builder
+     * never stores a pointer to a stack frame that has returned. CDC endpoints
+     * are the same in both modes; in COMPOSITE mode HID owns 0x81 first, so
+     * CDC uses disjoint addresses. */
+    static uint8_t cdcEndpoints[] = { 0x82U, 0x02U, 0x83U };
+
+#ifdef USE_USB_CDC_HID
+    static uint8_t hidEndpoints[] = { 0x81U };
+    if (usbDevConfig()->type == COMPOSITE)
+    {
+        /* Register HID first (classId 0), then CDC (classId 1). Disjoint
+         * endpoint addresses let the core route interrupts to the owner. */
+        if (USBD_RegisterClassComposite(&USBD_Device, &USBD_HID, CLASS_TYPE_HID, hidEndpoints) != USBD_OK)
+        {
+            return;
+        }
+    }
+#endif
+
+    if (USBD_RegisterClassComposite(&USBD_Device, &USBD_CDC, CLASS_TYPE_CDC, cdcEndpoints) != USBD_OK)
+    {
+        return;
+    }
+
+    /* Select the CDC class before wiring application callbacks so they land in
+     * the correct per-class slot, and record its id for the data path. A 0xFF
+     * result means the class was not registered; never use it as an index. */
+    uint32_t cdcClassId = USBD_CMPSIT_SetClassID(&USBD_Device, CLASS_TYPE_CDC, 0U);
+    if (cdcClassId == 0xFFU)
+    {
+        return;
+    }
+    g_cdcClassId = (uint8_t)cdcClassId;
+
+    if (USBD_CDC_RegisterInterface(&USBD_Device, &USBD_CDC_fops) != USBD_OK)
+    {
+        return;
+    }
+
+    // Start the device core before enabling the USB global interrupt, so a
+    // Start failure cannot leave an interrupt-visible partial device. On
+    // failure, tear down the partially configured device and return.
+    if (USBD_Start(&USBD_Device) != USBD_OK)
+    {
+        NVIC_DisableIRQ(OTG_IRQ);
+        (void)USBD_DeInit(&USBD_Device);
+        g_cdcClassId = 0U;
+        return;
+    }
+
+    // Enable the USB global interrupt only after the device is fully started
+    USB_OTG_BSP_EnableInterrupt();
 }
 
 serialPort_t *usbVcpOpen(void)

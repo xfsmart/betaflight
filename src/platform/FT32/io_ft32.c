@@ -44,6 +44,8 @@ const struct ioPortDef_s ioPortDefs[] = {
     { RCC_AHB1(GPIOC) },
     { RCC_AHB1(GPIOD) },
     { RCC_AHB1(GPIOE) },
+    { RCC_EMPTY },
+    { RCC_EMPTY },
     { RCC_AHB1(GPIOH) },
 };
 

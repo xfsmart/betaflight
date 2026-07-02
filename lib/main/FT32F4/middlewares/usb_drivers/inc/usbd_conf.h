@@ -50,7 +50,11 @@ typedef PCD_FS_HandleTypeDef PCD_HandleTypeDef;
  * @{
  */
 
+/* Number of supported interfaces. A composite device (e.g. CDC+HID) needs
+ * more than one; keep the SDK default overridable by the platform/build. */
+#ifndef USBD_MAX_NUM_INTERFACES
 #define USBD_MAX_NUM_INTERFACES             1U
+#endif /* USBD_MAX_NUM_INTERFACES */
 #define USBD_MAX_NUM_CONFIGURATION          1U
 #define USBD_MAX_STR_DESC_SIZ               0x100U
 #define USBD_SELF_POWER                     1U

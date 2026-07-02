@@ -46,13 +46,11 @@ VPATH   := $(VPATH):$(I2C_APP_DIR)
 DEVICE_I2C_APP_SRC := \
         $(I2C_APP_SRC)
 
-# USB Platform Source (参考 STM32 结构)
-# 平台层 USB 文件位于 src/platform/FT32/
-# vcpf4 目录: src/platform/FT32/vcpf4/ (对应 STM32 的 vcpf4/)
-# include 目录: src/platform/FT32/include/platform/
+# USB Platform Source — platform-layer files under src/platform/FT32/
+# vcpf4 directory: src/platform/FT32/vcpf4/
+# include directory: src/platform/FT32/include/platform/
 
-# USB Driver (SDK 底层驱动)
-# 使用官方 SDK 的 Drivers/FT32F4xx_Driver，不重复拷贝
+# USB Driver — SDK low-level driver from standard peripheral library
 USB_DRIVER_DIR := $(STDPERIPH_DIR)
 USB_DRIVER_SRC = \
         $(STDPERIPH_DIR)/Src/ft32f4xx_pcd_fs.c \
@@ -86,11 +84,19 @@ USB_MSC_SRC = \
 
 VPATH := $(VPATH):$(USB_MSC_DIR)/src
 
-# USB Middleware - HID Class (present but not yet ported - API incompatibilities with FT32 USB core)
-# USB_HID_DIR := $(LIB_MAIN_DIR)/FT32F4/middlewares/usbd_class/HID
-# USB_HID_SRC = \
-#         usbd_hid.c
-# VPATH := $(VPATH):$(USB_HID_DIR)/src
+# USB Middleware - HID Class (used by the CDC+HID composite device)
+USB_HID_DIR := $(LIB_MAIN_DIR)/FT32F4/middlewares/usbd_class/HID
+USB_HID_SRC = \
+        usbd_hid.c
+
+VPATH := $(VPATH):$(USB_HID_DIR)/src
+
+# USB Middleware - Composite Builder (builds the CDC+HID configuration descriptor)
+USB_CMPSIT_DIR := $(LIB_MAIN_DIR)/FT32F4/middlewares/usbd_class/CompositeBuilder
+USB_CMPSIT_SRC = \
+        usbd_composite_builder.c
+
+VPATH := $(VPATH):$(USB_CMPSIT_DIR)/src
 
 # Include paths - FT32 platform must be FIRST to ensure correct platform.h is found
 # The := assignment places these before $(SRC_DIR), overriding the default order
@@ -111,7 +117,9 @@ INCLUDE_DIRS := \
         $(USB_DRIVER_DIR)/Inc \
         $(USB_CORE_DIR)/inc \
         $(USB_CDC_DIR)/inc \
-        $(USB_MSC_DIR)/inc
+        $(USB_MSC_DIR)/inc \
+        $(USB_HID_DIR)/inc \
+        $(USB_CMPSIT_DIR)/inc
 
 # Architecture flags - Cortex-M4 with FPU
 ARCH_FLAGS      = -mthumb -mcpu=cortex-m4 -march=armv7e-m -mfloat-abi=hard -mfpu=fpv4-sp-d16
@@ -120,6 +128,17 @@ DEVICE_FLAGS    = -DHSE_VALUE=$(HSE_VALUE) -DFT32F4 -Wno-unused-variable -Wno-un
 
 # USB device mode (FS core)
 DEVICE_FLAGS    += -DUSB_OTG_FS_CORE -DUSB_OTG_FS -DPCD_FS_MODULE_ENABLED
+DEVICE_FLAGS    += -DCDC_CMD_EP=0x83U
+
+# USB composite device support (CDC+HID). Activated when USE_USB_CDC_HID is
+# defined by the target/platform header. The composite builder and HID class
+# sources are only meaningful when composite mode is enabled.
+DEVICE_FLAGS    += -DUSE_USBD_COMPOSITE
+DEVICE_FLAGS    += -DUSBD_CMPSIT_ACTIVATE_HID=1 -DUSBD_CMPSIT_ACTIVATE_CDC=1 -DUSBD_CMPSIT_ACTIVATE_MSC=1
+DEVICE_FLAGS    += -DUSBD_MAX_NUM_INTERFACES=3
+# Enable MSP push over USB VCP (disables the upstream zombie-VCP kludge that
+# skipped VCP for mspSerialPush / mspSerialTxBytesFree, which starved CDC TX).
+DEVICE_FLAGS    += -DUSE_MSP_PUSH_OVER_VCP
 
 ifeq ($(TARGET_MCU),FT32F405)
 DEVICE_FLAGS    += -DFT32F405xE -DFT32F405
@@ -134,6 +153,8 @@ DEVICE_FLAGS    += -DFT32F407xx -DFT32F407
 LD_SCRIPT       = $(LINKER_DIR)/ft32_flash_f407.ld
 STARTUP_SRC     = FT32/startup/gcc/startup_ft32f407xx.s
 MCU_FLASH_SIZE  := 512
+# Inline limit for the 448KB FLASH1 constrained target (same as FT32F405/STM32F411)
+DEVICE_FLAGS    += -finline-limit=20
 
 else
 $(error TARGET_MCU [$(TARGET_MCU)] is not supported)
@@ -150,7 +171,7 @@ MCU_COMMON_SRC = \
         common/stm32/system.c \
         common/stm32/io_impl.c \
         common/stm32/mco.c \
-        $(LIB_MAIN_DIR)/FT32F4/CMSIS/cm4/device_support/system_ft32f4xx.c \
+        FT32/startup/system_ft32f4xx.c \
         FT32/system_ft32f4xx.c \
         FT32/rcc_ft32f4xx.c \
         FT32/dma_ft32f4xx.c \
@@ -199,7 +220,8 @@ MCU_COMMON_SRC = \
         $(USB_DRIVER_SRC) \
         $(USB_CORE_SRC) \
         $(USB_CDC_SRC) \
-        $(MSC_SRC)
+        $(USB_HID_SRC) \
+        $(USB_CMPSIT_SRC)
 
 # Size optimization for non-critical paths (same pattern as STM32F411)
 
@@ -219,14 +241,17 @@ $(TARGET_OBJ_DIR)/ft32f4xx_tim.o: CFLAGS += -Wno-unused-but-set-variable
 DSP_LIB := $(LIB_MAIN_DIR)/CMSIS/DSP
 DEVICE_FLAGS += -DARM_MATH_MATRIX_CHECK -DARM_MATH_ROUNDING -DUNALIGNED_SUPPORT_DISABLE -DARM_MATH_CM4
 
-# USB VCP Source (参考 STM32 vcpf4 结构)
-# Note: usbd_usr.c and usb_cdc_hid_ft32f4.c are incomplete ports (missing USBD_Usr_cb_TypeDef
-# and USBD_HID_SendReport from FT32 USB middleware). Excluded until properly ported.
+# USB VCP Source
+# usbd_usr.c remains excluded: it uses the legacy STM32 USBD_Usr_cb_TypeDef user
+# callback model which the FT32 USB middleware does not provide.
+# usb_cdc_hid_ft32f4.c is now compiled: it forwards HID reports through the FT32
+# composite USB stack (USBD_HID_SendReport) when USE_USB_CDC_HID is enabled.
 VCP_SRC = \
         FT32/vcpf4/usb_it_ft32f4.c \
         FT32/vcpf4/usb_bsp_ft32f4.c \
         FT32/vcpf4/usbd_desc.c \
         FT32/vcpf4/usbd_cdc_vcp.c \
+        FT32/vcpf4/usb_cdc_hid_ft32f4.c \
         FT32/serial_usb_vcp.c \
         drivers/usb_io.c
 
@@ -240,7 +265,7 @@ SIZE_OPTIMISED_SRC += \
         common/stm32/pwm_output_beeper.c \
         common/stm32/serial_uart_pinconfig.c
 
-# USB MSC Source (参考 STM32 结构)
+# USB MSC Source
 MSC_SRC = \
         $(USB_MSC_SRC) \
         drivers/usb_msc_common.c \

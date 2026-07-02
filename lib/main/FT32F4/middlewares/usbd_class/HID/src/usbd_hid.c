@@ -68,7 +68,7 @@
 static uint8_t USBD_HID_Init(USBD_HandleTypeDef *pdev);
 static uint8_t USBD_HID_DeInit(USBD_HandleTypeDef *pdev);
 static uint8_t USBD_HID_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req);
-static uint8_t USBD_HID_DataIn(USBD_HandleTypeDef *pdev);
+static uint8_t USBD_HID_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum);
 #ifndef USE_USBD_COMPOSITE
 static uint8_t *USBD_HID_GetFSCfgDesc(uint16_t *length);
 static uint8_t *USBD_HID_GetHSCfgDesc(uint16_t *length);
@@ -106,6 +106,9 @@ USBD_ClassTypeDef USBD_HID =
   USBD_HID_GetOtherSpeedCfgDesc,
   USBD_HID_GetDeviceQualifierDesc,
 #endif  /* USE_USBD_COMPOSITE */
+#if (USBD_SUPPORT_USER_STRING_DESC == 1U)
+  NULL,  /* GetUsrStrDescriptor */
+#endif /* USBD_SUPPORT_USER_STRING_DESC */
 };
 
 #ifndef USE_USBD_COMPOSITE
@@ -134,8 +137,8 @@ __ALIGN_BEGIN static uint8_t USBD_HID_CfgDesc[USB_HID_CONFIG_DESC_SIZ] __ALIGN_E
   0x00,                             /* bAlternateSetting: alternate setting */
   0x01,                             /* bNumEndpoints */
   0x03,                             /* bInterfaceClass: HID */
-  0x01,                             /* bInterfaceSubClass: 1=BOOT, 0=no boot */
-  0x02,                             /* nInterfaceProtocol: 0=none, 1=keyboard, 2=mouse */
+  0x00,                             /* bInterfaceSubClass: 0=no boot */
+  0x00,                             /* nInterfaceProtocol: 0=none */
   0,                                /* iInterface: Index of string descriptor */
   /**************Descriptor of joystick mouse HID********************************/
   /* 18 */
@@ -154,7 +157,7 @@ __ALIGN_BEGIN static uint8_t USBD_HID_CfgDesc[USB_HID_CONFIG_DESC_SIZ] __ALIGN_E
   USB_DESC_TYPE_ENDPOINT,           /* bDescriptorType: endpoint descriptor type */
   HID_EPIN_ADDR,                    /* bEndpointAddress: endpoint address (IN) */
   0x03,                             /* bmAttributes: Interrupt endpoint */
-  HID_EPIN_SIZE,                    /* wMaxPacketSize: 4 bytes max */
+  HID_EPIN_SIZE,                    /* wMaxPacketSize: HID report size */
   0x00,
   HID_FS_BINTERVAL,                 /* bInterval: polling interval */
   /* 34 */
@@ -195,44 +198,34 @@ __ALIGN_BEGIN static uint8_t USBD_HID_DeviceQualifierDesc[USB_LEN_DEV_QUALIFIER_
 
 __ALIGN_BEGIN static uint8_t HID_MOUSE_ReportDesc[HID_MOUSE_REPORT_DESC_SIZE] __ALIGN_END =
 {
-  0x05, 0x01,         /* usage page (generic desktop ctrls)     */
-  0x09, 0x02,         /* usage(mouse)                           */
-  0xA1, 0x01,         /* collection (application)               */
-  0x09, 0x01,         /*  usage (pointer)                       */
-  0xA1, 0x00,         /*  collection (physical)                 */
-  0x05, 0x09,         /*    usage page (button)                 */
-  0x19, 0x01,         /*    usage minimum (0x01)                */
-  0x29, 0x03,         /*    usage maximum (0x03)                */
-  0x15, 0x00,         /*    logical minimum (0)                 */
-  0x25, 0x01,         /*    logical maximum (1)                 */
-  0x95, 0x03,         /*    report count (3)                    */
-  0x75, 0x01,         /*    report size (1)                     */
-  0x81, 0x02,         /*    input (data, var, abs)              */
-  0x95, 0x01,         /*    report count (1)                    */
-  0x75, 0x05,         /*    report size (5)                     */
-  0x81, 0x01,         /*    input (const, var, abs)             */
-  0x05, 0x01,         /*    usage page (generic desktop ctrls)  */
-  0x09, 0x30,         /*    usage (X)                           */
-  0x09, 0x31,         /*    usage (Y)                           */
-  0x09, 0x38,         /*    usage (wheel)                       */
-  0x15, 0x81,         /*    logical minimum (-127)              */
-  0x25, 0x7F,         /*    logical maximum (127)               */
-  0x75, 0x08,         /*    report size (8)                     */
-  0x95, 0x03,         /*    report count (3)                    */
-  0x81, 0x06,         /*    input (data, var, rel)              */
-  0xC0,               /*  end collection                        */
-  0x09, 0x3C,         /*  usage (motion wakeup)                 */
-  0x05, 0xFF,         /*  usage page (reserved 0xFF)            */
-  0x09, 0x01,         /*  usage (0x01)                          */
-  0x15, 0x00,         /*  logical minimum (0)                   */
-  0x25, 0x01,         /*  logical maximum (1)                   */
-  0x75, 0x01,         /*  report size (1)                       */
-  0x95, 0x02,         /*  report count (2)                      */
-  0xB1, 0x22,         /*  feature (data, var, abs, nowrp)       */
-  0x75, 0x06,         /*  report size (6)                       */
-  0x95, 0x01,         /*  report count (1)                      */
-  0xB1, 0x01,         /*  feature (const, array, abs, nowrp)    */
-  0xC0                /* end collection                         */
+  0x05, 0x01,        /* usage page (generic desktop ctrls)     */
+  0x09, 0x05,        /* usage (game pad)                       */
+  0xA1, 0x01,        /* collection (application)               */
+  0xA1, 0x00,        /*  collection (physical)                 */
+  0x05, 0x01,        /*    usage page (generic desktop ctrls)  */
+  0x09, 0x30,        /*    usage (X)                           */
+  0x09, 0x31,        /*    usage (Y)                           */
+  0x09, 0x32,        /*    usage (Z)                           */
+  0x09, 0x33,        /*    usage (Rx)                          */
+  0x09, 0x35,        /*    usage (Rz)                          */
+  0x09, 0x34,        /*    usage (Ry)                          */
+  0x09, 0x36,        /*    usage (Slider)                      */
+  0x09, 0x37,        /*    usage (Dial)                        */
+  0x15, 0x81,        /*    logical minimum (-127)              */
+  0x25, 0x7F,        /*    logical maximum (127)               */
+  0x75, 0x08,        /*    report size (8)                     */
+  0x95, 0x08,        /*    report count (8)                    */
+  0x81, 0x02,        /*    input (data, var, abs)              */
+  0x05, 0x09,        /*    usage page (button)                 */
+  0x19, 0x01,        /*    usage minimum (button 1)            */
+  0x29, 0x08,        /*    usage maximum (button 8)            */
+  0x15, 0x00,        /*    logical minimum (0)                 */
+  0x25, 0x01,        /*    logical maximum (1)                 */
+  0x95, 0x08,        /*    report count (8)                    */
+  0x75, 0x01,        /*    report size (1)                     */
+  0x81, 0x02,        /*    input (data, var, abs)              */
+  0xC0,              /*  end collection                        */
+  0xC0               /* end collection                         */
 };
 
 static uint8_t HIDInEpAdd = HID_EPIN_ADDR;
@@ -360,7 +353,7 @@ static uint8_t USBD_HID_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *re
           break;
 
         default:
-          USBD_CtlError(pdev);
+          USBD_CtlError(pdev, req);
           ret = USBD_FAIL;
           break;
       }
@@ -376,7 +369,7 @@ static uint8_t USBD_HID_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *re
           }
           else
           {
-            USBD_CtlError(pdev);
+            USBD_CtlError(pdev, req);
             ret = USBD_FAIL;
           }
           break;
@@ -394,7 +387,7 @@ static uint8_t USBD_HID_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *re
           }
           else
           {
-            USBD_CtlError(pdev);
+            USBD_CtlError(pdev, req);
             ret = USBD_FAIL;
             break;
           }
@@ -408,7 +401,7 @@ static uint8_t USBD_HID_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *re
           }
           else
           {
-            USBD_CtlError(pdev);
+            USBD_CtlError(pdev, req);
             ret = USBD_FAIL;
           }
           break;
@@ -420,7 +413,7 @@ static uint8_t USBD_HID_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *re
           }
           else
           {
-            USBD_CtlError(pdev);
+            USBD_CtlError(pdev, req);
             ret = USBD_FAIL;
           }
           break;
@@ -429,14 +422,14 @@ static uint8_t USBD_HID_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *re
           break;
 
         default:
-          USBD_CtlError(pdev);
+          USBD_CtlError(pdev, req);
           ret = USBD_FAIL;
           break;
       }
       break;
 
     default:
-      USBD_CtlError(pdev);
+      USBD_CtlError(pdev, req);
       ret = USBD_FAIL;
       break;
   }
@@ -453,21 +446,58 @@ static uint8_t USBD_HID_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *re
 #ifdef USE_USBD_COMPOSITE
 uint8_t USBD_HID_SendReport(USBD_HandleTypeDef *pdev, uint8_t *report, uint16_t len, uint8_t ClassId)
 {
-  USBD_HID_HandleTypeDef *hhid = (USBD_HID_HandleTypeDef *)pdev->pClassDataCmsit[ClassId];
-#else
-uint8_t USBD_HID_SendReport(USBD_HandleTypeDef *pdev, uint8_t *report, uint16_t len)
-{
-  USBD_HID_HandleTypeDef *hhid = (USBD_HID_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
-#endif /* USE_USBD_COMPOSITE */
+  USBD_HID_HandleTypeDef *hhid;
+
+  /* bound-check the class id before any array indexing or endpoint lookup */
+  if (ClassId >= USBD_MAX_SUPPORTED_CLASS)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  if (report == NULL)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  if (len > HID_EPIN_SIZE)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  hhid = (USBD_HID_HandleTypeDef *)pdev->pClassDataCmsit[ClassId];
 
   if (hhid == NULL)
   {
     return (uint8_t)USBD_FAIL;
   }
 
-#ifdef USE_USBD_COMPOSITE
-  /* get the endpoints address allocated for this class instance */
+  /* resolve the endpoint allocated to this class instance, then validate it */
   HIDInEpAdd = USBD_CoreGetEPAdd(pdev, USBD_EP_IN, USBD_EP_TYPE_INTR, ClassId);
+  if (HIDInEpAdd == 0xFFU)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+#else
+uint8_t USBD_HID_SendReport(USBD_HandleTypeDef *pdev, uint8_t *report, uint16_t len)
+{
+  USBD_HID_HandleTypeDef *hhid;
+
+  if (report == NULL)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  if (len > HID_EPIN_SIZE)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  hhid = (USBD_HID_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
+
+  if (hhid == NULL)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
 #endif /* USE_USBD_COMPOSITE */
 
   if (pdev->dev_state == USBD_STATE_CONFIGURED)
@@ -573,8 +603,9 @@ static uint8_t *USBD_HID_GetOtherSpeedCfgDesc(uint16_t *length)
  * @param  epnum: endpoint index(unused)
  * @retval status
  */
-static uint8_t USBD_HID_DataIn(USBD_HandleTypeDef *pdev)
+static uint8_t USBD_HID_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
+  UNUSED(epnum);
   /* ensure that the fifo is empty before a new transfer, this condition could be caused by
    * a new transfer before the end of the previous transfer */
   ((USBD_HID_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId])->state = USBD_HID_IDLE;

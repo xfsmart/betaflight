@@ -78,22 +78,26 @@ void RCC_ClockCmd(rccPeriphTag_t periphTag, FunctionalState NewState)
     // Process based on bus type
     switch (tag) {
         case RCC_AHB1:
-            // AHB1 peripherals: DMA1, DMA2, GPIOA-GPIOH, etc.
             __FT_RCC_CLK(AHB1ENR, mask, NewState);
             break;
 
+        case RCC_AHB2:
+            __FT_RCC_CLK(AHB2ENR, mask, NewState);
+            break;
+
+        case RCC_AHB3:
+            __FT_RCC_CLK(AHB3ENR, mask, NewState);
+            break;
+
         case RCC_APB1:
-            // APB1 peripherals: TIM2-TIM7, I2C1-3, USART2-3, etc.
             __FT_RCC_CLK(APB1ENR, mask, NewState);
             break;
 
         case RCC_APB2:
-            // APB2 peripherals: TIM1, TIM8, USART1, SPI1, etc.
             __FT_RCC_CLK(APB2ENR, mask, NewState);
             break;
 
         default:
-            // Unknown bus type - should not happen
             break;
     }
 
@@ -136,22 +140,26 @@ void RCC_ResetCmd(rccPeriphTag_t periphTag, FunctionalState NewState)
     // Process based on bus type
     switch (tag) {
         case RCC_AHB1:
-            // AHB1 peripherals reset
             __FT_RCC_RESET(AHB1RSTR, mask, NewState);
             break;
 
+        case RCC_AHB2:
+            __FT_RCC_RESET(AHB2RSTR, mask, NewState);
+            break;
+
+        case RCC_AHB3:
+            __FT_RCC_RESET(AHB3RSTR, mask, NewState);
+            break;
+
         case RCC_APB1:
-            // APB1 peripherals reset
             __FT_RCC_RESET(APB1RSTR, mask, NewState);
             break;
 
         case RCC_APB2:
-            // APB2 peripherals reset
             __FT_RCC_RESET(APB2RSTR, mask, NewState);
             break;
 
         default:
-            // Unknown bus type - should not happen
             break;
     }
 

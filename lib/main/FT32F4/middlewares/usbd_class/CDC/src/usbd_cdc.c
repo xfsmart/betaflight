@@ -284,16 +284,23 @@ static uint8_t USBD_CDC_Init(USBD_HandleTypeDef *pdev)
 
   if (hcdc == NULL)
   {
-    /* pdev->pClassDataCmsit[pdev->classId] = NULL; */
+#ifdef USE_USBD_COMPOSITE
+    pdev->pClassDataCmsit[pdev->classId] = NULL;
+#endif /* USE_USBD_COMPOSITE */
     pdev->pClassData = NULL;
     return (uint8_t)USBD_EMEM;
   }
 
   (void)USBD_memset(hcdc, 0, sizeof(USBD_CDC_HandleTypeDef));
 
-  /* pdev->pClassDataCmsit[pdev->classId] = (void *)hcdc;
-  pdev->pClassData = pdev->pClassDataCmsit[pdev->classId]; */
+  /* Store the class handle. In composite mode the per-class slot is the
+   * authoritative location; pClassData is kept as a fallback alias. */
+#ifdef USE_USBD_COMPOSITE
+  pdev->pClassDataCmsit[pdev->classId] = (void *)hcdc;
+  pdev->pClassData = pdev->pClassDataCmsit[pdev->classId];
+#else
   pdev->pClassData = (void *)hcdc;
+#endif /* USE_USBD_COMPOSITE */
 #ifdef USE_USBD_COMPOSITE
   /* Get the Endpoints addresses allocated for this class instance */
   CDCInEpAdd  = USBD_CoreGetEPAdd(pdev, USBD_EP_IN, USBD_EP_TYPE_BULK, (uint8_t)pdev->classId);
@@ -323,8 +330,12 @@ static uint8_t USBD_CDC_Init(USBD_HandleTypeDef *pdev)
   hcdc->RxBuffer = NULL;
 
   /* Init  physical Interface components */
+#ifdef USE_USBD_COMPOSITE
+  ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Init();
+#else
   USBD_CDC_fops.Init();
   /* ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Init(); */
+#endif /* USE_USBD_COMPOSITE */
 
   /* Init Xfer states */
   hcdc->TxState = 0U;
@@ -383,11 +394,19 @@ static uint8_t USBD_CDC_DeInit(USBD_HandleTypeDef *pdev)
     pdev->pClassData = NULL;
   } */
 
+  /* DeInit  physical Interface components */
+#ifdef USE_USBD_COMPOSITE
+  ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->DeInit();
+  (void)USBD_free(pdev->pClassDataCmsit[pdev->classId]);
+  pdev->pClassDataCmsit[pdev->classId] = NULL;
+  pdev->pClassData = NULL;
+#else
   USBD_CDC_fops.DeInit();
   /* (void)USBD_free(pdev->pClassDataCmsit[pdev->classId]);
   pdev->pClassDataCmsit[pdev->classId] = NULL; */
   (void)USBD_free(pdev->pClassData);
   pdev->pClassData = NULL;
+#endif /* USE_USBD_COMPOSITE */
  
   return (uint8_t)USBD_OK;
 }
@@ -403,7 +422,11 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
                               USBD_SetupReqTypeDef *req)
 {
   /* USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId]; */
+#ifdef USE_USBD_COMPOSITE
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
+#else
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
+#endif /* USE_USBD_COMPOSITE */
   uint16_t len;
   uint8_t ifalt = 0U;
   uint16_t status_info = 0U;
@@ -421,10 +444,16 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
       {
         if ((req->bmRequest & 0x80U) != 0U)
         {
+#ifdef USE_USBD_COMPOSITE
+          ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(req->bRequest,
+                                                                           (uint8_t *)hcdc->data,
+                                                                           req->wLength);
+#else
           USBD_CDC_fops.Control(req->bRequest, (uint8_t *)hcdc->data,  req->wLength);
         /*  ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(req->bRequest,
                                                                            (uint8_t *)hcdc->data,
                                                                            req->wLength); */
+#endif /* USE_USBD_COMPOSITE */
 
           len = MIN(CDC_REQ_MAX_DATA_SIZE, req->wLength);
           (void)USBD_CtlSendData(pdev, (uint8_t *)hcdc->data, len);
@@ -439,9 +468,13 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
       }
       else
       {
+#ifdef USE_USBD_COMPOSITE
+        ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(req->bRequest, (uint8_t *)req, 0U);
+#else
         USBD_CDC_fops.Control(req->bRequest, (uint8_t *)req, 0U);
       /*  ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(req->bRequest,
                                                                          (uint8_t *)req, 0U); */
+#endif /* USE_USBD_COMPOSITE */
       }
       break;
 
@@ -512,6 +545,14 @@ static uint8_t USBD_CDC_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
   PCD_HandleTypeDef *hpcd = (PCD_HandleTypeDef *)pdev->pData;
 
   /* if (pdev->pClassDataCmsit[pdev->classId] == NULL) */
+#ifdef USE_USBD_COMPOSITE
+  if (pdev->pClassDataCmsit[pdev->classId] == NULL)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
+#else
   if (pdev->pClassData == NULL)
   {
     return (uint8_t)USBD_FAIL;
@@ -519,6 +560,7 @@ static uint8_t USBD_CDC_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
   /* hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId]; */
   hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
+#endif /* USE_USBD_COMPOSITE */
 
   if ((pdev->ep_in[epnum & 0xFU].total_length > 0U) &&
       ((pdev->ep_in[epnum & 0xFU].total_length % hpcd->IN_ep[epnum & 0xFU].maxpacket) == 0U))
@@ -533,6 +575,12 @@ static uint8_t USBD_CDC_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
   {
     hcdc->TxState = 0U;
 
+#ifdef USE_USBD_COMPOSITE
+    if (((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->TransmitCplt != NULL)
+    {
+      ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->TransmitCplt(hcdc->TxBuffer, &hcdc->TxLength, epnum);
+    }
+#else
    /* if (((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->TransmitCplt != NULL)
     {
       ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->TransmitCplt(hcdc->TxBuffer, &hcdc->TxLength, epnum);
@@ -541,6 +589,7 @@ static uint8_t USBD_CDC_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
     {
       USBD_CDC_fops.TransmitCplt(hcdc->TxBuffer, &hcdc->TxLength, epnum);
     }
+#endif /* USE_USBD_COMPOSITE */
   }
 
   return (uint8_t)USBD_OK;
@@ -555,6 +604,14 @@ static uint8_t USBD_CDC_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
   */
 static uint8_t USBD_CDC_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
+#ifdef USE_USBD_COMPOSITE
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
+
+  if (pdev->pClassDataCmsit[pdev->classId] == NULL)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+#else
   /* USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId]; */
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
 
@@ -563,6 +620,7 @@ static uint8_t USBD_CDC_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
   {
     return (uint8_t)USBD_FAIL;
   }
+#endif /* USE_USBD_COMPOSITE */
 
   /* Get the received data length */
   hcdc->RxLength = USBD_LL_GetRxDataSize(pdev, epnum);
@@ -570,8 +628,12 @@ static uint8_t USBD_CDC_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
   /* USB data will be immediately processed, this allow next USB traffic being
   NAKed till the end of the application Xfer */
 
+#ifdef USE_USBD_COMPOSITE
+  ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Receive(hcdc->RxBuffer, &hcdc->RxLength);
+#else
   USBD_CDC_fops.Receive(hcdc->RxBuffer, &hcdc->RxLength);
   /* ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Receive(hcdc->RxBuffer, &hcdc->RxLength); */
+#endif /* USE_USBD_COMPOSITE */
 
   return (uint8_t)USBD_OK;
 }
@@ -585,12 +647,25 @@ static uint8_t USBD_CDC_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
 static uint8_t USBD_CDC_EP0_RxReady(USBD_HandleTypeDef *pdev)
 {
   /* USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId]; */
+#ifdef USE_USBD_COMPOSITE
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
+#else
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
+#endif /* USE_USBD_COMPOSITE */
   if (hcdc == NULL)
   {
     return (uint8_t)USBD_FAIL;
   }
 
+#ifdef USE_USBD_COMPOSITE
+  if ((pdev->pUserData[pdev->classId] != NULL) && (hcdc->CmdOpCode != 0xFFU))
+  {
+    ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(hcdc->CmdOpCode,
+                                                                     (uint8_t *)hcdc->data,
+                                                                     (uint16_t)hcdc->CmdLength);
+    hcdc->CmdOpCode = 0xFFU;
+  }
+#else
  /* if ((pdev->pUserData[pdev->classId] != NULL) && (hcdc->CmdOpCode != 0xFFU))
   {
     ((USBD_CDC_ItfTypeDef *)pdev->pUserData[pdev->classId])->Control(hcdc->CmdOpCode,
@@ -603,6 +678,7 @@ static uint8_t USBD_CDC_EP0_RxReady(USBD_HandleTypeDef *pdev)
     USBD_CDC_fops.Control(hcdc->CmdOpCode, (uint8_t *)hcdc->data, (uint16_t)hcdc->CmdLength);
     hcdc->CmdOpCode = 0xFFU;
   }
+#endif /* USE_USBD_COMPOSITE */
 
   return (uint8_t)USBD_OK;
 }
@@ -745,12 +821,19 @@ uint8_t USBD_CDC_RegisterInterface(USBD_HandleTypeDef *pdev,
 uint8_t USBD_CDC_SetTxBuffer(USBD_HandleTypeDef *pdev,
                              uint8_t *pbuff, uint32_t length, uint8_t ClassId)
 {
-  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[ClassId];
+  USBD_CDC_HandleTypeDef *hcdc;
+
+  /* Reject out-of-range ClassId before indexing the class data table */
+  if (ClassId >= USBD_MAX_SUPPORTED_CLASS)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[ClassId];
 #else
 uint8_t USBD_CDC_SetTxBuffer(USBD_HandleTypeDef *pdev,
                              uint8_t *pbuff, uint32_t length)
 {
-  /* USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId]; */
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
 #endif /* USE_USBD_COMPOSITE */
 
@@ -769,12 +852,27 @@ uint8_t USBD_CDC_SetTxBuffer(USBD_HandleTypeDef *pdev,
   * @brief  USBD_CDC_SetRxBuffer
   * @param  pdev: device instance
   * @param  pbuff: Rx Buffer
+  * @param  ClassId: The Class ID
   * @retval status
   */
+#ifdef USE_USBD_COMPOSITE
+uint8_t USBD_CDC_SetRxBuffer(USBD_HandleTypeDef *pdev, uint8_t *pbuff,
+                             uint8_t ClassId)
+{
+  USBD_CDC_HandleTypeDef *hcdc;
+
+  /* Reject out-of-range ClassId before indexing the class data table */
+  if (ClassId >= USBD_MAX_SUPPORTED_CLASS)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[ClassId];
+#else
 uint8_t USBD_CDC_SetRxBuffer(USBD_HandleTypeDef *pdev, uint8_t *pbuff)
 {
-  /* USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId]; */
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
+#endif /* USE_USBD_COMPOSITE */
   if (hcdc == NULL)
   {
     return (uint8_t)USBD_FAIL;
@@ -796,11 +894,18 @@ uint8_t USBD_CDC_SetRxBuffer(USBD_HandleTypeDef *pdev, uint8_t *pbuff)
 #ifdef USE_USBD_COMPOSITE
 uint8_t USBD_CDC_TransmitPacket(USBD_HandleTypeDef *pdev, uint8_t ClassId)
 {
-  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[ClassId];
+  USBD_CDC_HandleTypeDef *hcdc;
+
+  /* Reject out-of-range ClassId before indexing the class data table */
+  if (ClassId >= USBD_MAX_SUPPORTED_CLASS)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[ClassId];
 #else
 uint8_t USBD_CDC_TransmitPacket(USBD_HandleTypeDef *pdev)
 {
-  /* USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId]; */
   USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
 #endif  /* USE_USBD_COMPOSITE */
 
@@ -815,6 +920,14 @@ uint8_t USBD_CDC_TransmitPacket(USBD_HandleTypeDef *pdev)
   {
     return (uint8_t)USBD_FAIL;
   }
+
+#ifdef USE_USBD_COMPOSITE
+  /* No bulk IN endpoint allocated for this class instance */
+  if (CDCInEpAdd == 0xFFU)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+#endif  /* USE_USBD_COMPOSITE */
 
   if (hcdc->TxState == 0U)
   {
@@ -837,23 +950,42 @@ uint8_t USBD_CDC_TransmitPacket(USBD_HandleTypeDef *pdev)
   * @brief  USBD_CDC_ReceivePacket
   *         prepare OUT Endpoint for reception
   * @param  pdev: device instance
+  * @param  ClassId: The Class ID
   * @retval status
   */
-uint8_t USBD_CDC_ReceivePacket(USBD_HandleTypeDef *pdev)
-{
-  /* USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId]; */
-  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
 #ifdef USE_USBD_COMPOSITE
-  /* Get the Endpoints addresses allocated for this class instance */
-  CDCOutEpAdd = USBD_CoreGetEPAdd(pdev, USBD_EP_OUT, USBD_EP_TYPE_BULK, (uint8_t)pdev->classId);
-#endif /* USE_USBD_COMPOSITE */
+uint8_t USBD_CDC_ReceivePacket(USBD_HandleTypeDef *pdev, uint8_t ClassId)
+{
+  USBD_CDC_HandleTypeDef *hcdc;
 
-  /* if (pdev->pClassDataCmsit[pdev->classId] == NULL) */
-  if (pdev->pClassData == NULL)
+  /* Reject out-of-range ClassId before indexing the class data table */
+  if (ClassId >= USBD_MAX_SUPPORTED_CLASS)
   {
     return (uint8_t)USBD_FAIL;
   }
 
+  hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassDataCmsit[ClassId];
+#else
+uint8_t USBD_CDC_ReceivePacket(USBD_HandleTypeDef *pdev)
+{
+  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)pdev->pClassData;
+#endif /* USE_USBD_COMPOSITE */
+
+  if (hcdc == NULL)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+#ifdef USE_USBD_COMPOSITE
+  /* Get the Endpoints addresses allocated for this class instance */
+  CDCOutEpAdd = USBD_CoreGetEPAdd(pdev, USBD_EP_OUT, USBD_EP_TYPE_BULK, ClassId);
+
+  /* No bulk OUT endpoint allocated for this class instance */
+  if (CDCOutEpAdd == 0xFFU)
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+#endif /* USE_USBD_COMPOSITE */
 
     /* Prepare Out endpoint to receive next packet */
     (void)USBD_LL_PrepareReceive(pdev, CDCOutEpAdd, hcdc->RxBuffer,

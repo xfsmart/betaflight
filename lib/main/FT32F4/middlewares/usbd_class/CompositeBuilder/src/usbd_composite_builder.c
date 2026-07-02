@@ -70,6 +70,14 @@ static void    USBD_CMPSIT_AssignEp(USBD_HandleTypeDef *pdev, uint8_t Add, uint8
 static void USBD_CMPSIT_HIDMouseDesc(USBD_HandleTypeDef *pdev, uint32_t pConf, __IO uint32_t *Sze, uint8_t speed);
 #endif  /* USBD_CMPSIT_ACTIVATE_HID */
 
+#if USBD_CMPSIT_ACTIVATE_CDC == 1U
+static void USBD_CMPSIT_CDCDesc(USBD_HandleTypeDef *pdev, uint32_t pConf, __IO uint32_t *Sze, uint8_t speed);
+#endif  /* USBD_CMPSIT_ACTIVATE_CDC */
+
+#if USBD_CMPSIT_ACTIVATE_MSC == 1U
+static void USBD_CMPSIT_MSCDesc(USBD_HandleTypeDef *pdev, uint32_t pConf, __IO uint32_t *Sze, uint8_t speed);
+#endif  /* USBD_CMPSIT_ACTIVATE_MSC */
+
 
 /**
  * @}
@@ -153,19 +161,49 @@ __ALIGN_BEGIN static uint8_t USBD_CMPSIT_DeviceQualifierDesc[USB_LEN_DEV_QUALIFI
 uint8_t USBD_CMPSIT_AddClass(USBD_HandleTypeDef *pdev, USBD_ClassTypeDef *pclass,
                              USBD_CompositeClassTypeDef class)
 {
-  if ((pdev->classId < USBD_MAX_SUPPORTED_CLASS) && (pdev->tclasslist[pdev->classId].Active == 0U))
-  {
-    /* store the class parameters in the global tab */
-    pdev->pClass[pdev->classId] = pclass;
-    pdev->tclasslist[pdev->classId].ClassId   = pdev->classId;
-    pdev->tclasslist[pdev->classId].Active    = 1U;
-    pdev->tclasslist[pdev->classId].ClassType = class;
+  uint16_t savedFSSze;
+#ifdef USE_USB_HS
+  uint16_t savedHSSze;
+#endif /* USE_USB_HS */
 
-    /* call configuration descriptor builder and endpoint configuration builder*/
-    if (USBD_CMPSIT_AddToConfDesc(pdev) != (uint8_t)USBD_OK)
-    {
-      return (uint8_t)USBD_FAIL;
-    }
+  /* Reject invalid inputs and an already-active or out-of-range slot before
+   * mutating any state, so a duplicate or overflow registration cannot leave
+   * a partial-active slot reported as success. */
+  if ((pdev == NULL) || (pclass == NULL))
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  if (!((pdev->classId < USBD_MAX_SUPPORTED_CLASS) && (pdev->tclasslist[pdev->classId].Active == 0U)))
+  {
+    return (uint8_t)USBD_FAIL;
+  }
+
+  /* snapshot the descriptor sizes so a failed AddToConfDesc can be rolled back */
+  savedFSSze = CurrFSConfDescSz;
+#ifdef USE_USB_HS
+  savedHSSze = CurrHSConfDescSz;
+#endif /* USE_USB_HS */
+
+  /* store the class parameters in the global tab */
+  pdev->pClass[pdev->classId] = pclass;
+  pdev->tclasslist[pdev->classId].ClassId   = pdev->classId;
+  pdev->tclasslist[pdev->classId].Active    = 1U;
+  pdev->tclasslist[pdev->classId].ClassType = class;
+
+  /* call configuration descriptor builder and endpoint configuration builder*/
+  if (USBD_CMPSIT_AddToConfDesc(pdev) != (uint8_t)USBD_OK)
+  {
+    /* roll back the partial slot and descriptor size so the failed class
+     * leaves no trace in pClass/Active/ClassType or the config descriptor. */
+    pdev->pClass[pdev->classId] = NULL;
+    pdev->tclasslist[pdev->classId].Active    = 0U;
+    pdev->tclasslist[pdev->classId].ClassType = (USBD_CompositeClassTypeDef)0U;
+    CurrFSConfDescSz = savedFSSze;
+#ifdef USE_USB_HS
+    CurrHSConfDescSz = savedHSSze;
+#endif /* USE_USB_HS */
+    return (uint8_t)USBD_FAIL;
   }
   return (uint8_t)USBD_OK;
 }
@@ -193,7 +231,7 @@ uint8_t USBD_CMPSIT_AddToConfDesc(USBD_HandleTypeDef *pdev)
 
   switch (pdev->tclasslist[pdev->classId].ClassType)
   {
-#if USBD_CMPSIT_ACTIVE_HID == 1
+#if USBD_CMPSIT_ACTIVATE_HID == 1U
     case CLASS_TYPE_HID:
       /* setup max packet sizes (for HID, no dependency on USB Speed, both HS/FS have same packet size) */
       pdev->tclasslist[pdev->classId].CurrPcktSze = HID_EPIN_SIZE;
@@ -218,10 +256,68 @@ uint8_t USBD_CMPSIT_AddToConfDesc(USBD_HandleTypeDef *pdev)
 #endif /* USE_USB_HS */
 
       break;
-#endif /* USBD_CMPSIT_ACTIVE_HID */
+#endif /* USBD_CMPSIT_ACTIVATE_HID */
+
+#if USBD_CMPSIT_ACTIVATE_CDC == 1U
+    case CLASS_TYPE_CDC:
+      /* CDC uses two interfaces (communication + data) and three endpoints:
+       * bulk IN, bulk OUT and interrupt IN (command). */
+      pdev->tclasslist[pdev->classId].CurrPcktSze = CDC_DATA_FS_MAX_PACKET_SIZE;
+
+      /* find the first available interface slot, assign communication and data interfaces */
+      idxIf = USBD_CMPSIT_FindFreeIFNbr(pdev);
+      pdev->tclasslist[pdev->classId].NumIf  = 2U;
+      pdev->tclasslist[pdev->classId].Ifs[0] = idxIf;      /* communication interface */
+      pdev->tclasslist[pdev->classId].Ifs[1] = (uint8_t)(idxIf + 1U); /* data interface */
+
+      /* assign endpoint numbers: bulk IN, bulk OUT, interrupt IN */
+      pdev->tclasslist[pdev->classId].NumEps = 3U;
+      USBD_CMPSIT_AssignEp(pdev, pdev->tclasslist[pdev->classId].EpAdd[0],
+                           USBD_EP_TYPE_BULK, CDC_DATA_FS_MAX_PACKET_SIZE);
+      USBD_CMPSIT_AssignEp(pdev, pdev->tclasslist[pdev->classId].EpAdd[1],
+                           USBD_EP_TYPE_BULK, CDC_DATA_FS_MAX_PACKET_SIZE);
+      USBD_CMPSIT_AssignEp(pdev, pdev->tclasslist[pdev->classId].EpAdd[2],
+                           USBD_EP_TYPE_INTR, CDC_CMD_PACKET_SIZE);
+
+      /* configure and append the descriptor */
+      USBD_CMPSIT_CDCDesc(pdev, (uint32_t)pCmpstFSConfDesc, &CurrFSConfDescSz, (uint8_t)USBD_SPEED_FULL);
+#ifdef USE_USB_HS
+      USBD_CMPSIT_CDCDesc(pdev, (uint32_t)pCmpstHSConfDesc, &CurrHSConfDescSz, (uint8_t)USBD_SPEED_HIGH);
+#endif /* USE_USB_HS */
+
+      break;
+#endif /* USBD_CMPSIT_ACTIVATE_CDC */
+
+#if USBD_CMPSIT_ACTIVATE_MSC == 1U
+    case CLASS_TYPE_MSC:
+      /* MSC uses a single interface with two bulk endpoints (IN and OUT). */
+      pdev->tclasslist[pdev->classId].CurrPcktSze = MSC_MAX_FS_PACKET;
+
+      idxIf = USBD_CMPSIT_FindFreeIFNbr(pdev);
+      pdev->tclasslist[pdev->classId].NumIf  = 1U;
+      pdev->tclasslist[pdev->classId].Ifs[0] = idxIf;
+
+      /* assign endpoint numbers: bulk IN, bulk OUT */
+      pdev->tclasslist[pdev->classId].NumEps = 2U;
+      USBD_CMPSIT_AssignEp(pdev, pdev->tclasslist[pdev->classId].EpAdd[0],
+                           USBD_EP_TYPE_BULK, MSC_MAX_FS_PACKET);
+      USBD_CMPSIT_AssignEp(pdev, pdev->tclasslist[pdev->classId].EpAdd[1],
+                           USBD_EP_TYPE_BULK, MSC_MAX_FS_PACKET);
+
+      /* configure and append the descriptor */
+      USBD_CMPSIT_MSCDesc(pdev, (uint32_t)pCmpstFSConfDesc, &CurrFSConfDescSz, (uint8_t)USBD_SPEED_FULL);
+#ifdef USE_USB_HS
+      USBD_CMPSIT_MSCDesc(pdev, (uint32_t)pCmpstHSConfDesc, &CurrHSConfDescSz, (uint8_t)USBD_SPEED_HIGH);
+#endif /* USE_USB_HS */
+
+      break;
+#endif /* USBD_CMPSIT_ACTIVATE_MSC */
 
     default:
-      break;
+      /* Unsupported or disabled class type: no descriptor is appended. Report
+       * failure so the caller rolls back the partial slot and does not
+       * advertise a configuration that omits this class. */
+      return (uint8_t)USBD_FAIL;
   }
   return (uint8_t)USBD_OK;
 }
@@ -315,7 +411,12 @@ static void USBD_CMPSIT_AddConfDesc(uint32_t Conf, __IO uint32_t *pSze)
   ptr->bDescriptorType = USB_DESC_TYPE_CONFIGURATION;
   ptr->wTotalLength = 0U;
   ptr->bNumInterfaces = 0U;
-  ptr->bConfigurationValue = 0U;
+  /* A configuration descriptor must advertise a non-zero configuration
+   * value: value 0 means unconfigured. The host selects the advertised
+   * value with SET_CONFIGURATION, and USBD_SetConfig treats 0 as a
+   * deconfiguration. All standalone FT32 class descriptors use 1, so the
+   * composite descriptor must do the same to enumerate reliably. */
+  ptr->bConfigurationValue = 1U;
   ptr->iConfiguration = USBD_CONFIG_STR_DESC_IDX;
 
 #if (USBD_SELF_POWERED == 1U)
@@ -355,7 +456,7 @@ static void USBD_CMPSIT_AssignEp(USBD_HandleTypeDef *pdev, uint8_t Add, uint8_t 
 
 }
 
-#if USBD_CMPSIT_ACTIVE_HID == 1
+#if USBD_CMPSIT_ACTIVATE_HID == 1U
 /**
   * @breif USBD_CMPSIT_HIDMouseDesc
   *        Configure and append the HID Mouse descriptor
@@ -372,10 +473,10 @@ static void USBD_CMPSIT_HIDMouseDesc(USBD_HandleTypeDef *pdev, uint32_t pConf, _
 
   /* append HID interface descriptor to configuration descriptor */
   __USBD_CMPSIT_SET_IF(pdev->tclasslist[pdev->classId].Ifs[0], 0U,
-                       (uint8_t)(pdev->tclasslist[pdev->classId].NumEps), 0x03U, 0x01U, 0x02U, 0U);
+                       (uint8_t)(pdev->tclasslist[pdev->classId].NumEps), 0x03U, 0x00U, 0x00U, 0U);
   /* append HID Functional descriptor to configuration descriptor */
   pHidMouseDesc = ((USBD_HIDDescTypeDef *)(pConf + *Sze));
-  pHidMouseDesc->bLength = (uint8_t)sizeof(USBD_HIDDescTypeDef);
+  pHidMouseDesc->blength = (uint8_t)sizeof(USBD_HIDDescTypeDef);
   pHidMouseDesc->bDescriptorType = HID_DESCRIPTOR_TYPE;
   pHidMouseDesc->bcdHID = 0x0111U;
   pHidMouseDesc->bCountryCode = 0x00U;
@@ -390,7 +491,119 @@ static void USBD_CMPSIT_HIDMouseDesc(USBD_HandleTypeDef *pdev, uint32_t pConf, _
   ((USBD_ConfigDescTypeDef *)pConf)->bNumInterfaces += 1U;
   ((USBD_ConfigDescTypeDef *)pConf)->wTotalLength = (uint16_t)(*Sze);
 }
-#endif /* USBD_CMPSIT_ACTIVE_HID */
+#endif /* USBD_CMPSIT_ACTIVATE_HID */
+
+#if USBD_CMPSIT_ACTIVATE_CDC == 1U
+/**
+  * @brief  USBD_CMPSIT_CDCDesc
+  *         Configure and append the CDC (communication + data) descriptor,
+  *         prefixed by an Interface Association Descriptor.
+  * @param  pdev: device instance
+  * @param  pConf: configuration descriptor pointer
+  * @param  Sze: pointer to the current configuration descriptor size
+  * @param  speed: current device speed
+  * @retval none
+  */
+static void USBD_CMPSIT_CDCDesc(USBD_HandleTypeDef *pdev, uint32_t pConf, __IO uint32_t *Sze, uint8_t speed)
+{
+  static USBD_IadDescTypeDef *pIadDesc;
+  static USBD_IfDescTypeDef *pIfDesc;
+  static USBD_EpDescTypeDef *pEpDesc;
+  uint8_t commIf = pdev->tclasslist[pdev->classId].Ifs[0];
+  uint8_t dataIf = pdev->tclasslist[pdev->classId].Ifs[1];
+  uint8_t *pFunc;
+
+  /* IAD groups the CDC communication and data interfaces as one function.
+   * It is only needed when CDC is part of a multi-function composite; a
+   * standalone CDC device enumerates fine without it. NumClasses reflects
+   * classes already registered before this one. */
+  if (pdev->NumClasses > 0U)
+  {
+    pIadDesc = ((USBD_IadDescTypeDef *)(pConf + *Sze));
+    pIadDesc->bLength = (uint8_t)sizeof(USBD_IadDescTypeDef);
+    pIadDesc->bDescriptorType = USB_DESC_TYPE_IAD;
+    pIadDesc->bFirstInterface = commIf;
+    pIadDesc->bInterfaceCount = 2U;
+    pIadDesc->bFunctionClass = USB_CLASS_CODE_CDC;
+    pIadDesc->bFunctionSubClass = 0x02U; /* Abstract Control Model */
+    pIadDesc->bFunctionProtocol = 0x01U; /* Common AT commands */
+    pIadDesc->iFunction = 0U;
+    *Sze += (uint32_t)sizeof(USBD_IadDescTypeDef);
+  }
+
+  /* CDC communication interface: one interrupt IN endpoint */
+  __USBD_CMPSIT_SET_IF(commIf, 0U, 1U, USB_CLASS_CODE_CDC, 0x02U, 0x01U, 0U);
+
+  /* CDC functional descriptors are written as raw bytes (no struct types). */
+  pFunc = ((uint8_t *)(pConf + *Sze));
+
+  /* Header functional descriptor: bcdCDC = 1.10 */
+  pFunc[0] = 0x05U; pFunc[1] = USBD_CDC_CS_INTERFACE; pFunc[2] = 0x00U;
+  pFunc[3] = 0x10U; pFunc[4] = 0x01U;
+  /* Call Management functional descriptor */
+  pFunc[5] = 0x05U; pFunc[6] = USBD_CDC_CS_INTERFACE; pFunc[7] = 0x01U;
+  pFunc[8] = 0x00U; pFunc[9] = dataIf;
+  /* ACM functional descriptor */
+  pFunc[10] = 0x04U; pFunc[11] = USBD_CDC_CS_INTERFACE; pFunc[12] = 0x02U;
+  pFunc[13] = 0x02U;
+  /* Union functional descriptor: master = comm, slave = data */
+  pFunc[14] = 0x05U; pFunc[15] = USBD_CDC_CS_INTERFACE; pFunc[16] = 0x06U;
+  pFunc[17] = commIf; pFunc[18] = dataIf;
+  *Sze += 19U;
+
+  /* Command interrupt IN endpoint (Eps[2]) */
+  __USBD_CMPSIT_SET_EP(pdev->tclasslist[pdev->classId].Eps[2].add, USBD_EP_TYPE_INTR,
+                       CDC_CMD_PACKET_SIZE, CDC_BINTERVAL, CDC_FS_BINTERVAL);
+
+  /* CDC data interface: two bulk endpoints (OUT and IN) */
+  __USBD_CMPSIT_SET_IF(dataIf, 0U, 2U, USB_CLASS_CODE_CDCDATA, 0x00U, 0x00U, 0U);
+
+  /* Bulk OUT endpoint (Eps[1]) */
+  __USBD_CMPSIT_SET_EP(pdev->tclasslist[pdev->classId].Eps[1].add, USBD_EP_TYPE_BULK,
+                       CDC_DATA_FS_MAX_PACKET_SIZE, 0U, 0U);
+  /* Bulk IN endpoint (Eps[0]) */
+  __USBD_CMPSIT_SET_EP(pdev->tclasslist[pdev->classId].Eps[0].add, USBD_EP_TYPE_BULK,
+                       CDC_DATA_FS_MAX_PACKET_SIZE, 0U, 0U);
+
+  /* CDC contributes two interfaces to the configuration */
+  ((USBD_ConfigDescTypeDef *)pConf)->bNumInterfaces += 2U;
+  ((USBD_ConfigDescTypeDef *)pConf)->wTotalLength = (uint16_t)(*Sze);
+}
+#endif /* USBD_CMPSIT_ACTIVATE_CDC */
+
+#if USBD_CMPSIT_ACTIVATE_MSC == 1U
+/**
+  * @brief  USBD_CMPSIT_MSCDesc
+  *         Configure and append the Mass Storage interface descriptor.
+  * @param  pdev: device instance
+  * @param  pConf: configuration descriptor pointer
+  * @param  Sze: pointer to the current configuration descriptor size
+  * @param  speed: current device speed
+  * @retval none
+  */
+static void USBD_CMPSIT_MSCDesc(USBD_HandleTypeDef *pdev, uint32_t pConf, __IO uint32_t *Sze, uint8_t speed)
+{
+  static USBD_IfDescTypeDef *pIfDesc;
+  static USBD_EpDescTypeDef *pEpDesc;
+  uint16_t pktSize = (speed == (uint8_t)USBD_SPEED_HIGH) ? MSC_MAX_HS_PACKET : MSC_MAX_FS_PACKET;
+
+  /* MSC interface: SCSI transparent command set, bulk-only transport */
+  __USBD_CMPSIT_SET_IF(pdev->tclasslist[pdev->classId].Ifs[0], 0U,
+                       (uint8_t)(pdev->tclasslist[pdev->classId].NumEps),
+                       USB_CLASS_CODE_MSC, 0x06U, 0x50U, 0U);
+
+  /* Bulk IN endpoint (Eps[0]) */
+  __USBD_CMPSIT_SET_EP(pdev->tclasslist[pdev->classId].Eps[0].add, USBD_EP_TYPE_BULK,
+                       pktSize, 0U, 0U);
+  /* Bulk OUT endpoint (Eps[1]) */
+  __USBD_CMPSIT_SET_EP(pdev->tclasslist[pdev->classId].Eps[1].add, USBD_EP_TYPE_BULK,
+                       pktSize, 0U, 0U);
+
+  /* MSC contributes one interface to the configuration */
+  ((USBD_ConfigDescTypeDef *)pConf)->bNumInterfaces += 1U;
+  ((USBD_ConfigDescTypeDef *)pConf)->wTotalLength = (uint16_t)(*Sze);
+}
+#endif /* USBD_CMPSIT_ACTIVATE_MSC */
 
 /**
   * @breif USBD_CMPSIT_SetClassID

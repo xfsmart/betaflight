@@ -217,8 +217,7 @@ void bbDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
         dmainit->TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_M2P_DMA;
         dmainit->SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_32BITS;
         dmainit->DstTransferWidth = DMA_DST_TRANSFERWIDTH_32BITS;
-        dmainit->SrcHsSel = DMA_SRCHSSEL_SOFTWARE;
-        dmainit->DstHsSel = DMA_DSTHSSEL_SOFTWARE;
+        ft32DmaSetDstRequest(dmainit, bbPort->dmaResource, bbPort->dmaChannel);
 
 #ifdef USE_DMA_REGISTER_CACHE
         xDMA_Init(bbPort->dmaResource, dmainit);
@@ -233,8 +232,7 @@ void bbDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
         dmainit->TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_P2M_DMA;
         dmainit->SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_16BITS;
         dmainit->DstTransferWidth = DMA_DST_TRANSFERWIDTH_16BITS;
-        dmainit->SrcHsSel = DMA_SRCHSSEL_SOFTWARE;
-        dmainit->DstHsSel = DMA_DSTHSSEL_SOFTWARE;
+        ft32DmaSetSrcRequest(dmainit, bbPort->dmaResource, bbPort->dmaChannel);
 
 #ifdef USE_DMA_REGISTER_CACHE
         xDMA_Init(bbPort->dmaResource, dmainit);

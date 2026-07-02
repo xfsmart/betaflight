@@ -138,7 +138,7 @@ void MSC_BOT_Reset(USBD_HandleTypeDef *pdev)
   }
 
   hmsc->bot_state = USBD_BOT_IDLE;
-  hmsc->bot_state = USBD_BOT_STATUS_RECOVERY;
+  hmsc->bot_status = USBD_BOT_STATUS_RECOVERY;
 
   (void)USBD_LL_ClearStallEP(pdev, MSCInEpAdd);
   (void)USBD_LL_ClearStallEP(pdev, MSCOutEpAdd);

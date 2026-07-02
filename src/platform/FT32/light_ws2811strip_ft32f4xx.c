@@ -182,14 +182,10 @@ bool ws2811LedStripHardwareInit(void)
     DMA_InitStructure.Priority = DMA_CH_PRIORITY_7;
     DMA_InitStructure.TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_M2P_DMA;
 
-    // Hardware handshaking for timer DMA request
-    DMA_InitStructure.SrcHsSel = 1;  // Memory side: no peripheral request
-    DMA_InitStructure.SrcHsIfPeriphSel = 0;
-    DMA_InitStructure.DstHsSel = 0;  // Peripheral side: use DMA request
 #if defined(USE_DMA_SPEC)
-    DMA_InitStructure.DstHsIfPeriphSel = dmaSpec->channel;
+    ft32DmaSetDstRequest(&DMA_InitStructure, dmaRef, dmaSpec->channel);
 #else
-    DMA_InitStructure.DstHsIfPeriphSel = timerHardware->dmaChannel;
+    ft32DmaSetDstRequest(&DMA_InitStructure, dmaRef, timerHardware->dmaChannel);
 #endif
 
 #if defined(USE_WS2811_SINGLE_COLOUR)

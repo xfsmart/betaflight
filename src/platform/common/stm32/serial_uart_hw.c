@@ -84,6 +84,18 @@ static void enableRxIrq(const uartHardware_t *hardware)
 
 uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode, portOptions_e options)
 {
+#if defined(FT32F4)
+    // FT32F4 has no asynchronous single-wire half-duplex UART capability.
+    // The CHMODE=AUTOMATIC channel mode only echoes RXD onto TXD and cannot
+    // transmit independently, and there is no async single-wire selection
+    // bit (ISO7816 mode is clocked smartcard, not async). Refuse SERIAL_BIDIR
+    // at open so a caller cannot get a port that transmits but never receives
+    // on the shared pin.
+    if (options & SERIAL_BIDIR) {
+        return NULL;
+    }
+#endif
+
     uartPort_t *s = &uartdev->port;
 
     const uartHardware_t *hardware = uartdev->hardware;
@@ -264,7 +276,7 @@ void uartConfigureDma(uartDevice_t *uartdev)
         dmaChannelSpec = dmaGetChannelSpecByPeripheral(DMA_PERIPH_UART_TX, uartDeviceIdx, cfg->txDmaopt);
         if (dmaChannelSpec) {
             uartPort->txDMAResource = dmaChannelSpec->ref;
-#if DMA_TRAIT_CHANNEL
+#if DMA_TRAIT_CHANNEL || defined(FT32F4)
             uartPort->txDMAChannel = dmaChannelSpec->channel;
 #elif DMA_TRAIT_MUX
             uartPort->txDMAMuxId = dmaChannelSpec->dmaMuxId;
@@ -273,10 +285,10 @@ void uartConfigureDma(uartDevice_t *uartdev)
     }
 
     if (cfg->rxDmaopt != DMA_OPT_UNUSED) {
-        dmaChannelSpec = dmaGetChannelSpecByPeripheral(DMA_PERIPH_UART_RX, uartDeviceIdx, cfg->txDmaopt);
+        dmaChannelSpec = dmaGetChannelSpecByPeripheral(DMA_PERIPH_UART_RX, uartDeviceIdx, cfg->rxDmaopt);
         if (dmaChannelSpec) {
             uartPort->rxDMAResource = dmaChannelSpec->ref;
-#if DMA_TRAIT_CHANNEL
+#if DMA_TRAIT_CHANNEL || defined(FT32F4)
             uartPort->rxDMAChannel = dmaChannelSpec->channel;
 #elif DMA_TRAIT_MUX
             uartPort->rxDMAMuxId = dmaChannelSpec->dmaMuxId;

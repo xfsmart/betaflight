@@ -37,88 +37,77 @@
 #include "drivers/nvic.h"
 #include "platform/dma.h"
 #include "platform/rcc.h"
+#include "platform/serial_uart.h"
 
 #include "drivers/serial.h"
 #include "drivers/serial_uart.h"
 #include "drivers/serial_uart_impl.h"
 
-/*
- * DMA peripheral request ID mapping:
- *   PeriphSel 2 = UART4 (DMA1 only)
- *   PeriphSel 4 = USART1, USART2, USART3, UART5
- *   PeriphSel 5 = USART6 (DMA2 only)
- */
-static uint8_t uartGetDmaPeriphId(void *USARTx)
-{
-    uintptr_t base = (uintptr_t)USARTx;
-
-#if defined(UART4_BASE)
-    if (base == UART4_BASE) return 2;  // PeriphSel 2
-#endif
-#if defined(USART1_BASE)
-    if (base == USART1_BASE) return 4;
-#endif
-#if defined(USART2_BASE)
-    if (base == USART2_BASE) return 4;
-#endif
-#if defined(USART3_BASE)
-    if (base == USART3_BASE) return 4;
-#endif
-#if defined(UART5_BASE)
-    if (base == UART5_BASE) return 4;
-#endif
-#if defined(USART6_BASE)
-    if (base == USART6_BASE) return 5;  // PeriphSel 5
-#endif
-
-    // Fallback: assume PeriphSel 4 (most common)
-    return 4;
-}
+// Receiver timeout window in bit periods. A sustained idle period of this
+// length after the last received byte marks a packet boundary, approximating
+// the idle-line detection used to drive the idle callback.
+#define UART_RX_TIMEOUT_BITS 40U
 
 void uartReconfigure(uartPort_t *uartPort)
 {
     USART_TypeDef *USARTx = (USART_TypeDef *)uartPort->USARTx;
-    USART_InitTypeDef USART_InitStructure;
 
-    USART_Cmd(USARTx, DISABLE);
-
-    USART_StructInit(&USART_InitStructure);
-    USART_InitStructure.USART_BaudRate = uartPort->port.baudRate;
-
-    // Word length: 9 bits required for parity
-    if (uartPort->port.options & SERIAL_PARITY_EVEN) {
-        USART_InitStructure.USART_WordLength = USART_CHAR_LENGTH9_DISABLE;
-    } else {
-        USART_InitStructure.USART_WordLength = USART_CHAR_LENGTH_8BIT;
+    // 8-bit character length applies to every frame format on this USART;
+    // parity is selected by the PAR field and is independent of CHRL.
+    const uint32_t wordLength = USART_CHAR_LENGTH_8BIT;
+    const uint32_t stopBits = (uartPort->port.options & SERIAL_STOPBITS_2)
+                                  ? USART_STOPBITS_2
+                                  : USART_STOPBITS_1;
+    const uint32_t parity = (uartPort->port.options & SERIAL_PARITY_EVEN)
+                                ? USART_PARITY_EVEN
+                                : USART_PARITY_NONE;
+    uint32_t mode = 0;
+    if (uartPort->port.mode & MODE_RX) {
+        mode |= USART_MODE_RX;
+    }
+    if (uartPort->port.mode & MODE_TX) {
+        mode |= USART_MODE_TX;
     }
 
-    USART_InitStructure.USART_StopBits = (uartPort->port.options & SERIAL_STOPBITS_2)
-                                             ? USART_STOPBITS_2
-                                             : USART_STOPBITS_1;
-    USART_InitStructure.USART_Parity = (uartPort->port.options & SERIAL_PARITY_EVEN)
-                                           ? USART_PARITY_EVEN
-                                           : USART_PARITY_NONE;
-    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-    USART_InitStructure.USART_Mode = 0;
-
-    if (uartPort->port.mode & MODE_RX)
-        USART_InitStructure.USART_Mode |= USART_MODE_RX;
-    if (uartPort->port.mode & MODE_TX)
-        USART_InitStructure.USART_Mode |= USART_MODE_TX;
-
-    USART_Init(USARTx, &USART_InitStructure);
+    // UART4/5 are a separate peripheral family with their own init type and
+    // APB1 baud divider; USART1/2/3/6 use the USART family. Both families share
+    // the same MR field layout, so the configuration constants are common.
+    if (USARTx == UART4 || USARTx == UART5) {
+        UART_Cmd(USARTx, DISABLE);
+        UART_InitTypeDef uartInit;
+        UART_StructInit(&uartInit);
+        uartInit.UART_BaudRate = uartPort->port.baudRate;
+        uartInit.UART_WordLength = wordLength;
+        uartInit.UART_StopBits = stopBits;
+        uartInit.UART_Parity = parity;
+        uartInit.UART_Mode = mode;
+        UART_Init(USARTx, &uartInit);
+    } else {
+        USART_Cmd(USARTx, DISABLE);
+        USART_InitTypeDef usartInit;
+        USART_StructInit(&usartInit);
+        usartInit.USART_BaudRate = uartPort->port.baudRate;
+        usartInit.USART_WordLength = wordLength;
+        usartInit.USART_StopBits = stopBits;
+        usartInit.USART_Parity = parity;
+        usartInit.USART_Mode = mode;
+        USART_Init(USARTx, &usartInit);
+    }
 
     // Config external pin inverter (no internal pin inversion available)
     uartConfigureExternalPinInversion(uartPort);
 
-    if (uartPort->port.options & SERIAL_BIDIR) {
-        // FT32 uses automatic echo mode for half-duplex (single-wire) operation
-        USART_ChannelMode_Cfg(USARTx, USART_CHANNEL_MODE_AUTOMATIC);
-    } else {
-        USART_ChannelMode_Cfg(USARTx, USART_CHANNEL_MODE_NORMAL);
-    }
+    // Channel mode stays normal. This USART has no asynchronous single-wire
+    // half-duplex selection (CHMODE=AUTOMATIC only echoes RXD onto TXD and
+    // cannot transmit independently), so SERIAL_BIDIR is refused at open in
+    // serialUART rather than handled here; normal mode is the StructInit
+    // default already applied by the init call above.
 
-    USART_Cmd(USARTx, ENABLE);
+    if (USARTx == UART4 || USARTx == UART5) {
+        UART_Cmd(USARTx, ENABLE);
+    } else {
+        USART_Cmd(USARTx, ENABLE);
+    }
 
     // Receive DMA or IRQ
     if (uartPort->port.mode & MODE_RX) {
@@ -139,27 +128,27 @@ void uartReconfigure(uartPort_t *uartPort)
             // Circular RX: reload destination address after block completes
             ft32_dma_init.ReloadDst = ENABLE;
             ft32_dma_init.ReloadSrc = DISABLE;
-            // Hardware handshaking: DMA responds to USART peripheral request signal
-            // PeriphSel: 4=USART1/2/3/UART4/5, 5=USART6
-            ft32_dma_init.SrcHsSel = 0;
-            ft32_dma_init.SrcHsIfPeriphSel = uartGetDmaPeriphId(USARTx);
-            ft32_dma_init.DstHsSel = 1; // Memory side: no peripheral request
-            ft32_dma_init.DstHsIfPeriphSel = 0;
+            ft32DmaSetSrcRequest(&ft32_dma_init, uartPort->rxDMAResource, uartPort->rxDMAChannel);
 
             DMA_DeInit((DMA_Channel_TypeDef *)uartPort->rxDMAResource);
-            DMA_Init((DMA_Channel_TypeDef *)uartPort->rxDMAResource, &ft32_dma_init);
+            xDMA_Init(uartPort->rxDMAResource, &ft32_dma_init);
             DMA_Cmd((DMA_Channel_TypeDef *)uartPort->rxDMAResource, ENABLE);
-            USART_DMARxEnable_Cmd(USARTx, ENABLE);
+            ft32UartDMARxEnable_Cmd(USARTx, ENABLE);
 
             uartPort->rxDMAPos = DMA_GetCurrDataCounter(
                 (DMA_Channel_TypeDef *)uartPort->rxDMAResource);
         } else
 #endif
         {
-            USART_ClearFlag(USARTx, USART_FLAG_RXRDY);
-            USART_ITConfig(USARTx, USART_IT_RXRDY, ENABLE);
-            // Enable receiver timeout interrupt for packet end detection
-            USART_ITConfig(USARTx, USART_IT_TIMEOUT, ENABLE);
+            // RXRDY is cleared by reading the receive holding register
+            (void)ft32UartReceive(USARTx);
+            // Program and arm the receiver timeout so the idle callback fires
+            // at a packet boundary after sustained line idle.
+            ft32UartReceiver_TimeOut_Cfg(USARTx, UART_RX_TIMEOUT_BITS);
+            ft32UartSTTTO_After_Timeout_Cmd(USARTx, ENABLE);
+            ft32UartRETTO_After_Timeout_Cmd(USARTx, ENABLE);
+            ft32UartITConfig(USARTx, USART_IT_RXRDY, ENABLE);
+            ft32UartITConfig(USARTx, USART_IT_TIMEOUT, ENABLE);
         }
     }
 
@@ -182,23 +171,23 @@ void uartReconfigure(uartPort_t *uartPort)
             // Normal mode (not circular): single-shot per chunk
             ft32_dma_init.ReloadDst = DISABLE;
             ft32_dma_init.ReloadSrc = DISABLE;
-            // Hardware handshaking: DMA responds to USART TX DMA request signal
-            // PeriphSel: 4=USART1/2/3/UART4/5, 5=USART6
-            ft32_dma_init.SrcHsSel = 1; // Memory side: no peripheral request
-            ft32_dma_init.SrcHsIfPeriphSel = 0;
-            ft32_dma_init.DstHsSel = 0;
-            ft32_dma_init.DstHsIfPeriphSel = uartGetDmaPeriphId(USARTx);
+            ft32DmaSetDstRequest(&ft32_dma_init, uartPort->txDMAResource, uartPort->txDMAChannel);
 
             DMA_DeInit((DMA_Channel_TypeDef *)uartPort->txDMAResource);
-            DMA_Init((DMA_Channel_TypeDef *)uartPort->txDMAResource, &ft32_dma_init);
-            USART_DMATxEnable_Cmd(USARTx, ENABLE);
+            xDMA_Init(uartPort->txDMAResource, &ft32_dma_init);
+            DMA_ITConfig((DMA_Channel_TypeDef *)uartPort->txDMAResource, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
+            ft32UartDMATxEnable_Cmd(USARTx, ENABLE);
             DMA_SetCurrDataCounter((DMA_Channel_TypeDef *)uartPort->txDMAResource, 0);
         } else
 #endif
         {
-            USART_ITConfig(USARTx, USART_IT_TXRDY, ENABLE);
+            ft32UartITConfig(USARTx, USART_IT_TXRDY, ENABLE);
         }
-        USART_ITConfig(USARTx, USART_IT_TXEMPTY, ENABLE);
+        // TXEMPTY is a level flag set whenever the transmitter is idle, so its
+        // interrupt is not enabled here; enabling it at configuration time would
+        // assert continuously. The SERIAL_CHECK_TX completion path arms it
+        // lazily after a byte is queued (see uartIrqHandler TXRDY branch); DMA
+        // ports signal completion through the DMA transfer interrupt instead.
     }
 }
 
@@ -220,6 +209,12 @@ void uartTryStartTxDMA(uartPort_t *s)
             s->txDMAEmpty = true;
             return;
         }
+
+        // Repoint the source to the current ring tail, which is the start of
+        // the next chunk, before advancing the tail. The channel is stopped at
+        // this point (counter is zero) so the source address is writable.
+        DMA_SetSrcAddress((DMA_Channel_TypeDef *)s->txDMAResource,
+                          (uint32_t)&s->port.txBuffer[s->port.txBufferTail]);
 
         // Start a new transaction.
         unsigned chunk;

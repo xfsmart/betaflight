@@ -108,6 +108,17 @@ static const dmaPeripheralMapping_t dmaPeripheralMapping[] = {
     { DMA_PERIPH_SDIO,    0,         { FT32_DMA(2, 3, 4), FT32_DMA(2, 6, 4) } },
 #endif
 
+#ifdef USE_TIMER
+    { DMA_PERIPH_TIMUP,   1,         { FT32_DMA(2, 5, 6) } },
+    { DMA_PERIPH_TIMUP,   2,         { FT32_DMA(1, 7, 3), FT32_DMA(1, 1, 3) } },
+    { DMA_PERIPH_TIMUP,   3,         { FT32_DMA(1, 2, 5) } },
+    { DMA_PERIPH_TIMUP,   4,         { FT32_DMA(1, 6, 2) } },
+    { DMA_PERIPH_TIMUP,   5,         { FT32_DMA(1, 0, 6), FT32_DMA(1, 6, 6) } },
+    { DMA_PERIPH_TIMUP,   6,         { FT32_DMA(1, 1, 7) } },
+    { DMA_PERIPH_TIMUP,   7,         { FT32_DMA(1, 4, 1), FT32_DMA(1, 2, 1) } },
+    { DMA_PERIPH_TIMUP,   8,         { FT32_DMA(2, 1, 7) } },
+#endif
+
 #ifdef USE_UART1
     // USART1_RX: DMA2 Channel_2 (PeriphSel=4) or DMA2 Channel_5 (PeriphSel=4)
     // USART1_TX: DMA2 Channel_7 (PeriphSel=4)
@@ -322,6 +333,20 @@ dmaoptValue_t dmaGetOptionByTimer(const timerHardware_t *timer)
                     return j;
                 }
             }
+        }
+    }
+
+    return DMA_OPT_UNUSED;
+}
+
+dmaoptValue_t dmaGetUpOptionByTimer(const timerHardware_t *timer)
+{
+    const int8_t timerIndex = timerGetTIMNumber(timer);
+
+    for (unsigned i = 0; i < MAX_PERIPHERAL_DMA_OPTIONS; i++) {
+        const dmaChannelSpec_t *dma = dmaGetChannelSpecByPeripheral(DMA_PERIPH_TIMUP, timerIndex, i);
+        if (dma && dma->ref == timer->dmaTimUPRef && dma->channel == timer->dmaTimUPChannel) {
+            return (dmaoptValue_t)i;
         }
     }
 

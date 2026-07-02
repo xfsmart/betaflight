@@ -29,9 +29,17 @@
 
 #include "usbd_hid.h"
 
+/* USB device handle defined in vcpf4/usbd_cdc_vcp.c */
+extern USBD_HandleTypeDef USBD_Device;
+
 void sendReport(uint8_t *report, uint8_t len)
 {
+#ifdef USE_USBD_COMPOSITE
+    /* HID is registered as the first composite class (classId 0). */
+    USBD_HID_SendReport(&USBD_Device, report, len, 0U);
+#else
     USBD_HID_SendReport(&USBD_Device, report, len);
+#endif
 }
 
 #endif

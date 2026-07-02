@@ -479,7 +479,12 @@ configStreamerResult_e configWriteWord(uintptr_t address, config_streamer_buffer
     }
 #elif defined(FT32F4)
     if (address % FLASH_PAGE_SIZE == 0) {
-        const FLASH_Status status = FLASH_ErasePage(address, 1);
+        if (address < FLASH_BASE) {
+            return CONFIG_RESULT_ADDRESS_INVALID;
+        }
+        // FLASH_ErasePage takes a page index, not an absolute address.
+        const uint32_t page = (address - FLASH_BASE) / FLASH_PAGE_SIZE;
+        const FLASH_Status status = FLASH_ErasePage(page, ERASE_SIZE_0);
         if (status != FLASH_COMPLETE) {
             return CONFIG_RESULT_FAILURE;
         }

@@ -181,7 +181,7 @@ USBD_StatusTypeDef  USBD_StdItfReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDe
               /* No relative interface found */
               ret = USBD_FAIL;
             }
-          #ifdef USB_OTG_HS_CORE
+          #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
             if ((req->wLength == 0U) && (ret == USBD_OK))
             {
               (void)USBD_CtlSendStatus(pdev);
@@ -267,7 +267,7 @@ USBD_StatusTypeDef  USBD_StdEPReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef
                   (void)USBD_LL_StallEP(pdev, ep_addr);
                 }
               }
-            #ifdef USB_OTG_HS_CORE
+            #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
               (void)USBD_CtlSendStatus(pdev);
             #endif /* USB_OTG_HS_CORE */
               break;
@@ -300,7 +300,7 @@ USBD_StatusTypeDef  USBD_StdEPReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef
                 {
                   (void)USBD_LL_ClearStallEP(pdev, ep_addr);
                 }
-              #ifdef USB_OTG_HS_CORE
+              #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
                 (void)USBD_CtlSendStatus(pdev);
               #endif /* USB_OTG_HS_CORE */
 
@@ -646,7 +646,7 @@ static void USBD_GetDescriptor(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *r
   }
   else
   {
-  #ifdef USB_OTG_HS_CORE
+  #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
     (void)USBD_CtlSendStatus(pdev);
   #endif /* USB_OTG_HS_CORE */
   }
@@ -673,7 +673,7 @@ static void USBD_SetAddress(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
     else
     {
       pdev->dev_address = dev_addr;
-    #ifdef USB_OTG_HS_CORE
+    #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
       (void)USBD_LL_SetUSBAddress(pdev, dev_addr);
       (void)USBD_CtlSendStatus(pdev);
 
@@ -685,7 +685,7 @@ static void USBD_SetAddress(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
       {
         pdev->dev_state = USBD_STATE_DEFAULT;
       }
-    #endif /* USB_OTG_HS_CORE */
+    #endif /* USB_OTG_HS_CORE || USB_OTG_FS_CORE */
     }
   }
   else
@@ -729,7 +729,7 @@ static USBD_StatusTypeDef USBD_SetConfig(USBD_HandleTypeDef *pdev, USBD_SetupReq
         }
         else
         {
-        #ifdef USB_OTG_HS_CORE
+        #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
           (void)USBD_CtlSendStatus(pdev);
         #endif /* USB_OTG_HS_CORE */
           pdev->dev_state = USBD_STATE_CONFIGURED;
@@ -737,7 +737,7 @@ static USBD_StatusTypeDef USBD_SetConfig(USBD_HandleTypeDef *pdev, USBD_SetupReq
       }
       else
       {
-      #ifdef USB_OTG_HS_CORE
+      #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
         (void)USBD_CtlSendStatus(pdev);
       #endif /* USB_OTG_HS_CORE */
       }
@@ -749,7 +749,7 @@ static USBD_StatusTypeDef USBD_SetConfig(USBD_HandleTypeDef *pdev, USBD_SetupReq
         pdev->dev_state = USBD_STATE_ADDRESSED;
         pdev->dev_config = cfgidx;
         (void)USBD_ClrClassConfig(pdev, cfgidx);
-      #ifdef USB_OTG_HS_CORE
+      #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
         (void)USBD_CtlSendStatus(pdev);
       #endif /* USB_OTG_HS_CORE */
       }
@@ -769,14 +769,14 @@ static USBD_StatusTypeDef USBD_SetConfig(USBD_HandleTypeDef *pdev, USBD_SetupReq
         }
         else
         {
-        #ifdef USB_OTG_HS_CORE
+        #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
           (void)USBD_CtlSendStatus(pdev);
         #endif /* USB_OTG_HS_CORE */  
         }
       }
       else
       {
-      #ifdef USB_OTG_HS_CORE
+      #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
         (void)USBD_CtlSendStatus(pdev);
       #endif /* USB_OTG_HS_CORE */
       }
@@ -874,14 +874,14 @@ static void USBD_SetFeature(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
   if (req->wValue == USB_FEATURE_REMOTE_WAKEUP)
   {
     pdev->dev_remote_wakeup = 1U;
-  #ifdef USB_OTG_HS_CORE
+  #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
     (void)USBD_CtlSendStatus(pdev);
   #endif /* USB_OTG_HS_CORE */
   }
   else if (req->wValue == USB_FEATURE_TEST_MODE)
   {
     pdev->dev_test_mode = (uint8_t)(req->wIndex >> 8);
-  #ifdef USB_OTG_HS_CORE
+  #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
     (void)USBD_CtlSendStatus(pdev);
   #endif /* USB_OTG_HS_CORE */
   }
@@ -908,7 +908,7 @@ static void USBD_ClrFeature(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
       if (req->wValue == USB_FEATURE_REMOTE_WAKEUP)
       {
         pdev->dev_remote_wakeup = 0U;
-      #ifdef USB_OTG_HS_CORE
+      #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
         (void)USBD_CtlSendStatus(pdev);
       #endif /* USB_OTG_HS_CORE */
       }

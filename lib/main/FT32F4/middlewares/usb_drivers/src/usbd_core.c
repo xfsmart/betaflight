@@ -242,34 +242,45 @@ USBD_StatusTypeDef  USBD_RegisterClass(USBD_HandleTypeDef *pdev, USBD_ClassTypeD
 USBD_StatusTypeDef  USBD_RegisterClassComposite(USBD_HandleTypeDef *pdev, USBD_ClassTypeDef *pclass,
                                                 USBD_CompositeClassTypeDef classtype, uint8_t *EpAddr)
 {
-  USBD_StatusTypeDef ret = USBD_OK;
+  USBD_StatusTypeDef ret = USBD_FAIL;
   uint16_t  len = 0U;
+
+  /* Reject every invalid input up front so a failed registration is never
+   * reported as success. NULL pdev/pclass/EpAddr or either capacity bound
+   * being exceeded must return FAIL without mutating any state. */
+  if ((pdev == NULL) || (pclass == NULL) || (EpAddr == NULL))
+  {
+#if (USBD_DEBUG_LEVEL > 1U)
+    USBD_ErrLog("Invalid registration argument");
+#endif
+    return ret;
+  }
 
   if ((pdev->classId < USBD_MAX_SUPPORTED_CLASS) && (pdev->NumClasses < USBD_MAX_SUPPORTED_CLASS))
   {
-    if ((uint32_t)pclass != 0U)
+    /* Link the class to the usb device handle */
+    pdev->pClass[pdev->classId] = pclass;
+    pdev->tclasslist[pdev->classId].EpAdd = EpAddr;
+
+    /* call the composite class builder; a failure (slot already active,
+     * class type disabled/unsupported, or descriptor build failure) must
+     * abort registration instead of leaving a partial-active slot. */
+    if (USBD_CMPSIT_AddClass(pdev, pclass, classtype) != (uint8_t)USBD_OK)
     {
-      /* Link the class to the usb device handle */
-      pdev->pClass[pdev->classId] = pclass;
+      pdev->pClass[pdev->classId] = NULL;
+      pdev->tclasslist[pdev->classId].EpAdd = NULL;
+      ret = USBD_FAIL;
+    }
+    else
+    {
       ret = USBD_OK;
-
-      pdev->tclasslist[pdev->classId].EpAdd = EpAddr;
-
-      /* call the composite class bulider */
-      (void)USBD_CMPSIT_AddClass(pdev, pclass, classtype);
 
       /* Increment the ClassId for the next occurence */
       pdev->classId ++;
       pdev->NumClasses ++;
     }
-    else
-    {
-#if (USBD_DEBUG_LEVEL > 1U)
-      USBD_ErrLog("Invalid Class handle");
-#endif
-      ret = USBD_FAIL;
-    }
   }
+  /* capacity exceeded: ret stays USBD_FAIL (no body, no mutation) */
 
   if (ret == USBD_OK)
   {
@@ -589,7 +600,7 @@ USBD_StatusTypeDef USBD_LL_DataOutStage(USBD_HandleTypeDef *pdev, uint8_t epnum,
             break;
 
           case USB_REQ_RECIPIENT_ENDPOINT:
-            ret = USBD_CoreFindEP(pdev, LOBYTE(pdev->request.wIndex));
+            idx = USBD_CoreFindEP(pdev, LOBYTE(pdev->request.wIndex));
             break;
 
           default:
@@ -597,15 +608,18 @@ USBD_StatusTypeDef USBD_LL_DataOutStage(USBD_HandleTypeDef *pdev, uint8_t epnum,
             idx = 0U;
             break;
         }
-        if (idx < USBD_MAX_SUPPORTED_CLASS)
+        if ((idx != 0xFFU) && (idx < USBD_MAX_SUPPORTED_CLASS))
         {
           /* setup the class ID and route the request to the relative class function */
           if (pdev->dev_state == USBD_STATE_CONFIGURED)
           {
-            if (pdev->pClass[idx]->EP0_RxReady != NULL)
+            if (pdev->pClass[idx] != NULL)
             {
-              pdev->classId = idx;
-              pdev->pClass[idx]->EP0_RxReady(pdev);
+              if (pdev->pClass[idx]->EP0_RxReady != NULL)
+              {
+                pdev->classId = idx;
+                pdev->pClass[idx]->EP0_RxReady(pdev);
+              }
             }
           }
         }

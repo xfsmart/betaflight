@@ -43,6 +43,7 @@ void USB_OTG_BSP_Init(void)
   */
 void USB_OTG_BSP_EnableInterrupt(void)
 {
+    NVIC_SetPriority(OTG_IRQ, NVIC_PRIO_USB);
     NVIC_EnableIRQ(OTG_IRQ);
 }
 

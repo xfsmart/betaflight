@@ -174,6 +174,7 @@ static void             SD_DataTransferInit         (uint32_t Size, uint32_t Dat
 static SD_Error_t       SD_TransmitCommand          (uint32_t Command, uint32_t Argument, int8_t ResponseType);
 static SD_Error_t       SD_CmdResponse              (uint8_t SD_CMD, int8_t ResponseType);
 static void             SD_GetResponse              (uint32_t* pResponse);
+static SD_Error_t       SD_ReadFifo                 (uint32_t *Buffer, uint32_t WordCount);
 static SD_Error_t       CheckOCR_Response           (uint32_t Response_R1);
 static void             SD_DMA_Complete             (dmaChannelDescriptor_t *descriptor);
 static SD_Error_t       SD_InitializeCard           (void);
@@ -274,13 +275,17 @@ static SD_Error_t SD_TransmitCommand(uint32_t Command, uint32_t Argument, int8_t
 }
 
 /** -----------------------------------------------------------------------------------------------------------------*/
+static uint32_t SD_RawITStatus(uint32_t Flag)
+{
+    return SDIO->RINTSTS & Flag;
+}
+
 static SD_Error_t SD_CmdResponse(uint8_t SD_CMD, int8_t ResponseType)
 {
     uint32_t Response_R1;
     timeUs_t TimeOut;
     uint32_t Flag;
 
-    // Use MINTSTS for masked interrupt status instead of SDIO_STA
     if (ResponseType == -1) {
         Flag = SDIO_IT_FLAG_CMDDONE;
     } else {
@@ -289,8 +294,7 @@ static SD_Error_t SD_CmdResponse(uint8_t SD_CMD, int8_t ResponseType)
 
     TimeOut = micros() + SD_SOFTWARE_COMMAND_TIMEOUT;
     do {
-        uint32_t intStatus = SDIO->MINTSTS;
-        if (intStatus & Flag) {
+        if (SD_RawITStatus(Flag)) {
             break;
         }
     } while (cmpTimeUs(micros(), TimeOut) < 0);
@@ -304,7 +308,7 @@ static SD_Error_t SD_CmdResponse(uint8_t SD_CMD, int8_t ResponseType)
     }
 
     // Check RTO (response timeout) instead of SDIO_STA_CTIMEOUT
-    if (SDIO_GetITFlag(SDIO_IT_FLAG_RTO)) {
+    if (SD_RawITStatus(SDIO_IT_FLAG_RTO)) {
         SDIO_ClearITFlag(SDIO_IT_CLEAN_RTO);
         return SD_CMD_RSP_TIMEOUT;
     }
@@ -317,7 +321,7 @@ static SD_Error_t SD_CmdResponse(uint8_t SD_CMD, int8_t ResponseType)
     }
 
     // Check RCRC (response CRC error) instead of SDIO_STA_CCRCFAIL
-    if (SDIO_GetITFlag(SDIO_IT_FLAG_RCRC)) {
+    if (SD_RawITStatus(SDIO_IT_FLAG_RCRC)) {
         SDIO_ClearITFlag(SDIO_IT_CLEAN_RCRC);
         return SD_CMD_CRC_FAIL;
     }
@@ -388,6 +392,32 @@ static void SD_GetResponse(uint32_t* pResponse)
     pResponse[1] = SDIO->RESP1;
     pResponse[2] = SDIO->RESP2;
     pResponse[3] = SDIO->RESP3;
+}
+
+/** -----------------------------------------------------------------------------------------------------------------*/
+static SD_Error_t SD_ReadFifo(uint32_t *Buffer, uint32_t WordCount)
+{
+    uint32_t Count = SD_DATATIMEOUT;
+    uint32_t Index = 0;
+
+    while ((Index < WordCount) && (Count > 0)) {
+        if (!SDIO_GetFifoStatus(SDIO_STAT_FIFO_EMPTY)) {
+            Buffer[Index++] = SDIO_DATA->DATA;
+            Count = SD_DATATIMEOUT;
+        } else if (SD_RawITStatus(SDIO_IT_FLAG_DTO | SDIO_IT_FLAG_DCRC | SDIO_IT_FLAG_DRTO | SDIO_IT_FLAG_FRUN)) {
+            break;
+        } else {
+            Count--;
+        }
+    }
+
+    if ((Count == 0) || SD_RawITStatus(SDIO_IT_FLAG_DRTO)) return SD_DATA_TIMEOUT;
+    if (SD_RawITStatus(SDIO_IT_FLAG_DCRC)) return SD_DATA_CRC_FAIL;
+    if (SD_RawITStatus(SDIO_IT_FLAG_FRUN)) return SD_RX_OVERRUN;
+    if (Index != WordCount) return SD_DATA_TIMEOUT;
+    if (!SDIO_GetFifoStatus(SDIO_STAT_FIFO_EMPTY)) return SD_OUT_OF_BOUND;
+
+    return SD_OK;
 }
 
 /** -----------------------------------------------------------------------------------------------------------------*/
@@ -503,19 +533,10 @@ static void SD_StartBlockTransfer(uint32_t* pBuffer, uint32_t BlockSize, uint32_
     DMA_InitStructure.DstTransferWidth    = DMA_DST_TRANSFERWIDTH_32BITS;
     DMA_InitStructure.Priority            = DMA_CH_PRIORITY_7;
 
-    // Configure hardware handshake interface based on direction
-    // P2M (RX): source=peripheral (hardware HS), destination=memory (software HS)
-    // M2P (TX): source=memory (software HS), destination=peripheral (hardware HS)
     if (dir == SDIO_DIR_RX) {
-        DMA_InitStructure.SrcHardwareInterface = DMA_CODE_STREAM(sdioDmaSpec->code);
-        DMA_InitStructure.SrcHsIfPeriphSel    = sdioDmaSpec->channel;
-        DMA_InitStructure.SrcHsSel  = 0;  // Hardware handshake for source (peripheral)
-        DMA_InitStructure.DstHsSel  = 1;  // Software handshake for dest (memory)
+        ft32DmaSetSrcRequest(&DMA_InitStructure, sdioDmaResource, sdioDmaSpec->channel);
     } else {
-        DMA_InitStructure.DstHardwareInterface = DMA_CODE_STREAM(sdioDmaSpec->code);
-        DMA_InitStructure.DstHsIfPeriphSel    = sdioDmaSpec->channel;
-        DMA_InitStructure.SrcHsSel  = 1;  // Software handshake for source (memory)
-        DMA_InitStructure.DstHsSel  = 0;  // Hardware handshake for dest (peripheral)
+        ft32DmaSetDstRequest(&DMA_InitStructure, sdioDmaResource, sdioDmaSpec->channel);
     }
 
     xDMA_Init(sdioDmaResource, &DMA_InitStructure);
@@ -852,7 +873,6 @@ static SD_Error_t SD_HighSpeed(void)
     uint8_t     SD_hs[64]  = {0};
     uint32_t    SD_scr[2]  = {0, 0};
     uint32_t    SD_SPEC    = 0;
-    uint32_t    Count      = 0;
     uint32_t*   Buffer     = (uint32_t *)SD_hs;
 
     if ((ErrorState = SD_FindSCR(SD_scr)) != SD_OK)
@@ -876,30 +896,9 @@ static SD_Error_t SD_HighSpeed(void)
             return ErrorState;
         }
 
-        // Use MINTSTS/RINTSTS for status flags instead of SDIO_STA
-        while (!(SDIO->MINTSTS & (SDIO_IT_FLAG_DTO | SDIO_IT_FLAG_DCRC | SDIO_IT_FLAG_DRTO | SDIO_IT_FLAG_FRUN)))
-        {
-            if (SDIO_GetFifoStatus(SDIO_STAT_FIFO_RX_WATERMARK))
-            {
-                for (Count = 0; Count < 8; Count++)
-                {
-                    // Read from SDIO_DATA->DATA instead of SDIO->FIFO
-                    *(Buffer + Count) = SDIO_DATA->DATA;
-                }
-                Buffer += 8;
-            }
-        }
-
-        if (SDIO_GetITFlag(SDIO_IT_FLAG_DRTO))       return SD_DATA_TIMEOUT;
-        else if (SDIO_GetITFlag(SDIO_IT_FLAG_DCRC))   return SD_DATA_CRC_FAIL;
-        else if (SDIO_GetITFlag(SDIO_IT_FLAG_FRUN))   return SD_RX_OVERRUN;
-
-        Count = SD_DATATIMEOUT;
-        while (SDIO_GetFifoStatus(SDIO_STAT_FIFO_RX_WATERMARK) && (Count > 0))
-        {
-            *Buffer = SDIO_DATA->DATA;
-            Buffer++;
-            Count--;
+        ErrorState = SD_ReadFifo(Buffer, 16);
+        if (ErrorState != SD_OK) {
+            return ErrorState;
         }
 
         if ((SD_hs[13] & 2) != 2)
@@ -941,7 +940,6 @@ SD_Error_t SD_GetCardStatus(SD_CardStatus_t* pCardStatus)
     SD_Error_t ErrorState;
     uint32_t   Temp = 0;
     uint32_t   Status[16];
-    uint32_t   Count;
 
     if ((SDIO->RESP0 & SD_CARD_LOCKED) == SD_CARD_LOCKED)
     {
@@ -965,20 +963,10 @@ SD_Error_t SD_GetCardStatus(SD_CardStatus_t* pCardStatus)
         return ErrorState;
     }
 
-    while (!(SDIO->MINTSTS & (SDIO_IT_FLAG_DTO | SDIO_IT_FLAG_DCRC | SDIO_IT_FLAG_DRTO | SDIO_IT_FLAG_FRUN)))
-    {
-        if (SDIO_GetFifoStatus(SDIO_STAT_FIFO_RX_WATERMARK))
-        {
-            for (Count = 0; Count < 8; Count++)
-            {
-                Status[Count] = SDIO_DATA->DATA;
-            }
-        }
+    ErrorState = SD_ReadFifo(Status, 16);
+    if (ErrorState != SD_OK) {
+        return ErrorState;
     }
-
-    if (SDIO_GetITFlag(SDIO_IT_FLAG_DRTO))         return SD_DATA_TIMEOUT;
-    else if (SDIO_GetITFlag(SDIO_IT_FLAG_DCRC))    return SD_DATA_CRC_FAIL;
-    else if (SDIO_GetITFlag(SDIO_IT_FLAG_FRUN))    return SD_RX_OVERRUN;
 
     Temp = (Status[0] & 0xC0) >> 6;
     pCardStatus->DAT_BUS_WIDTH = (uint8_t)Temp;
@@ -1102,7 +1090,6 @@ static SD_Error_t SD_PowerON(void)
 static SD_Error_t SD_FindSCR(uint32_t *pSCR)
 {
     SD_Error_t ErrorState;
-    uint32_t Index = 0;
     uint32_t tempscr[2] = {0, 0};
 
     if ((ErrorState = SD_TransmitCommand((SDMMC_CMD_SET_BLOCKLEN | SD_CMD_RESPONSE_SHORT), 8, 1)) == SD_OK)
@@ -1113,22 +1100,8 @@ static SD_Error_t SD_FindSCR(uint32_t *pSCR)
 
             if ((ErrorState = SD_TransmitCommand((SDMMC_CMD_SD_APP_SEND_SCR | SD_CMD_RESPONSE_SHORT | SD_CMD_DATA_EXPECTED_BIT), 0, 1)) == SD_OK)
             {
-                // Use MINTSTS for status flags, SDIO_DATA->DATA for FIFO
-                while (!(SDIO->MINTSTS & (SDIO_IT_FLAG_DTO | SDIO_IT_FLAG_DCRC | SDIO_IT_FLAG_DRTO | SDIO_IT_FLAG_FRUN)))
-                {
-                    if (SDIO_GetFifoStatus(SDIO_STAT_FIFO_RX_WATERMARK))
-                    {
-                        *(tempscr + Index) = SDIO_DATA->DATA;
-                        Index++;
-                    }
-                }
-
-                if      (SDIO_GetITFlag(SDIO_IT_FLAG_DRTO)) ErrorState = SD_DATA_TIMEOUT;
-                else if (SDIO_GetITFlag(SDIO_IT_FLAG_DCRC)) ErrorState = SD_DATA_CRC_FAIL;
-                else if (SDIO_GetITFlag(SDIO_IT_FLAG_FRUN)) ErrorState = SD_RX_OVERRUN;
-                else if (SDIO_GetFifoStatus(SDIO_STAT_FIFO_RX_WATERMARK)) ErrorState = SD_OUT_OF_BOUND;
-                else
-                {
+                ErrorState = SD_ReadFifo(tempscr, 2);
+                if (ErrorState == SD_OK) {
                     *(pSCR + 1) = ((tempscr[0] & SD_0TO7BITS) << 24)  | ((tempscr[0] & SD_8TO15BITS) << 8) |
                                   ((tempscr[0] & SD_16TO23BITS) >> 8) | ((tempscr[0] & SD_24TO31BITS) >> 24);
 
@@ -1299,8 +1272,7 @@ SD_Error_t SD_Init(void)
 }
 
 /** -----------------------------------------------------------------------------------------------------------------*/
-// IRQ handler name is SDIO_Handler instead of SDIO_IRQHandler
-void SDIO_Handler(void)
+void SDIO_IRQHandler(void)
 {
     // Use MINTSTS for masked interrupt status, RINTSTS for clearing
     if (SDIO_GetITFlag(SDIO_IT_FLAG_DTO)) {

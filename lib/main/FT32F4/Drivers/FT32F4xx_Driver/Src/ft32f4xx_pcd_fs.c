@@ -69,7 +69,6 @@ static __IO uint8_t report;
   * @{
   */
 
-static USB_FS_StatusTypeDef PCD_FS_WriteEmptyTxFifo(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum);
 /**
   * @{
   */
@@ -364,6 +363,8 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
   uint32_t reg_int;
   uint32_t tx_int;
   uint32_t rx_int;
+  uint8_t  saved_index;
+  uint8_t  ep0_csr;
   uint8_t  reg_power;
 
   reg_int = USB_FS_ReadInterrupts();
@@ -419,6 +420,7 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
         USB_FS_RstEP0Regs();
         for (i = 1U; i < hpcd->Init.endpoints; i++)
         {
+          (void)USB_FS_IndexSel((uint8_t)i);
           USB_FS->TXCSR1 = 0U;
           USB_FS->RXCSR1 = 0U;
           (void)USB_FS_ReadInterrupts();
@@ -448,6 +450,17 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
     }
     /* Handle EP0 endpoint Interrupt */
     tx_int = ((reg_int >> 8) & 0xFU);
+    if ((tx_int & OTG_FS_INTRTX1_EP0INF) == 0U)
+    {
+      saved_index = USB_FS->INDEX;
+      (void)USB_FS_IndexSel(0U);
+      ep0_csr = USB_FS->CSR0;
+      (void)USB_FS_IndexSel(saved_index);
+      if ((ep0_csr & (OTG_FS_CSR0_RXPKTRDY | OTG_FS_CSR0_SETUPEND | OTG_FS_CSR0_STSTALL)) != 0U)
+      {
+        tx_int |= OTG_FS_INTRTX1_EP0INF;
+      }
+    }
     if ((tx_int & OTG_FS_INTRTX1_EP0INF) == OTG_FS_INTRTX1_EP0INF)
     {
       (void)USB_FS_IndexSel(0U);
@@ -769,7 +782,6 @@ USB_FS_StatusTypeDef PCD_FS_SetAddress(PCD_FS_HandleTypeDef *hpcd, uint8_t addre
 {
   __USB_FS_LOCK(hpcd);
   hpcd->USB_Address = address;
-  USB_FS_SetAddress(address);
   __USB_FS_UNLOCK(hpcd);
 
   return USB_FS_OK;
@@ -916,6 +928,8 @@ void PCD_FS_EP_Transmit(PCD_FS_HandleTypeDef *hpcd, uint8_t ep_addr, uint8_t *pB
 
   if (ep->num != 0U)
   {
+    (void)USB_FS_IndexSel(ep->num);
+    USB_FS->TXCSR1 &= (~OTG_FS_TXCSR1_STSTALL);
     USB_FS_DEPStartXfer(ep);
   }
   else
@@ -1127,51 +1141,6 @@ PCD_FS_StateTypeDef PCD_FS_GetState(PCD_FS_HandleTypeDef const *hpcd)
 
 
 /**
-  * @brief  Check FIFO for the next packet to be loaded.
-  * @param  hpcd PCD handle
-  * @param  epnum endpoint number
-  * @retval USB_FS status
-  */
-static USB_FS_StatusTypeDef PCD_FS_WriteEmptyTxFifo(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum)
-{
-  PCD_FS_EPTypeDef *ep;
-  uint32_t len;
-
-  ep = &hpcd->IN_ep[epnum];
-
-  if (ep->xfer_count > ep->xfer_len)
-  {
-    return USB_FS_ERROR;
-  }
-
-  len = ep->xfer_len - ep->xfer_count;
-
-  if (len > ep->maxpacket)
-  {
-    len = ep->maxpacket;
-  }
-
-  while (((USB_FS->TXCSR1 & OTG_FS_TXCSR1_FIFONE) == 0U) &
-         (ep->xfer_count < ep->xfer_len) & (ep->xfer_len != 0U))
-  {
-    /* Write the FIFO */
-    len = ep->xfer_len - ep->xfer_count;
-
-    if (len > ep->maxpacket)
-    {
-      len = ep->maxpacket;
-    }
-
-    USB_FS_FIFOWrite(ep->xfer_buff, (uint8_t)epnum, (uint16_t)len);
-
-    ep->xfer_buff  += len;
-    ep->xfer_count += len;
-  }
-
-  return USB_FS_OK;
-}
-
-/**
   * @brief  process EP OUT transfer complete interrupt.
   * @param  hpcd PCD handle
   * @param  epnum endpoint number
@@ -1182,6 +1151,9 @@ void PCD_FS_EP0_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
   USB_OTG_FS_DEPTypeDef *ep;
   uint8_t tmpreg;
   uint8_t bytecount;
+  uint32_t remaining;
+  uint16_t pkt_len;
+  uint8_t csr_cmd;
   tmpreg = USB_FS->CSR0;
 
   if ((tmpreg & OTG_FS_CSR0_RXPKTRDY) == OTG_FS_CSR0_RXPKTRDY)
@@ -1193,21 +1165,21 @@ void PCD_FS_EP0_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
     {
       hpcd->ctrl_state = CTRL_DATA;
       USB_FS_FIFORead((uint8_t *)hpcd->Setup, 0U, bytecount);
-      USB_FS->CSR0 |= OTG_FS_CSR0_SRXPKTRDY;
+      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
       PCD_FS_SetupStageCallback(hpcd);
     }
     else
     {
       hpcd->ctrl_state = CTRL_SETUP_P;
       USB_FS_FIFORead(ep->xfer_buff, 0U, bytecount);
-      USB_FS->CSR0 |= OTG_FS_CSR0_SRXPKTRDY;
+      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
     }
   }
   else if (tmpreg != 0U)
   {
     if ((tmpreg & OTG_FS_CSR0_SETUPEND) == OTG_FS_CSR0_SETUPEND)
     {
-      USB_FS->CSR0 |= OTG_FS_CSR0_SSETUPEND;
+      USB_FS->CSR0 = OTG_FS_CSR0_SSETUPEND;
       USB_FS_FlushEp0Fifo();
     }
     if ((tmpreg & OTG_FS_CSR0_STSTALL) == OTG_FS_CSR0_STSTALL)
@@ -1219,13 +1191,38 @@ void PCD_FS_EP0_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
   }
   else
   {
+    ep = &hpcd->IN_ep[0U];
+    if ((ep->is_in == 1U) && (ep->xfer_count < ep->xfer_len))
+    {
+      remaining = ep->xfer_len - ep->xfer_count;
+      pkt_len = (remaining > ep->maxpacket) ? (uint16_t)ep->maxpacket : (uint16_t)remaining;
+      USB_FS_FIFOWrite(ep->xfer_buff, 0U, pkt_len);
+      ep->xfer_buff += pkt_len;
+      ep->xfer_count += pkt_len;
+      csr_cmd = OTG_FS_CSR0_TXPKTRDY;
+      if (pkt_len < ep->maxpacket)
+      {
+        csr_cmd |= OTG_FS_CSR0_DATAEND;
+      }
+      USB_FS->CSR0 = csr_cmd;
+      return;
+    }
+    if ((ep->is_in == 1U) && (ep->xfer_len != 0U))
+    {
+      ep->xfer_len = 0U;
+      PCD_FS_DataInStageCallback(hpcd, 0U);
+    }
+    if (hpcd->USB_Address != USB_FS_GetAddress())
+    {
+      USB_FS_SetAddress(hpcd->USB_Address);
+    }
     hpcd->ctrl_state = CTRL_SETUP_P;/*...*/
   }
 
 }
 
 /**
-  * @brief  process EP OUT transfer complete interrupt.
+  * @brief  process EP IN transfer complete interrupt.
   * @param  hpcd PCD handle
   * @param  epnum endpoint number
   * @retval none
@@ -1233,29 +1230,47 @@ void PCD_FS_EP0_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
 void PCD_FS_TXEP_IRQHandler(PCD_FS_HandleTypeDef *hpcd, uint32_t epnum)
 {
   uint8_t tmpreg;
-  uint32_t num_packets;
+  PCD_FS_EPTypeDef *ep;
+  uint32_t remaining;
+  uint16_t pkt_len;
 
   tmpreg = USB_FS->TXCSR1;
 
-  if ((tmpreg & OTG_FS_TXCSR1_FIFONE) == 0U)
-  {
-    PCD_FS_WriteEmptyTxFifo(hpcd, epnum);
-  }
-
   if ((tmpreg & OTG_FS_TXCSR1_STSTALL) == OTG_FS_TXCSR1_STSTALL)
   {
-    (void)USB_FS_FlushTxFifo(epnum);   /* flush fifo to halt transcation*/
-    USB_FS->TXCSR1 &= (~OTG_FS_TXCSR1_STSTALL);
+    (void)USB_FS_FlushTxFifo(epnum);
+    USB_FS->TXCSR1 &= (~(OTG_FS_TXCSR1_STSTALL | OTG_FS_TXCSR1_SDSTALL));
+    ep = &hpcd->IN_ep[epnum];
+    ep->xfer_count = ep->xfer_len;
   }
   else if ((tmpreg & OTG_FS_TXCSR1_UNDERRUN) == OTG_FS_TXCSR1_UNDERRUN)
   {
     USB_FS->TXCSR1 &= (~OTG_FS_TXCSR1_UNDERRUN);
     PCD_FS_UNDERRUNCallback(hpcd);
+    return;
   }
   else
   {
-    PCD_FS_DataInStageCallback(hpcd, (uint8_t)epnum);
+    ep = &hpcd->IN_ep[epnum];
   }
+
+  remaining = ep->xfer_len - ep->xfer_count;
+
+  if (remaining > 0U)
+  {
+    /* previous packet sent and more data remains: submit exactly one packet,
+     * then return without raising the completion callback */
+    pkt_len = (remaining > ep->maxpacket) ? (uint16_t)ep->maxpacket
+                                          : (uint16_t)remaining;
+    USB_FS_FIFOWrite(ep->xfer_buff, (uint8_t)epnum, pkt_len);
+    ep->xfer_buff += pkt_len;
+    ep->xfer_count += pkt_len;
+    USB_FS->TXCSR1 = OTG_FS_TXCSR1_TXPKTRDY;
+    return;
+  }
+
+  /* all packets (including any zero-length terminator) have been sent */
+  PCD_FS_DataInStageCallback(hpcd, (uint8_t)epnum);
 }
 
 /**
@@ -1268,43 +1283,92 @@ void PCD_FS_RXEP_IRQHandler(PCD_FS_HandleTypeDef *hpcd, uint32_t epnum)
 {
   uint8_t tmpreg;
   uint16_t byte_count;
-  uint32_t num_packets;
+  uint32_t remaining;
   PCD_FS_EPTypeDef *ep;
 
-  tmpreg = USB_FS->RXCSR1;
-
-  if (((tmpreg & OTG_FS_RXCSR1_FIFOF) == OTG_FS_RXCSR1_FIFOF) &
-      ((tmpreg & OTG_FS_RXCSR1_RXPKTRDY) != OTG_FS_RXCSR1_RXPKTRDY))
+  if (epnum >= hpcd->Init.endpoints)
   {
-    byte_count = USB_FS_Read_RxCount();
-    USB_FS_FIFORead(ep->xfer_buff, epnum, byte_count);
- //   PCD_FS_FIFOFULLCallback(hpcd);
+    return;
   }
+
+  /* bind the endpoint before any dereference */
+  ep = &hpcd->OUT_ep[epnum];
+  tmpreg = USB_FS->RXCSR1;
 
   if ((tmpreg & OTG_FS_RXCSR1_STSTALL) == OTG_FS_RXCSR1_STSTALL)
   {
-    (void)USB_FS_FlushRxFifo(epnum);   /* flush fifo to halt transcation*/
+    (void)USB_FS_FlushRxFifo(epnum);   /* flush fifo to halt transaction */
     USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_STSTALL);
+    return;
   }
-  else if ((tmpreg & OTG_FS_RXCSR1_OVERRUN) == OTG_FS_RXCSR1_OVERRUN)
+
+  /* Overrun: a packet arrived while the FIFO was full. The latched packet
+   * must be drained and RXPKTRDY cleared, otherwise the endpoint locks up
+   * and the IRQ re-fires forever. Do not write the application buffer and
+   * do not advance xfer_count; report the fault and leave the endpoint
+   * ready to receive the next OUT. */
+  if ((tmpreg & OTG_FS_RXCSR1_OVERRUN) == OTG_FS_RXCSR1_OVERRUN)
   {
+    (void)USB_FS_FlushRxFifo(epnum);
     USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_OVERRUN);
+    USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_RXPKTRDY);
     PCD_FS_OVERRUNCallback(hpcd);
+    return;
   }
-  else if ((tmpreg & OTG_FS_RXCSR1_RXPKTRDY) == OTG_FS_RXCSR1_RXPKTRDY)
+
+  if ((tmpreg & OTG_FS_RXCSR1_RXPKTRDY) == 0U)
   {
-    if ((tmpreg & OTG_FS_RXCSR1_DERR) == OTG_FS_RXCSR1_DERR)
-    {
-      PCD_FS_DERRCallback(hpcd);
-    }
-    else
-    {
-      byte_count = USB_FS_Read_RxCount();
-      USB_FS_FIFORead(ep->xfer_buff, epnum, byte_count);
-//      PCD_FS_DataInStageCallback(hpcd, (uint8_t)epnum, byte_count);
-      USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_RXPKTRDY);
-    }
+    return;
   }
+
+  /* Data error: the packet is present but corrupted. Drain it, clear
+   * RXPKTRDY, report the fault and drop the packet without delivering it
+   * to the class layer. */
+  if ((tmpreg & OTG_FS_RXCSR1_DERR) == OTG_FS_RXCSR1_DERR)
+  {
+    (void)USB_FS_FlushRxFifo(epnum);
+    USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_RXPKTRDY);
+    PCD_FS_DERRCallback(hpcd);
+    return;
+  }
+
+  byte_count = USB_FS_Read_RxCount();
+
+  /* A zero-length packet is a valid OUT completion (e.g. the short-packet
+   * terminator required by the USB protocol). It must reach the core even
+   * when no application buffer is currently armed, exactly once. */
+  if (byte_count == 0U)
+  {
+    USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_RXPKTRDY);
+    PCD_FS_DataOutStageCallback(hpcd, (uint8_t)epnum);
+    return;
+  }
+
+  /* bound-check before touching memory: a missing buffer or an oversized
+   * packet would overflow the receive window. Drop the packet, flush the
+   * FIFO and clear RXPKTRDY so the endpoint can keep receiving instead of
+   * locking up forever. */
+  if ((ep->xfer_buff == NULL) || (ep->xfer_count > ep->xfer_len))
+  {
+    (void)USB_FS_FlushRxFifo(epnum);
+    USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_RXPKTRDY);
+    return;
+  }
+
+  remaining = ep->xfer_len - ep->xfer_count;
+  if ((uint32_t)byte_count > remaining)
+  {
+    (void)USB_FS_FlushRxFifo(epnum);
+    USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_RXPKTRDY);
+    return;
+  }
+
+  USB_FS_FIFORead(ep->xfer_buff, epnum, byte_count);
+  ep->xfer_count += byte_count;
+
+  /* release the packet and notify the upper stack (zero-length too) */
+  USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_RXPKTRDY);
+  PCD_FS_DataOutStageCallback(hpcd, (uint8_t)epnum);
 }
 
 
@@ -1394,4 +1458,3 @@ void PCD_FS_SetRxFiFo(uint8_t fifo, uint16_t size, uint8_t dpb)
 
 #endif /* defined (USB_OTG_FS) */
 #endif /* PCD_FS_MODULE_ENABLED */
-

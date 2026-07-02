@@ -216,12 +216,12 @@ USB_FS_StatusTypeDef USB_FS_RstEPRegs(uint8_t epnum)
 {
   uint8_t reg;
 
-  //USB_FS_IndexSel(epnum);
+  (void)USB_FS_IndexSel(epnum);
   /* reset tx register */
   /* flush tx fifo */
   USB_FS_FlushTxFifo(epnum);
   /* reset the data tog to 0 */
-  USB_FS->TXCSR1 |= OTG_FS_TXCSR1_CLRDT;
+  USB_FS->TXCSR1 = OTG_FS_TXCSR1_CLRDT;
   /* clear autoset, iso, mode, frcdatatog */
   USB_FS->TXCSR2  = OTG_FS_TXCSR2_MODE;
   /* config max tx endpoint data packet size */
@@ -230,7 +230,7 @@ USB_FS_StatusTypeDef USB_FS_RstEPRegs(uint8_t epnum)
   /* flush tx fifo */
   USB_FS_FlushRxFifo(epnum);
   /* reset the data tog to 0 */
-  USB_FS->RXCSR1 |= OTG_FS_RXCSR1_CLRDT;
+  USB_FS->RXCSR1 = OTG_FS_RXCSR1_CLRDT;
   /* clear autoclr, iso, autoreq */
   USB_FS->RXCSR2  = 0U;
   /* config max rx endpoint data packet size */
@@ -370,34 +370,50 @@ void USB_FS_Enable_HEP(USB_OTG_FS_HEPTypeDef *hep)
 void USB_FS_Enable_DEP(USB_OTG_FS_DEPTypeDef *dep)
 {
   uint8_t epnum = (uint8_t)dep->num;
+  uint16_t maxpkt_units;
   USB_FS_IndexSel(epnum);
+
+  /* hardware encodes max packet size in 8-byte units, rounded up */
+  maxpkt_units = (uint16_t)((dep->maxpacket + 7U) / 8U);
+
   if (dep->is_in == 0U)
   {
-    if ((USB_FS->RXCSR1 & OTG_FS_RXCSR1_REQPKT) == 0U)
+    /* device OUT endpoint: RX side registers */
+    /* Rebuild the endpoint on every open. RXCSR1 bit 5 is mode-dependent,
+     * so a stale device-side stall must not block OUT endpoint setup. */
+    USB_FS->RXTYPE = (uint8_t)((dep->num & 0x0fU) | ((dep->type & 0x03U) << 4));
+    USB_FS->RXMAXP = maxpkt_units;
+    /* rebuild RXCSR2 by clearing/setting only the ISO-related bits */
+    if (dep->type == EP_TYPE_ISOC)
     {
-      USB_FS->RXTYPE = (dep->num & 0x0f) | ((dep->type & 0x03) << 4);  /* set this endpoint */
-      USB_FS->RXMAXP = (dep->maxpacket / 8);
-      if (dep->type == EP_TYPE_ISOC)
-      {
-        USB_FS->RXCSR2 = OTG_FS_RXCSR2_AUTOCLR | OTG_FS_RXCSR2_ISO;
-      }
-      USB_FS->RXCSR1 = OTG_FS_RXCSR1_CLRDT;
+      USB_FS->RXCSR2 |= (OTG_FS_RXCSR2_AUTOCLR | OTG_FS_RXCSR2_ISO);
     }
+    else
+    {
+      USB_FS->RXCSR2 &= (uint8_t)~(OTG_FS_RXCSR2_AUTOCLR | OTG_FS_RXCSR2_ISO);
+    }
+    /* flush any stale packet and reset data toggle */
+    USB_FS->RXCSR1 = OTG_FS_RXCSR1_FFIFO;
+    USB_FS->RXCSR1 = OTG_FS_RXCSR1_CLRDT;
   }
   else
   {
+    /* device IN endpoint: TX side registers */
     if ((USB_FS->TXCSR1 & OTG_FS_TXCSR1_TXPKTRDY) == 0U)
     {
-      USB_FS->TXTYPE = (dep->num & 0x0f) | ((dep->type & 0x03) << 4);  /* set this endpoint */
-      USB_FS->RXMAXP = (dep->maxpacket / 8);
+      USB_FS->TXTYPE = (uint8_t)((dep->num & 0x0fU) | ((dep->type & 0x03U) << 4));
+      USB_FS->TXMAXP = maxpkt_units;
+      /* rebuild TXCSR2 by clearing/setting only the ISO bit; MODE stays set */
       if (dep->type == EP_TYPE_ISOC)
       {
-        USB_FS->TXCSR2 = OTG_FS_TXCSR2_MODE | OTG_FS_TXCSR2_ISO;
+        USB_FS->TXCSR2 |= (OTG_FS_TXCSR2_MODE | OTG_FS_TXCSR2_ISO);
       }
       else
       {
-        USB_FS->TXCSR2 = OTG_FS_TXCSR2_MODE;
+        USB_FS->TXCSR2 &= (uint8_t)~OTG_FS_TXCSR2_ISO;
+        USB_FS->TXCSR2 |= OTG_FS_TXCSR2_MODE;
       }
+      /* flush TX FIFO twice and reset data toggle */
       USB_FS->TXCSR1 = OTG_FS_TXCSR1_FFIFO;
       USB_FS->TXCSR1 = OTG_FS_TXCSR1_FFIFO;
       USB_FS->TXCSR1 = OTG_FS_TXCSR1_CLRDT;
@@ -415,38 +431,37 @@ void USB_FS_Enable_DEP(USB_OTG_FS_DEPTypeDef *dep)
 void USB_FS_DEPStartXfer(USB_OTG_FS_DEPTypeDef *dep)
 {
   uint8_t epnum = (uint8_t)dep->num;
-  uint16_t pktcnt;
+  uint16_t pkt_len;
   USB_FS_IndexSel(epnum);
-  /* tx endpoint */
+
+  /* Invariants: xfer_count counts bytes already submitted to the hardware.
+   * MAXP is set only at endpoint open and never reprogrammed here. Each
+   * call submits at most one packet; multi-packet transfers are driven by
+   * the TX completion IRQ. */
   if (dep->is_in == 1U)
   {
-    /* Zero Length Packet? */
+    /* tx endpoint */
     if (dep->xfer_len == 0U)
     {
-      USB_FS->TXMAXP &= (~OTG_FS_TXMAXP_TXMAXPKT);
+      /* zero-length packet: mark ready without touching MAXP or FIFO */
+      USB_FS->TXCSR1 = OTG_FS_TXCSR1_TXPKTRDY;
     }
     else
     {
-      USB_FS->TXMAXP &= (~OTG_FS_TXMAXP_TXMAXPKT);
-
-      USB_FS->TXMAXP = (OTG_FS_TXMAXP_TXMAXPKT & dep->xfer_len);
+      /* submit only the first packet, the rest go through the TX IRQ */
+      pkt_len = (dep->xfer_len > dep->maxpacket) ? (uint16_t)dep->maxpacket
+                                                 : (uint16_t)dep->xfer_len;
+      USB_FS_FIFOWrite(dep->xfer_buff, dep->num, pkt_len);
+      dep->xfer_buff += pkt_len;
+      dep->xfer_count += pkt_len;
+      USB_FS->TXCSR1 = OTG_FS_TXCSR1_TXPKTRDY;
     }
-    USB_FS->TXCSR1 = OTG_FS_TXCSR1_CLRDT;
-
-    USB_FS_FIFOWrite(dep->xfer_buff, dep->num, (uint16_t)dep->xfer_len);
-    USB_FS->TXCSR1 = OTG_FS_TXCSR1_TXPKTRDY;
   }
-  else /* rx endpoint */
+  else
   {
-    USB_FS->RXMAXP &= (~OTG_FS_RXMAXP_RXMAXPKT);
-
-    if (dep->xfer_len > 0U)
-    {
-      dep->xfer_size = dep->xfer_len;
-      USB_FS->RXMAXP = (OTG_FS_RXMAXP_RXMAXPKT & dep->xfer_size);
-    }
-
-    USB_FS->RXCSR1 = OTG_FS_RXCSR1_CLRDT;
+    /* rx endpoint: armed at open time (RXMAXP/type/toggle set by Enable_DEP).
+     * Nothing to reprogram per receive; the controller sets RXPKTRDY on the
+     * next packet from the host. */
   }
 }
 /**
@@ -457,16 +472,27 @@ void USB_FS_DEPStartXfer(USB_OTG_FS_DEPTypeDef *dep)
 void USB_FS_DEP0StartXfer(USB_OTG_FS_DEPTypeDef *dep)
 {
   USB_FS_IndexSel(0U);
+  uint16_t pkt_len;
   /* tx endpoint */
   if (dep->is_in == 1U)
   {
     if (dep->is_stall == 0U)
     {
-      USB_FS_FIFOWrite(dep->xfer_buff, dep->num, (uint16_t)dep->xfer_len);
-      USB_FS->CSR0 |= OTG_FS_CSR0_TXPKTRDY;
-      if (dep->xfer_len < 0x40U)
+      pkt_len = (dep->xfer_len > dep->maxpacket) ? (uint16_t)dep->maxpacket : (uint16_t)dep->xfer_len;
+      USB_FS_FIFOWrite(dep->xfer_buff, dep->num, pkt_len);
+      dep->xfer_buff += pkt_len;
+      dep->xfer_count = pkt_len;
+      if (dep->xfer_len == 0U)
       {
-        USB_FS->CSR0 |= OTG_FS_CSR0_DATAEND;
+        USB_FS->CSR0 = OTG_FS_CSR0_DATAEND;
+      }
+      else if (pkt_len < dep->maxpacket)
+      {
+        USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY | OTG_FS_CSR0_DATAEND;
+      }
+      else
+      {
+        USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY;
       }
     }
   }
@@ -1334,11 +1360,11 @@ USB_FS_StatusTypeDef USB_FS_ClrStall(USB_OTG_FS_DEPTypeDef *dep)
   USB_FS_IndexSel(dep->num);
   if (dep->is_in) /* tx */
   {
-    USB_FS->TXCSR1 &= (~OTG_FS_TXCSR1_SDSTALL);
+    USB_FS->TXCSR1 &= (~(OTG_FS_TXCSR1_SDSTALL | OTG_FS_TXCSR1_STSTALL));
   }
   else    /* rx */
   {
-    USB_FS->RXCSR1 &= (~OTG_FS_RXCSR1_SDSTALL);
+    USB_FS->RXCSR1 &= (~(OTG_FS_RXCSR1_SDSTALL | OTG_FS_RXCSR1_STSTALL));
   }
   return USB_FS_OK;
 }

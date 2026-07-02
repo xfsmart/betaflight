@@ -52,29 +52,14 @@
 #include "usb_conf.h"
 #include "usbd_core.h"
 #include "usbd_cdc_vcp.h"
+#include "usbd_msc.h"
 #include "usbd_msc_desc.h"
+#include "usbd_composite_builder.h"
 #include "drivers/usb_io.h"
 
 extern USBD_HandleTypeDef       USBD_Device;
-
-#ifdef USB_OTG_FS_CORE
-    extern PCD_FS_HandleTypeDef hpcd;
-#endif
-
-static void msc_usb_clock48m_select(uint32_t clk48_sel)
-{
-    if(clk48_sel == RCC_48MCLK_HSI48)
-    {
-        RCC_HSI48Cmd(ENABLE);
-        RCC_WaitForHSI48StartUp();
-        RCC_48MCLKConfig(RCC_48MCLK_HSI48);
-    }
-    else if(clk48_sel == RCC_48MCLK_PLLQ)
-    {
-        /* system_init ensures that the pllq_clock has been properly configured."*/
-    }
-}
-
+extern void USB_OTG_BSP_Init(void);
+extern void USB_OTG_BSP_EnableInterrupt(void);
 
 uint8_t mscStart(void)
 {
@@ -112,18 +97,48 @@ uint8_t mscStart(void)
     default:
         return 1;
     }
-#ifdef USB_OTG_HS_CORE
-    RCC_HSEConfig(RCC_HSE_ON); /*ensure HSE12M on board*/
-    RCC_WaitForHSEStartUp();
-    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_USBOTGHS, ENABLE);
-#elif USB_OTG_FS_CORE
-    msc_usb_clock48m_select(RCC_48MCLK_HSI48); /* HSI48 as USB_OTG_FS clock */
-    RCC_AHB2PeriphClockCmd(RCC_AHB2Periph_USBOTGFS, ENABLE);
-#else
-/* */
-#endif
-    NVIC_EnableIRQ(OTG_IRQ);
-    USBD_Init(&USBD_Device, USB_OTG_FS_CORE_ID, OTG_USB_ID, &USBD_MSC, &USBD_MSC_Desc);
+    USB_OTG_BSP_Init();
+    /* Under USE_USBD_COMPOSITE MSC must also register through the composite
+     * builder so the core serves the configuration descriptor from USBD_CMPSIT
+     * (NumClasses > 0); a plain single-class USBD_Init would dereference a
+     * NULL descriptor callback. */
+    if (USBD_Init(&USBD_Device, USB_OTG_FS_CORE_ID, OTG_USB_ID, NULL, &USBD_MSC_Desc) != USBD_OK)
+    {
+        return 1;
+    }
+
+    /* File-scope static so the builder never holds a pointer to a returned
+     * stack frame. */
+    static uint8_t mscEndpoints[] = { MSC_EPIN_ADDR, MSC_EPOUT_ADDR };
+    if (USBD_RegisterClassComposite(&USBD_Device, &USBD_MSC, CLASS_TYPE_MSC, mscEndpoints) != USBD_OK)
+    {
+        return 1;
+    }
+
+    /* Select the MSC class before wiring the storage callbacks. A 0xFF result
+     * means the class was not registered; never use it as an index. */
+    if (USBD_CMPSIT_SetClassID(&USBD_Device, CLASS_TYPE_MSC, 0U) == 0xFFU)
+    {
+        return 1;
+    }
+
+    if (USBD_MSC_RegisterStorage(&USBD_Device, USBD_STORAGE_fops) != USBD_OK)
+    {
+        return 1;
+    }
+
+    // Start the device core before enabling the USB global interrupt, so a
+    // Start failure cannot leave an interrupt-visible partial device. On
+    // failure, tear down the partially configured device and return.
+    if (USBD_Start(&USBD_Device) != USBD_OK)
+    {
+        NVIC_DisableIRQ(OTG_IRQ);
+        (void)USBD_DeInit(&USBD_Device);
+        return 1;
+    }
+
+    USB_OTG_BSP_EnableInterrupt();
+
     // NVIC configuration for SYSTick
     NVIC_DisableIRQ(SysTick_IRQn);
     NVIC_SetPriority(SysTick_IRQn, NVIC_BUILD_PRIORITY(0, 0));

@@ -309,6 +309,7 @@ void adcInit(const adcConfig_t *config)
     DMA_InitStructure.BlockTransSize = configuredAdcChannels;
     DMA_InitStructure.SrcAddrMode = DMA_SRC_ADDRMODE_HOLD;
     DMA_InitStructure.DstAddrMode = DMA_DST_ADDRMODE_INC;
+    DMA_InitStructure.ReloadDst = ENABLE;
     DMA_InitStructure.SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_16BITS;
     DMA_InitStructure.DstTransferWidth = DMA_DST_TRANSFERWIDTH_16BITS;
 

@@ -303,8 +303,8 @@ void spiInternalStartDMA(const extDevice_t *dev)
         DMA_ITConfig(channelRx, DMA_IT_TFR, ENABLE);
 
         // Initialize DMA channels
-        DMA_Init(channelTx, dev->bus->dmaInitTx);
-        DMA_Init(channelRx, dev->bus->dmaInitRx);
+        xDMA_Init(channelTx, dev->bus->dmaInitTx);
+        xDMA_Init(channelRx, dev->bus->dmaInitRx);
 
         // Enable channels
         DMA_Cmd(channelTx, ENABLE);
@@ -326,7 +326,7 @@ void spiInternalStartDMA(const extDevice_t *dev)
         DMA_ITConfig(channelTx, DMA_IT_TFR, ENABLE);
 
         // Initialize DMA channel
-        DMA_Init(channelTx, dev->bus->dmaInitTx);
+        xDMA_Init(channelTx, dev->bus->dmaInitTx);
 
         // Enable channel
         DMA_Cmd(channelTx, ENABLE);
@@ -365,12 +365,22 @@ void spiInternalStopDMA(const extDevice_t *dev)
         DMA_CLEAR_FLAG(dmaTx, DMA_IT_ERR | DMA_IT_TCIF);
         DMA_CLEAR_FLAG(dmaRx, DMA_IT_ERR | DMA_IT_TCIF);
     } else {
+        timeUs_t startTime = microsISR();
+
         // Ensure current transmission is complete
-        while (SPI_GetFlagStatus(instance, SPI_FLAG_BSY));
+        while (SPI_GetFlagStatus(instance, SPI_FLAG_BSY)) {
+            if (cmpTimeUs(microsISR(), startTime) > SPI_TIMEOUT_US) {
+                break;
+            }
+        }
 
         // Drain RX buffer
+        startTime = microsISR();
         while (SPI_GetFlagStatus(instance, SPI_FLAG_RXNE)) {
             instance->DR;
+            if (cmpTimeUs(microsISR(), startTime) > SPI_TIMEOUT_US) {
+                break;
+            }
         }
 
         // Disable channel

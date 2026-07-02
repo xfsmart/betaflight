@@ -113,6 +113,7 @@ SECTIONS
   {
     PROVIDE_HIDDEN (__pg_resetdata_start = .);
     KEEP (*(.pg_resetdata))
+    . = ALIGN(4);
     PROVIDE_HIDDEN (__pg_resetdata_end = .);
   } >FLASH1
 

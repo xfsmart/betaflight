@@ -33,6 +33,7 @@
 #include "platform/dma.h"
 #include "drivers/nvic.h"
 #include "platform/rcc.h"
+#include "platform/serial_uart.h"
 
 #include "drivers/serial.h"
 #include "drivers/serial_uart.h"
@@ -186,7 +187,7 @@ bool checkUsartTxOutput(uartPort_t *s)
         if (IORead(txIO)) {
             uart->txPinState = TX_PIN_ACTIVE;
             IOConfigGPIOAF(txIO, IOCFG_AF_PP, uart->tx.af);
-            USART_TXEN_Cmd((USART_TypeDef *)s->USARTx, ENABLE);
+            ft32UartTXEN_Cmd((USART_TypeDef *)s->USARTx, ENABLE);
             return true;
         } else {
             return false;
@@ -203,11 +204,14 @@ void uartTxMonitor(uartPort_t *s)
     if (uart->txPinState == TX_PIN_ACTIVE) {
         IO_t txIO = IOGetByTag(uart->tx.pin);
 
-        USART_TXEN_Cmd((USART_TypeDef *)s->USARTx, DISABLE);
+        // Disable the transmitter through the TXDIS command so the TXD line is
+        // released for monitoring; the TXEN command with DISABLE has no effect.
+        ft32UartTXDIS_Cmd((USART_TypeDef *)s->USARTx, ENABLE);
 
-        // Disable TXEMPTY interrupt to prevent re-firing while TX is idle
-        // TXEMPTY fires continuously when TX buffer is empty
-        USART_ITConfig((USART_TypeDef *)s->USARTx, USART_IT_TXEMPTY, DISABLE);
+        // Mask the TXEMPTY interrupt through IDR. TXEMPTY is a level flag that
+        // stays set while the transmitter is idle, so it must be masked until
+        // the next transmit to avoid a pending interrupt storm.
+        ft32UartITDisableConfig((USART_TypeDef *)s->USARTx, USART_DIS_TXEMPTY, ENABLE);
 
         uart->txPinState = TX_PIN_MONITOR;
         IOConfigGPIO(txIO, IOCFG_IPU);
@@ -236,6 +240,13 @@ void uartDmaIrqHandler(dmaChannelDescriptor_t *descriptor)
 
     if (DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR)) {
         DMA_CLEAR_FLAG(descriptor, DMA_IT_ERR);
+        // Recover the TX channel to a restartable state without disturbing
+        // other channels: stop only this channel, clear every transfer and
+        // error flag, and reset the block count so the next write retries the
+        // remaining queued data from the current ring tail.
+        DMA_Channel_Cmd((DMA_Channel_TypeDef *)s->txDMAResource, DISABLE);
+        DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
+        DMA_SetCurrDataCounter((DMA_Channel_TypeDef *)s->txDMAResource, 0);
     }
 }
 
@@ -243,44 +254,58 @@ void uartIrqHandler(uartPort_t *s)
 {
     USART_TypeDef *USARTx = (USART_TypeDef *)s->USARTx;
 
-    if (!s->rxDMAResource && (USART_GetITStatus(USARTx, USART_IT_RXRDY) != RESET)) {
+    // Gate every source on the CSR pending flag together with the IMR enable
+    // bit so an enabled-but-idle source cannot inject phantom work.
+    if (!s->rxDMAResource &&
+        (ft32UartGetFlagStatus(USARTx, USART_FLAG_RXRDY) != RESET) &&
+        (ft32UartGetITStatus(USARTx, USART_IT_RXRDY) != RESET)) {
         if (s->port.rxCallback) {
-            s->port.rxCallback(USART_Receive(USARTx), s->port.rxCallbackData);
+            s->port.rxCallback(ft32UartReceive(USARTx), s->port.rxCallbackData);
         } else {
-            s->port.rxBuffer[s->port.rxBufferHead] = USART_Receive(USARTx);
+            s->port.rxBuffer[s->port.rxBufferHead] = ft32UartReceive(USARTx);
             s->port.rxBufferHead = (s->port.rxBufferHead + 1) % s->port.rxBufferSize;
         }
     }
 
-    // Detect transmission completion via TXEMPTY flag
-    // Must check both flag AND interrupt enable: flag tells us TX is done,
-    // interrupt enable tells us we want this event handled here
-    if ((USART_GetFlagStatus(USARTx, USART_FLAG_TXEMPTY) != RESET) &&
-        (USART_GetITStatus(USARTx, USART_IT_TXEMPTY) != RESET)) {
-        USART_ClearFlag(USARTx, USART_FLAG_TXEMPTY);
+    // Transmission completion: TXEMPTY is set once the shift register has
+    // drained. Check both the pending flag and the enable bit.
+    if ((ft32UartGetFlagStatus(USARTx, USART_FLAG_TXEMPTY) != RESET) &&
+        (ft32UartGetITStatus(USARTx, USART_IT_TXEMPTY) != RESET)) {
         uartTxMonitor(s);
     }
 
-    if (!s->txDMAResource && (USART_GetITStatus(USARTx, USART_IT_TXRDY) != RESET)) {
+    if (!s->txDMAResource &&
+        (ft32UartGetFlagStatus(USARTx, USART_FLAG_TXRDY) != RESET) &&
+        (ft32UartGetITStatus(USARTx, USART_IT_TXRDY) != RESET)) {
         if (s->port.txBufferTail != s->port.txBufferHead) {
-            USART_Transmit(USARTx, s->port.txBuffer[s->port.txBufferTail]);
+            ft32UartTransmit(USARTx, s->port.txBuffer[s->port.txBufferTail]);
             s->port.txBufferTail = (s->port.txBufferTail + 1) % s->port.txBufferSize;
+            // Writing THR clears TXEMPTY. Only SERIAL_CHECK_TX ports use the
+            // TXEMPTY completion interrupt to release the TX line, and only
+            // then is it armed, so an idle level flag cannot storm. DMA ports
+            // never reach this branch and signal completion via the DMA
+            // transfer interrupt instead.
+            if (s->port.options & SERIAL_CHECK_TX) {
+                ft32UartITConfig(USARTx, USART_IT_TXEMPTY, ENABLE);
+            }
         } else {
-            USART_ITConfig(USARTx, USART_IT_TXRDY, DISABLE);
+            // No more data: mask TXRDY through IDR; writing IER cannot clear it.
+            ft32UartITDisableConfig(USARTx, USART_DIS_TXRDY, ENABLE);
         }
     }
 
-    if (USART_GetFlagStatus(USARTx, USART_FLAG_OVER) != RESET) {
-        USART_ClearFlag(USARTx, USART_FLAG_OVER);
+    if (ft32UartGetFlagStatus(USARTx, USART_FLAG_OVER) != RESET) {
+        ft32UartClearFlag(USARTx, USART_CLEAR_OVER);
     }
 
-    // Receiver timeout for packet end detection
-    // Used for detecting end of packet in protocols like SBUS, ESC telemetry
-    if (USART_GetITStatus(USARTx, USART_IT_TIMEOUT) != RESET) {
+    // Receiver timeout marks a packet boundary after sustained line idle.
+    if ((ft32UartGetFlagStatus(USARTx, USART_FLAG_TIMEOUT) != RESET) &&
+        (ft32UartGetITStatus(USARTx, USART_IT_TIMEOUT) != RESET)) {
         if (s->port.idleCallback) {
             s->port.idleCallback();
         }
-        USART_ClearFlag(USARTx, USART_FLAG_TIMEOUT);
+        // Clearing via STTTO also restarts the timeout counter for the next packet.
+        ft32UartClearFlag(USARTx, USART_CLEAR_TIMEOUT);
     }
 }
 

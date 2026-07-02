@@ -33,6 +33,9 @@
 extern uint32_t cachedRccCsrValue;
 extern void cycleCounterInit(void);
 
+// Clock configuration from startup/system_ft32f4xx.c
+void SetSysClock(void);
+
 #define AIRCR_VECTKEY_MASK    ((uint32_t)0x05FA0000)
 
 void systemReset(void)
@@ -79,6 +82,61 @@ void checkForBootLoaderRequest(void)
 
 void enableGPIOPowerUsageAndNoiseReductions(void)
 {
+    // Pre-enable clocks for common peripherals to prevent
+    // floating input GPIOs from drawing excess current on unclocked blocks.
+
+    RCC_AHB1PeriphClockCmd(
+        RCC_AHB1Periph_CCMDATARAM |
+        RCC_AHB1Periph_BKPSRAM |
+        RCC_AHB1Periph_DMA1 |
+        RCC_AHB1Periph_DMA2 |
+        0, ENABLE
+    );
+
+    RCC_AHB2PeriphClockCmd(0, ENABLE);
+    RCC_AHB3PeriphClockCmd(0, ENABLE);
+
+    RCC_APB1PeriphClockCmd(
+        RCC_APB1Periph_TIM2 |
+        RCC_APB1Periph_TIM3 |
+        RCC_APB1Periph_TIM4 |
+        RCC_APB1Periph_TIM5 |
+        RCC_APB1Periph_TIM6 |
+        RCC_APB1Periph_TIM7 |
+        RCC_APB1Periph_TIM12 |
+        RCC_APB1Periph_TIM13 |
+        RCC_APB1Periph_TIM14 |
+        RCC_APB1Periph_WWDG |
+        RCC_APB1Periph_SPI2 |
+        RCC_APB1Periph_SPI3 |
+        RCC_APB1Periph_UART2 |
+        RCC_APB1Periph_UART3 |
+        RCC_APB1Periph_UART4 |
+        RCC_APB1Periph_UART5 |
+        RCC_APB1Periph_I2C1 |
+        RCC_APB1Periph_I2C2 |
+        RCC_APB1Periph_I2C3 |
+        RCC_APB1Periph_CAN1 |
+        RCC_APB1Periph_CAN2 |
+        RCC_APB1Periph_CAN3 |
+        RCC_APB1Periph_CAN4 |
+        RCC_APB1Periph_PWR |
+        RCC_APB1Periph_DAC |
+        0, ENABLE);
+
+    RCC_APB2PeriphClockCmd(
+        RCC_APB2Periph_TIM1 |
+        RCC_APB2Periph_TIM8 |
+        RCC_APB2Periph_TIM9 |
+        RCC_APB2Periph_TIM10 |
+        RCC_APB2Periph_TIM11 |
+        RCC_APB2Periph_USART1 |
+        RCC_APB2Periph_USART6 |
+        RCC_APB2Periph_ADC |
+        RCC_APB2Periph_SDIO |
+        RCC_APB2Periph_SPI1 |
+        RCC_APB2Periph_SYSCFG |
+        0, ENABLE);
 }
 
 bool isMPUSoftReset(void)
@@ -97,8 +155,19 @@ void systemInit(void)
     // Check if we should jump to bootloader
     checkForBootLoaderRequest();
 
-    // Configure NVIC preempt/priority groups
-    NVIC_PriorityGroupConfig(NVIC_PRIORITY_GROUPING);
+    // Configure system clock (HSE/HSI -> PLL -> 210MHz default)
+    SetSysClock();
+
+    // Configure NVIC preempt/priority groups.
+    // Use the CMSIS NVIC_SetPriorityGrouping() rather than the FT32 StdPeriph
+    // NVIC_PriorityGroupConfig(): the latter writes SCB->AIRCR = 0x05FA0000 | arg
+    // and expects an already-shifted enum (e.g. NVIC_PriorityGroup_2 = 0x500),
+    // but FT32's NVIC_PRIORITY_GROUPING is the raw group number (4). Passing 4
+    // raw yields 0x05FA0000 | 4 = 0x05FA0004, whose bit2 is AIRCR.SYSRESETREQ
+    // (NVIC_SYSRESETREQ = 2), triggering a system reset on every boot.
+    // NVIC_SetPriorityGrouping() shifts the value <<8 internally, writing
+    // 0x05FA0000 | (4 << 8) = 0x05FA0400 (PRIGROUP = 4, no SYSRESETREQ).
+    NVIC_SetPriorityGrouping(NVIC_PRIORITY_GROUPING);
 
     // Cache RCC->CSR value for isMPUSoftReset()
     cachedRccCsrValue = RCC->CSR;
@@ -109,6 +178,8 @@ void systemInit(void)
     // Set vector table location
     extern uint8_t isr_vector_table_base;
     NVIC_SetVectorTable((uint32_t)&isr_vector_table_base, 0x0);
+
+    RCC_AHB2PeriphClockCmd(RCC_AHB2Periph_USBOTGFS, DISABLE);
 
     // Enable GPIO power optimizations
     enableGPIOPowerUsageAndNoiseReductions();

@@ -22,7 +22,6 @@
 /* Private variables --------------------------------------------------------*/
 PCD_FS_HandleTypeDef hpcd;
 __IO uint32_t remotewakeupon = 0;
-
 extern USBD_HandleTypeDef USBD_Device;
 
 /* Private function prototypes ----------------------------------------------*/
@@ -110,16 +109,11 @@ void PCD_FS_SOFCallback(PCD_FS_HandleTypeDef *hpcd)
  */
 void PCD_FS_ResetCallback(PCD_FS_HandleTypeDef *hpcd)
 {
-  USBD_SpeedTypeDef speed = USBD_SPEED_FULL; 
+  USBD_SpeedTypeDef speed = USBD_SPEED_FULL;
   /* Reset Device */
   USBD_LL_Reset(hpcd->pData);
 
   USBD_LL_SetSpeed(hpcd->pData, speed);
-
-  PCD_FS_SetISO(0x2U, 1U); /* set endpoint2 as isoc transfer */
-  PCD_FS_SetMaxPkt(0x2U,512U);
-
-
 }
 
 /**
@@ -224,8 +218,6 @@ USBD_StatusTypeDef  USBD_LL_Init(USBD_HandleTypeDef *pdev)
     hpcd.IN_ep[i].xfer_len = 64U;
   }
 
-  PCD_FS_SetISO(0x2U, 1U); /* set endpoint2 as isoc transfer */
-  PCD_FS_SetMaxPkt(0x2U, 512U);
   return USBD_OK;
 }
 

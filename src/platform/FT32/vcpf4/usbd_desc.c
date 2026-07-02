@@ -43,6 +43,7 @@
 
 #define USBD_VID                        0x0483
 #define USBD_PID                        0x5740
+#define USBD_PID_COMPOSITE              0x3256
 
 /** @defgroup USB_String_Descriptors
   * @{
@@ -127,6 +128,30 @@ __ALIGN_BEGIN uint8_t USBD_DeviceDesc[USB_LEN_DEV_DESC] __ALIGN_END =
     USBD_MAX_NUM_CONFIGURATION             /*bNumConfigurations*/
   } ; /* USB_DeviceDescriptor */
 
+/* Composite device descriptor: Miscellaneous class with IAD so the host
+ * associates the CDC and HID interfaces as one composite function. */
+#ifdef USE_USB_CDC_HID
+__ALIGN_BEGIN uint8_t USBD_DeviceDesc_Composite[USB_LEN_DEV_DESC] __ALIGN_END =
+  {
+    0x12,                                  /*bLength */
+    USB_DESC_TYPE_DEVICE,                  /*bDescriptorType*/
+    0x00,
+    0x02,                                  /*bcdUSB */
+    0xEF,                                  /*bDeviceClass: Miscellaneous*/
+    0x02,                                  /*bDeviceSubClass: Common*/
+    0x01,                                  /*bDeviceProtocol: IAD*/
+    USB_MAX_EP0_SIZE,                      /*bMaxPacketSize*/
+    LOBYTE(USBD_VID), HIBYTE(USBD_VID),    /*idVendor*/
+    LOBYTE(USBD_PID_COMPOSITE), HIBYTE(USBD_PID_COMPOSITE), /*idProduct*/
+    0x00,
+    0x02,                                  /*bcdDevice rel. 2.00*/
+    USBD_IDX_MFC_STR,                      /*Index of manufacturer  string*/
+    USBD_IDX_PRODUCT_STR,                  /*Index of product string*/
+    USBD_IDX_SERIAL_STR,                   /*Index of serial number string*/
+    USBD_MAX_NUM_CONFIGURATION             /*bNumConfigurations*/
+  };
+#endif /* USE_USB_CDC_HID */
+
 #ifdef USB_OTG_HS_INTERNAL_DMA_ENABLED
   #if defined( __ICCARM__ ) /*!< IAR Compiler */
     #pragma data_alignment=4
@@ -189,6 +214,13 @@ static void Get_SerialNum(void);
 uint8_t *  USBD_CDC_DeviceDescriptor( USBD_SpeedTypeDef speed , uint16_t *length)
 {
     (void)speed;
+#ifdef USE_USB_CDC_HID
+    if (usbDevConfig()->type == COMPOSITE)
+    {
+        *length = sizeof(USBD_DeviceDesc_Composite);
+        return USBD_DeviceDesc_Composite;
+    }
+#endif
     *length = sizeof(USBD_DeviceDesc);
     return USBD_DeviceDesc;
 }

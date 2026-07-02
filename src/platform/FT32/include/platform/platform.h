@@ -30,6 +30,7 @@
 
 #include "ft32f4xx.h"
 #include "ft32f4xx_misc.h"
+#include "system_ft32f4xx.h"
 #include "i2c_application.h"
 #include "platform/dma.h"
 
@@ -57,6 +58,7 @@ typedef uint16_t rccPeriphTag_t;
 #define USE_DMA_SPEC
 #define USE_PERSISTENT_OBJECTS
 #define USE_USB_MSC
+#define USE_USB_CDC_HID
 #define USE_LATE_TASK_STATISTICS
 
 #define USE_RPM_FILTER
@@ -75,6 +77,7 @@ typedef uint16_t rccPeriphTag_t;
 #define SCHEDULER_DELAY_LIMIT           100
 
 #define DEFAULT_CPU_OVERCLOCK 0
+#define PLATFORM_TRAIT_CONFIG_HSE 1
 #define FAST_IRQ_HANDLER FAST_CODE
 
 // ============================================================
