@@ -429,6 +429,7 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
 
         USB_FS_SetEPInt(0x0FU);
 
+        hpcd->USB_Address = 0U;
         USB_FS_SetAddress(0U);
 
         PCD_FS_ResetCallback(hpcd);

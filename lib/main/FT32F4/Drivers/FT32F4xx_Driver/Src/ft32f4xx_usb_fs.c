@@ -484,6 +484,8 @@ void USB_FS_DEP0StartXfer(USB_OTG_FS_DEPTypeDef *dep)
       dep->xfer_count = pkt_len;
       if (dep->xfer_len == 0U)
       {
+        /* FT32 FS EP0 zero-length status must use DATAEND only.
+         * Adding TXPKTRDY here leaves EP0 busy (srx-tx-dataend SWD). */
         USB_FS->CSR0 = OTG_FS_CSR0_DATAEND;
       }
       else if (pkt_len < dep->maxpacket)
@@ -1077,7 +1079,6 @@ void USB_FS_Set_NAKLMT(uint8_t epnum, uint8_t epdir, uint8_t naklmt)
   */
 void USB_FS_SetAddress(uint8_t address)
 {
-  USB_FS->FADDR &= ~(OTG_FS_FADDR_FUNADDR);
   USB_FS->FADDR = (address & OTG_FS_FADDR_FUNADDR);
 }
 

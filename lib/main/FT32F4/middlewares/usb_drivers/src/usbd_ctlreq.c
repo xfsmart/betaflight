@@ -591,11 +591,7 @@ static void USBD_GetDescriptor(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *r
       }
       else
       {
-      #ifdef USB_OTG_FS_CORE
-        (void)USBD_CtlSendData(pdev, NULL, 0U);
-      #else
         USBD_CtlError(pdev, req);
-      #endif
         err++;
       }
       break;
