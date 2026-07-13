@@ -232,23 +232,24 @@ static void handleUsartTxDma(uartPort_t *s)
 void uartDmaIrqHandler(dmaChannelDescriptor_t *descriptor)
 {
     uartPort_t *s = &(((uartDevice_t *)(descriptor->userParam))->port);
+    const bool transferPending = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TFR) != RESET;
+    const bool errorPending = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR) != RESET;
 
-    if (DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TFR)) {
+    if (errorPending) {
+        // ERR owns a co-pending completion. The active chunk left the ring
+        // when it started and is abandoned; only the queued suffix is rearmed.
+        xDMA_Cmd(s->txDMAResource, DISABLE);
+        DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
+        xDMA_SetCurrDataCounter(s->txDMAResource, 0);
+        handleUsartTxDma(s);
+        return;
+    }
+
+    if (transferPending) {
         DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR);
         xDMA_Cmd(s->txDMAResource, DISABLE);
         xDMA_SetCurrDataCounter(s->txDMAResource, 0);
         handleUsartTxDma(s);
-    }
-
-    if (DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR)) {
-        DMA_CLEAR_FLAG(descriptor, DMA_IT_ERR);
-        // Recover the TX channel to a restartable state without disturbing
-        // other channels: stop only this channel, clear every transfer and
-        // error flag, and reset the block count so the next write retries the
-        // remaining queued data from the current ring tail.
-        xDMA_Cmd(s->txDMAResource, DISABLE);
-        DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
-        xDMA_SetCurrDataCounter(s->txDMAResource, 0);
     }
 }
 
