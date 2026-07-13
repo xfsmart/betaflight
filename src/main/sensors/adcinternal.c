@@ -86,6 +86,11 @@ void adcInternalProcess(timeUs_t currentTimeUs)
     uint16_t vrefintSample = adcGetValue(ADC_VREFINT);
     uint16_t tempsensorSample = adcGetValue(ADC_TEMPSENSOR);
 
+    if (vrefintSample == 0) {
+        adcInternalStartConversion();
+        return;
+    }
+
     adcVrefintValue = updateMovingAverageUint16(&adcVrefintAverageState, vrefintSample);
     adcTempsensorValue = updateMovingAverageUint16(&adcTempsensorAverageState, tempsensorSample);
 

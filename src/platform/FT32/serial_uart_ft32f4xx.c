@@ -235,6 +235,8 @@ void uartDmaIrqHandler(dmaChannelDescriptor_t *descriptor)
 
     if (DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TFR)) {
         DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR);
+        xDMA_Cmd(s->txDMAResource, DISABLE);
+        xDMA_SetCurrDataCounter(s->txDMAResource, 0);
         handleUsartTxDma(s);
     }
 
@@ -244,9 +246,9 @@ void uartDmaIrqHandler(dmaChannelDescriptor_t *descriptor)
         // other channels: stop only this channel, clear every transfer and
         // error flag, and reset the block count so the next write retries the
         // remaining queued data from the current ring tail.
-        DMA_Channel_Cmd((DMA_Channel_TypeDef *)s->txDMAResource, DISABLE);
+        xDMA_Cmd(s->txDMAResource, DISABLE);
         DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
-        DMA_SetCurrDataCounter((DMA_Channel_TypeDef *)s->txDMAResource, 0);
+        xDMA_SetCurrDataCounter(s->txDMAResource, 0);
     }
 }
 

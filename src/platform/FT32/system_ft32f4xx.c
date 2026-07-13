@@ -36,7 +36,11 @@ extern void cycleCounterInit(void);
 // Clock configuration from startup/system_ft32f4xx.c
 void SetSysClock(void);
 
-#define AIRCR_VECTKEY_MASK    ((uint32_t)0x05FA0000)
+#define FT32_SYSTEM_MEMORY_SIZE_BYTES  (30U * 1024U)
+#define FT32_SRAM_BASE                 0x20000000U
+#define FT32_SRAM_END                  0x20020000U
+#define FT32_CCM_BASE                  0x10000000U
+#define FT32_CCM_END                   0x10010000U
 
 void systemReset(void)
 {
@@ -64,6 +68,35 @@ typedef struct isrVector_s {
     resetHandler_t *resetHandler;
 } isrVector_t;
 
+static bool isStackAddressInRange(uint32_t address, uint32_t base, uint32_t end)
+{
+    return address > base && address <= end;
+}
+
+static bool isAddressInRange(uint32_t address, uint32_t base, uint32_t end)
+{
+    return address >= base && address < end;
+}
+
+static bool isValidBootloaderStack(uint32_t stackEnd)
+{
+    if ((stackEnd & 0x3U) != 0U) {
+        return false;
+    }
+
+    return isStackAddressInRange(stackEnd, FT32_SRAM_BASE, FT32_SRAM_END) ||
+           isStackAddressInRange(stackEnd, FT32_CCM_BASE, FT32_CCM_END);
+}
+
+static bool isValidBootloaderResetHandler(uint32_t resetHandler, uint32_t systemMemoryBase)
+{
+    if ((resetHandler == 0U) || (resetHandler == 0xffffffffU) || ((resetHandler & 0x1U) == 0U)) {
+        return false;
+    }
+
+    return isAddressInRange(resetHandler & ~0x1U, systemMemoryBase, systemMemoryBase + FT32_SYSTEM_MEMORY_SIZE_BYTES);
+}
+
 void checkForBootLoaderRequest(void)
 {
     volatile uint32_t bootloaderRequest = persistentObjectRead(PERSISTENT_OBJECT_RESET_REASON);
@@ -75,9 +108,19 @@ void checkForBootLoaderRequest(void)
 
     extern isrVector_t system_isr_vector_table_base;
 
-    __set_MSP(system_isr_vector_table_base.stackEnd);
-    system_isr_vector_table_base.resetHandler();
-    while (1);
+    const uint32_t bootloaderStackEnd = system_isr_vector_table_base.stackEnd;
+    const uint32_t bootloaderResetHandler = (uint32_t)(uintptr_t)system_isr_vector_table_base.resetHandler;
+    const uint32_t systemMemoryBase = (uint32_t)(uintptr_t)&system_isr_vector_table_base;
+
+    if (!isValidBootloaderStack(bootloaderStackEnd) ||
+        !isValidBootloaderResetHandler(bootloaderResetHandler, systemMemoryBase)) {
+        return;
+    }
+
+    __disable_irq();
+    __set_MSP(bootloaderStackEnd);
+    ((resetHandler_t *)(uintptr_t)bootloaderResetHandler)();
+    __builtin_unreachable();
 }
 
 void enableGPIOPowerUsageAndNoiseReductions(void)
@@ -158,15 +201,10 @@ void systemInit(void)
     // Configure system clock (HSE/HSI -> PLL -> 210MHz default)
     SetSysClock();
 
-    // Configure NVIC preempt/priority groups.
-    // Use the CMSIS NVIC_SetPriorityGrouping() rather than the FT32 StdPeriph
-    // NVIC_PriorityGroupConfig(): the latter writes SCB->AIRCR = 0x05FA0000 | arg
-    // and expects an already-shifted enum (e.g. NVIC_PriorityGroup_2 = 0x500),
-    // but FT32's NVIC_PRIORITY_GROUPING is the raw group number (4). Passing 4
-    // raw yields 0x05FA0000 | 4 = 0x05FA0004, whose bit2 is AIRCR.SYSRESETREQ
-    // (NVIC_SYSRESETREQ = 2), triggering a system reset on every boot.
-    // NVIC_SetPriorityGrouping() shifts the value <<8 internally, writing
-    // 0x05FA0000 | (4 << 8) = 0x05FA0400 (PRIGROUP = 4, no SYSRESETREQ).
+    // Configure NVIC preempt/priority groups. CMSIS shifts the raw FT32
+    // priority-group value before updating AIRCR; the FT32 StdPeriph helper
+    // expects a pre-shifted value and would treat the raw platform constant as
+    // a reset request bit.
     NVIC_SetPriorityGrouping(NVIC_PRIORITY_GROUPING);
 
     // Cache RCC->CSR value for isMPUSoftReset()

@@ -363,22 +363,22 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
   uint32_t reg_int;
   uint32_t tx_int;
   uint32_t rx_int;
-  uint8_t  saved_index;
-  uint8_t  ep0_csr;
-  uint8_t  reg_power;
+	  uint8_t  saved_index;
+	  uint8_t  ep0_csr;
+	  uint8_t  reg_power;
 
-  reg_int = USB_FS_ReadInterrupts();
+	  reg_int = USB_FS_ReadInterrupts();
   /* ensure that we are in device mode */
   if ((USB_FS_GetMode() & USB_OTG_MODE_DEVICE) == USB_OTG_MODE_DEVICE)
   {
     /* avoid spurious interrupt */
     if (reg_int == 0U)
-    {
-      return;
-    }
+	    {
+	      return;
+	    }
 
-    /* store current frame number */
-    hpcd->FrameNumber = USB_FS_GetCurrentFrame();
+	    /* store current frame number */
+	    hpcd->FrameNumber = USB_FS_GetCurrentFrame();
 
     /* Handle vbus error Interrupts */
     if ((reg_int & 0xFFU) != 0U)
@@ -413,12 +413,12 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
       {
         PCD_FS_SOFCallback(hpcd);
       }
-      /* Handle Host reset Interrupt */
-      if ((reg_int & OTG_FS_INTRUSB_RSTINT) == OTG_FS_INTRUSB_RSTINT)
-      {
-        USB_FS->CSR0 |= (OTG_FS_CSR0_SSETUPEND | OTG_FS_CSR0_SRXPKTRDY);
-        USB_FS_RstEP0Regs();
-        for (i = 1U; i < hpcd->Init.endpoints; i++)
+	      /* Handle Host reset Interrupt */
+	      if ((reg_int & OTG_FS_INTRUSB_RSTINT) == OTG_FS_INTRUSB_RSTINT)
+	      {
+	        USB_FS->CSR0 |= (OTG_FS_CSR0_SSETUPEND | OTG_FS_CSR0_SRXPKTRDY);
+	        USB_FS_RstEP0Regs();
+	        for (i = 1U; i < hpcd->Init.endpoints; i++)
         {
           (void)USB_FS_IndexSel((uint8_t)i);
           USB_FS->TXCSR1 = 0U;
@@ -430,10 +430,10 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
         USB_FS_SetEPInt(0x0FU);
 
         hpcd->USB_Address = 0U;
-        USB_FS_SetAddress(0U);
+	        USB_FS_SetAddress(0U);
 
-        PCD_FS_ResetCallback(hpcd);
-      }
+	        PCD_FS_ResetCallback(hpcd);
+	      }
       /* Handle resume Interrupt */
       if ((reg_int & OTG_FS_INTRUSB_RESINT) == OTG_FS_INTRUSB_RESINT)
       {
@@ -457,11 +457,11 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
       (void)USB_FS_IndexSel(0U);
       ep0_csr = USB_FS->CSR0;
       (void)USB_FS_IndexSel(saved_index);
-      if ((ep0_csr & (OTG_FS_CSR0_RXPKTRDY | OTG_FS_CSR0_SETUPEND | OTG_FS_CSR0_STSTALL)) != 0U)
-      {
-        tx_int |= OTG_FS_INTRTX1_EP0INF;
-      }
-    }
+	      if ((ep0_csr & (OTG_FS_CSR0_RXPKTRDY | OTG_FS_CSR0_SETUPEND | OTG_FS_CSR0_STSTALL)) != 0U)
+	      {
+	        tx_int |= OTG_FS_INTRTX1_EP0INF;
+	      }
+	    }
     if ((tx_int & OTG_FS_INTRTX1_EP0INF) == OTG_FS_INTRTX1_EP0INF)
     {
       (void)USB_FS_IndexSel(0U);
@@ -517,63 +517,6 @@ void PCD_FS_WKUP_IRQHandler(void)
   * @param  epnum endpoint number
   * @retval None
   */
-//void __attribute__((weak)) PCD_FS_DataOutStageCallback(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  UNUSED(hpcd);
-//  UNUSED(epnum);
-//
-//  /* NOTE : This function should not be modified, when the callback is needed,
-//            the PCD_FS_DataOutStageCallback could be implemented in the user file
-//   */
-//}
-//
-///**
-//  * @brief  Data IN stage callback
-//  * @param  hpcd PCD handle
-//  * @param  epnum endpoint number
-//  * @retval None
-//  */
-//void __attribute__((weak)) PCD_FS_DataInStageCallback(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  UNUSED(hpcd);
-//  UNUSED(epnum);
-//
-//  /* NOTE : This function should not be modified, when the callback is needed,
-//            the PCD_FS_DataInStageCallback could be implemented in the user file
-//   */
-//}
-///**
-//  * @brief  Setup stage callback
-//  * @param  hpcd PCD handle
-//  * @retval None
-//  */
-//void __attribute__((weak)) PCD_FS_SetupStageCallback(PCD_FS_HandleTypeDef *hpcd)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  UNUSED(hpcd);
-//
-//  /* NOTE : This function should not be modified, when the callback is needed,
-//            the PCD_FS_SetupStageCallback could be implemented in the user file
-//   */
-//}
-//
-///**
-//  * @brief  USB Start Of Frame callback.
-//  * @param  hpcd PCD handle
-//  * @retval None
-//  */
-//void __attribute__((weak)) PCD_FS_SOFCallback(PCD_FS_HandleTypeDef *hpcd)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  UNUSED(hpcd);
-//
-//  /* NOTE : This function should not be modified, when the callback is needed,
-//            the PCD_FS_SOFCallback could be implemented in the user file
-//   */
-//}
-
 /**
   * @brief  USB Start Of Frame callback.
   * @param  hpcd PCD handle
@@ -653,77 +596,6 @@ void __attribute__((weak)) PCD_FS_DERRCallback(PCD_FS_HandleTypeDef *hpcd)
   * @param  hpcd PCD handle
   * @retval None
   */
-//void __attribute__((weak)) PCD_FS_ResetCallback(PCD_FS_HandleTypeDef *hpcd)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  UNUSED(hpcd);
-//
-//  /* NOTE : This function should not be modified, when the callback is needed,
-//            the PCD_FS_ResetCallback could be implemented in the user file
-//   */
-//}
-//
-///**
-//  * @brief  Suspend event callback.
-//  * @param  hpcd PCD handle
-//  * @retval None
-//  */
-//void __attribute__((weak)) PCD_FS_SuspendCallback(PCD_FS_HandleTypeDef *hpcd)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  UNUSED(hpcd);
-//
-//  /* NOTE : This function should not be modified, when the callback is needed,
-//            the PCD_SuspendCallback could be implemented in the user file
-//   */
-//}
-//
-///**
-//  * @brief  Resume event callback.
-//  * @param  hpcd PCD handle
-//  * @retval None
-//  */
-//void __attribute__((weak)) PCD_FS_ResumeCallback(PCD_FS_HandleTypeDef *hpcd)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  UNUSED(hpcd);
-//
-//  /* NOTE : This function should not be modified, when the callback is needed,
-//            the PCD_FS_ResumeCallback could be implemented in the user file
-//   */
-//}
-//
-//
-///**
-//  * @brief  Connection event callback.
-//  * @param  hpcd PCD handle
-//  * @retval None
-//  */
-//void __attribute__((weak)) PCD_FS_ConnectCallback(PCD_FS_HandleTypeDef *hpcd)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  UNUSED(hpcd);
-//
-//  /* NOTE : This function should not be modified, when the callback is needed,
-//            the PCD_FS_ConnectCallback could be implemented in the user file
-//   */
-//}
-//
-///**
-//  * @brief  Disconnection event callback.
-//  * @param  hpcd PCD handle
-//  * @retval None
-//  */
-//void __attribute__((weak)) PCD_FS_DisconnectCallback(PCD_FS_HandleTypeDef *hpcd)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  UNUSED(hpcd);
-//
-//  /* NOTE : This function should not be modified, when the callback is needed,
-//            the PCD_FS_DisconnectCallback could be implemented in the user file
-//   */
-//}
-
 /**
   * @}
   */
@@ -1152,45 +1024,45 @@ void PCD_FS_EP0_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
   USB_OTG_FS_DEPTypeDef *ep;
   uint8_t tmpreg;
   uint8_t bytecount;
-  uint32_t remaining;
-  uint16_t pkt_len;
-  uint8_t csr_cmd;
-  tmpreg = USB_FS->CSR0;
+	  uint32_t remaining;
+	  uint16_t pkt_len;
+	  uint8_t csr_cmd;
+	  tmpreg = USB_FS->CSR0;
 
-  if ((tmpreg & OTG_FS_CSR0_RXPKTRDY) == OTG_FS_CSR0_RXPKTRDY)
-  {
+	  if ((tmpreg & OTG_FS_CSR0_RXPKTRDY) == OTG_FS_CSR0_RXPKTRDY)
+	  {
     bytecount = USB_FS_Read_Count0();
     ep = &hpcd->OUT_ep[0U];
 
     if (hpcd->ctrl_state == CTRL_SETUP_P)
-    {
-      hpcd->ctrl_state = CTRL_DATA;
-      USB_FS_FIFORead((uint8_t *)hpcd->Setup, 0U, bytecount);
-      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
-      PCD_FS_SetupStageCallback(hpcd);
-    }
-    else
-    {
-      hpcd->ctrl_state = CTRL_SETUP_P;
-      USB_FS_FIFORead(ep->xfer_buff, 0U, bytecount);
-      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
-    }
-  }
-  else if (tmpreg != 0U)
-  {
-    if ((tmpreg & OTG_FS_CSR0_SETUPEND) == OTG_FS_CSR0_SETUPEND)
-    {
-      USB_FS->CSR0 = OTG_FS_CSR0_SSETUPEND;
-      USB_FS_FlushEp0Fifo();
-    }
-    if ((tmpreg & OTG_FS_CSR0_STSTALL) == OTG_FS_CSR0_STSTALL)
-    {
-      hpcd->ctrl_state = CTRL_SETUP_P;
-      USB_FS_FlushEp0Fifo();   /* flush fifo to halt transcation*/
-      USB_FS->CSR0 &= (~(OTG_FS_CSR0_STSTALL | OTG_FS_CSR0_SDSTALL));
-    }
-  }
-  else
+	    {
+	      hpcd->ctrl_state = CTRL_DATA;
+	      USB_FS_FIFORead((uint8_t *)hpcd->Setup, 0U, bytecount);
+	      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
+	      PCD_FS_SetupStageCallback(hpcd);
+	    }
+	    else
+	    {
+	      hpcd->ctrl_state = CTRL_SETUP_P;
+	      USB_FS_FIFORead(ep->xfer_buff, 0U, bytecount);
+	      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
+	    }
+	  }
+	  else if (tmpreg != 0U)
+	  {
+	    if ((tmpreg & OTG_FS_CSR0_SETUPEND) == OTG_FS_CSR0_SETUPEND)
+	    {
+	      USB_FS->CSR0 = OTG_FS_CSR0_SSETUPEND;
+	      USB_FS_FlushEp0Fifo();
+	    }
+	    if ((tmpreg & OTG_FS_CSR0_STSTALL) == OTG_FS_CSR0_STSTALL)
+	    {
+	      hpcd->ctrl_state = CTRL_SETUP_P;
+	      USB_FS_FlushEp0Fifo();   /* flush fifo to halt transcation*/
+	      USB_FS->CSR0 &= (~(OTG_FS_CSR0_STSTALL | OTG_FS_CSR0_SDSTALL));
+	    }
+	  }
+	  else
   {
     ep = &hpcd->IN_ep[0U];
     if ((ep->is_in == 1U) && (ep->xfer_count < ep->xfer_len))
@@ -1201,22 +1073,22 @@ void PCD_FS_EP0_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
       ep->xfer_buff += pkt_len;
       ep->xfer_count += pkt_len;
       csr_cmd = OTG_FS_CSR0_TXPKTRDY;
-      if (pkt_len < ep->maxpacket)
-      {
-        csr_cmd |= OTG_FS_CSR0_DATAEND;
-      }
-      USB_FS->CSR0 = csr_cmd;
-      return;
-    }
-    if ((ep->is_in == 1U) && (ep->xfer_len != 0U))
-    {
-      ep->xfer_len = 0U;
-      PCD_FS_DataInStageCallback(hpcd, 0U);
-    }
-    if (hpcd->USB_Address != USB_FS_GetAddress())
-    {
-      USB_FS_SetAddress(hpcd->USB_Address);
-    }
+	      if (pkt_len < ep->maxpacket)
+	      {
+	        csr_cmd |= OTG_FS_CSR0_DATAEND;
+	      }
+	      USB_FS->CSR0 = csr_cmd;
+	      return;
+	    }
+	    if ((ep->is_in == 1U) && (ep->xfer_len != 0U))
+	    {
+	      ep->xfer_len = 0U;
+	      PCD_FS_DataInStageCallback(hpcd, 0U);
+	    }
+	    if (hpcd->USB_Address != USB_FS_GetAddress())
+	    {
+	      USB_FS_SetAddress(hpcd->USB_Address);
+	    }
     hpcd->ctrl_state = CTRL_SETUP_P;/*...*/
   }
 

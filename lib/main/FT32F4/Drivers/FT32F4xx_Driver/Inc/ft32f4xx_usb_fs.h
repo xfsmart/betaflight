@@ -400,7 +400,6 @@ typedef enum
 
 USB_FS_StatusTypeDef USB_FS_CoreInit(void);
 USB_FS_StatusTypeDef USB_FS_DevInit(USB_OTG_FS_CfgTypeDef cfg);
-USB_FS_StatusTypeDef USB_FS_HostInit(USB_OTG_FS_CfgTypeDef cfg);
 USB_FS_StatusTypeDef USB_FS_IndexSel(uint8_t epnum);
 USB_FS_StatusTypeDef USB_FS_RstEP0Regs(void);
 USB_FS_StatusTypeDef USB_FS_RstEPRegs(uint8_t epnum);
@@ -409,9 +408,6 @@ USB_FS_StatusTypeDef USB_FS_FlushTxFifo(uint8_t epnum);
 USB_FS_StatusTypeDef USB_FS_FlushRxFifo(uint8_t epnum);
 USB_FS_StatusTypeDef USB_FS_SendStall(USB_OTG_FS_DEPTypeDef *dep);
 USB_FS_StatusTypeDef USB_FS_ClrStall(USB_OTG_FS_DEPTypeDef *dep);
-USB_FS_StatusTypeDef USB_FS_HEP_Init(uint8_t epnum, uint8_t dev_address,
-                                     uint8_t ep_type, uint8_t interval,
-                                     uint16_t xfersize);
 int32_t usb_log2(int32_t x);
 uint32_t USB_FS_Get_VBusStatus(void);
 uint16_t USB_FS_Read_RxCount(void);
@@ -423,15 +419,11 @@ uint8_t  USB_FS_GetCID(void);
 uint8_t  USB_FS_GetAddress(void);
 uint8_t  USB_FS_GetPower(void);
 uint8_t  USB_FS_GetrDevctl(void);
-int8_t   USB_FS_Exiting_Host(uint8_t toOTG, USB_OTG_FS_CfgTypeDef *cfg);
 uint32_t USB_FS_ReadInterrupts(void);
 
-void USB_FS_Enable_HEP(USB_OTG_FS_HEPTypeDef *hep);
 void USB_FS_Enable_DEP(USB_OTG_FS_DEPTypeDef *dep);
 void USB_FS_DEPStartXfer(USB_OTG_FS_DEPTypeDef *dep);
 void USB_FS_DEP0StartXfer(USB_OTG_FS_DEPTypeDef *dep);
-void USB_FS_HEP_StartXfer(USB_OTG_FS_HEPTypeDef *hep);
-void USB_FS_HEP0_StartXfer(USB_OTG_FS_HEPTypeDef *hep, uint8_t ctl_state);
 void USB_FS_FIFORead(uint8_t *dstP, uint8_t ep_num, uint16_t len);
 void USB_FS_FIFOWrite(uint8_t *srcP, uint8_t ep_num, uint16_t len);
 //void USB_FS_IntHandle(void);
@@ -451,7 +443,6 @@ void USB_FS_SetDevctl(uint8_t cfg);
 void USB_FS_ClrDevctl(uint8_t cfg);
 void USB_FS_Activate_Resume(void);
 void USB_FS_DeActivate_Resume(void);
-void USB_FS_ResetPort(void);
 void USB_FS_Enable_Suspend(void);
 void USB_FS_Disable_Suspend(void);
 void USB_FS_ActivateSetup(void);

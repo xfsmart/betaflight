@@ -987,11 +987,11 @@ void ADC_RegularChannelConfig(ADC_TypeDef* ADCx, ADC_ChannelConfTypeDef* Regular
     ADCx->SMPR1 |= RegularConfig->SamplingTime << (RegularConfig->Channel*3);
   }
   else if(RegularConfig->Channel <= ADC_CHANNEL_18){
-    ADCx->SMPR2 &= (uint32_t)(~(0x7 << (RegularConfig->Channel-10)));
+    ADCx->SMPR2 &= (uint32_t)(~(0x7 << ((RegularConfig->Channel-10)*3)));
     ADCx->SMPR2 |= RegularConfig->SamplingTime << ((RegularConfig->Channel-10)*3);
   }
   else if(RegularConfig->Channel <= ADC_CHANNEL_21){
-    ADCx->SMPR3 &= (uint32_t)(~(0x7 << (RegularConfig->Channel-19)));
+    ADCx->SMPR3 &= (uint32_t)(~(0x7 << ((RegularConfig->Channel-19)*3)));
     ADCx->SMPR3 |= RegularConfig->SamplingTime << ((RegularConfig->Channel-19)*3);
   }
 
@@ -1124,7 +1124,7 @@ void ADC_InjectedChannelConfig(ADC_TypeDef* ADCx, ADC_InjectedConfTypeDef* Injec
   /* Check the parameters */
   assert_param(IS_ADC_ALL_PERIPH(ADCx));
   assert_param(IS_ADC_CHANNEL(InjectedConfig->InjectedChannel));
-  assert_param(IS_ADC_REGULAR_RANK(InjectedConfig->InjectedRank));
+  assert_param(IS_ADC_INJECTED_RANK(InjectedConfig->InjectedRank));
   assert_param(IS_ADC_SAMPLE_TIME(InjectedConfig->InjectedSamplingTime));
   assert_param(IS_ADC_SINGLE_DIFFERENTIAL(InjectedConfig->InjectedSingleDiff));
   assert_param(IS_ADC_OFFSET_NUMBER(InjectedConfig->InjectedOffsetNumber));
@@ -1206,12 +1206,12 @@ void ADC_InjectedChannelConfig(ADC_TypeDef* ADCx, ADC_InjectedConfTypeDef* Injec
   }
   else if(InjectedConfig->InjectedChannel <= ADC_CHANNEL_18)
   {
-    ADCx->SMPR2 &= (uint32_t)(~(0x7 << (InjectedConfig->InjectedChannel-10)));
+    ADCx->SMPR2 &= (uint32_t)(~(0x7 << ((InjectedConfig->InjectedChannel-10)*3)));
     ADCx->SMPR2 |= (uint32_t)(InjectedConfig->InjectedSamplingTime << ((InjectedConfig->InjectedChannel-10)*3));
   }
   else if(InjectedConfig->InjectedChannel <= ADC_CHANNEL_21)
   {
-    ADCx->SMPR3 &= (uint32_t)(~(0x7 << (InjectedConfig->InjectedChannel-19)));
+    ADCx->SMPR3 &= (uint32_t)(~(0x7 << ((InjectedConfig->InjectedChannel-19)*3)));
     ADCx->SMPR3 |= (uint32_t)(InjectedConfig->InjectedSamplingTime << ((InjectedConfig->InjectedChannel-19)*3));
   }
 

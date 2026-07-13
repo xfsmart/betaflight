@@ -50,6 +50,8 @@
 #define DMA2_ST6_HANDLER    (DMA_FIRST_HANDLER + 14)
 #define DMA2_ST7_HANDLER    (DMA_FIRST_HANDLER + 15)
 #define DMA_LAST_HANDLER    DMA2_ST7_HANDLER
+#define FT32_DMA_CHANNELS_PER_CONTROLLER 8
+#define FT32_DMA_CHANNEL_COUNT 16
 
 // DMA device number and index calculation macros
 // FT32 has 2 DMA instances, each with 8 channels
@@ -122,13 +124,19 @@
 #define DMA_IT_TCIF         DMA_IT_TFR    // Transfer complete interrupt
 // FT32 channel architecture does not support HTIF/DMEIF/FEIF flags
 
+void ft32DmaDeInit(DMA_ARCH_TYPE *dmaResource);
+void ft32DmaInit(DMA_ARCH_TYPE *dmaResource, DMA_InitTypeDef *init);
+void ft32DmaCmd(DMA_ARCH_TYPE *dmaResource, FunctionalState newState);
+uint16_t ft32DmaGetCurrDataCounter(DMA_ARCH_TYPE *dmaResource);
+void ft32DmaSetCurrDataCounter(DMA_ARCH_TYPE *dmaResource, uint16_t count);
+uint8_t ft32DmaIsChannelEnabled(DMA_ARCH_TYPE *dmaResource);
+
 // DMA common macro definitions
-#define xDMA_DeInit(dmaResource) DMA_DeInit((DMA_ARCH_TYPE *)(dmaResource))
-#define xDMA_Cmd(dmaResource, newState) DMA_Cmd((DMA_ARCH_TYPE *)(dmaResource), newState)
+#define xDMA_DeInit(dmaResource) ft32DmaDeInit((DMA_ARCH_TYPE *)(dmaResource))
+#define xDMA_Cmd(dmaResource, newState) ft32DmaCmd((DMA_ARCH_TYPE *)(dmaResource), newState)
 #define xDMA_ITConfig(dmaResource, flags, newState) DMA_ITConfig((DMA_ARCH_TYPE *)(dmaResource), flags, newState)
-#define xDMA_GetCurrDataCounter(dmaResource) DMA_GetCurrDataCounter((DMA_ARCH_TYPE *)(dmaResource))
-// CTL register bits [60:45] contain BLOCK_TS (16-bit block transfer count)
-#define xDMA_SetCurrDataCounter(dmaResource, count) DMA_SetCurrDataCounter((DMA_ARCH_TYPE *)(dmaResource), count)
+#define xDMA_GetCurrDataCounter(dmaResource) ft32DmaGetCurrDataCounter((DMA_ARCH_TYPE *)(dmaResource))
+#define xDMA_SetCurrDataCounter(dmaResource, count) ft32DmaSetCurrDataCounter((DMA_ARCH_TYPE *)(dmaResource), count)
 #define xDMA_GetFlagStatus(dmaResource, flags) DMA_GetFlagStatus((DMA_ARCH_TYPE *)(dmaResource), flags)
 #define xDMA_ClearFlag(dmaResource, flags) DMA_ClearFlagStatus((DMA_ARCH_TYPE *)(dmaResource), flags)
 
@@ -180,24 +188,11 @@ static inline void ft32DmaClearActiveRequestSlots(DMA_ARCH_TYPE *dmaResource, co
     }
 }
 
-#define xDMA_Init(dmaResource, initStruct) \
-    do { \
-        ft32DmaClearActiveRequestSlots((DMA_ARCH_TYPE *)(dmaResource), (initStruct)); \
-        DMA_Init((DMA_ARCH_TYPE *)(dmaResource), (initStruct)); \
-    } while (0)
-
-// FT32 DMA standard library lacks DMA_SetCurrDataCounter, provide inline implementation
-// CTL register layout: bits [60:45] = BLOCK_TS (16-bit)
-static inline void DMA_SetCurrDataCounter(DMA_Channel_TypeDef* DMAy_Channelx, uint16_t count)
-{
-    // Clear bits [60:45] (16-bit BLOCK_TS field) then set new value
-    DMAy_Channelx->CTL &= ~(0xFFFFULL << 45U);
-    DMAy_Channelx->CTL |= ((uint64_t)count << 45U);
-}
+#define xDMA_Init(dmaResource, initStruct) ft32DmaInit((DMA_ARCH_TYPE *)(dmaResource), (initStruct))
 
 // FT32 DMA standard library lacks a source-address setter, provide inline implementation.
 // The channel must be stopped before calling this: SAR is only writable while the
-// channel is disabled, the same precondition DMA_SetCurrDataCounter relies on.
+// channel is disabled, the same precondition the block-size setter relies on.
 static inline void DMA_SetSrcAddress(DMA_Channel_TypeDef* DMAy_Channelx, uint32_t srcAddress)
 {
     DMAy_Channelx->SAR = (uint64_t)srcAddress;

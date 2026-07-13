@@ -12,10 +12,9 @@
   */
 
 #include <string.h>
-#include "ft32f4xx.h"
-#include "drivers/system.h"
-#include "system_ft32f4xx.h"
+
 #include "platform.h"
+#include "drivers/system.h"
 #include "drivers/persistent.h"
 
 #define VECT_TAB_SRAM
@@ -68,15 +67,16 @@ typedef struct pllConfig_s {
 } pllConfig_t;
 
 static const pllConfig_t overclockLevels[] = {
-    { 168, 336, 2,  7 },  // 168 MHz, USB = 48 MHz from PLLQ (336/7)
+    { 210, 420, 2,  0 },  // Default/reset-cleared level, USB from HSI48
     { 180, 360, 2,  0 },  // 180 MHz, USB from HSI48
     { 192, 384, 2,  8 },  // 192 MHz, USB = 48 MHz from PLLQ (384/8)
-    { 210, 420, 2,  0 },  // 210 MHz (default), USB from HSI48
+    { 210, 420, 2,  0 },  // Legacy persisted default index, USB from HSI48
     { 216, 432, 2,  9 },  // 216 MHz, USB = 48 MHz from PLLQ (432/9)
     { 240, 480, 2, 10 },  // 240 MHz, USB = 48 MHz from PLLQ (480/10)
+    { 168, 336, 2,  7 },  // 168 MHz, USB = 48 MHz from PLLQ (336/7)
 };
 
-#define DEFAULT_OVERCLOCK_LEVEL 3
+#define DEFAULT_OVERCLOCK_LEVEL 0
 
 // Encode PLLP divider to register field value.
 // Register encoding: 001 = /2, 010 = /3, 011 = /4, ..., 111 = /8.

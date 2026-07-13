@@ -48,6 +48,88 @@
 // the idle-line detection used to drive the idle callback.
 #define UART_RX_TIMEOUT_BITS 40U
 
+static uint32_t ft32UartDmaControlMasks[UARTDEV_COUNT];
+
+static int ft32UartIndex(USART_TypeDef *USARTx)
+{
+    for (int index = 0; index < UARTDEV_COUNT; index++) {
+        if ((USART_TypeDef *)uartHardware[index].reg == USARTx) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+uint32_t ft32UartDmaControlMask(USART_TypeDef *USARTx)
+{
+    const int index = ft32UartIndex(USARTx);
+
+    if (index < 0) {
+        return 0U;
+    }
+
+    return ft32UartDmaControlMasks[index] & (USART_CR_DMAT_EN | USART_CR_DMAR_EN);
+}
+
+void ft32UartSetDmaControlMask(USART_TypeDef *USARTx, uint32_t mask)
+{
+    const int index = ft32UartIndex(USARTx);
+
+    if (index < 0) {
+        return;
+    }
+
+    ft32UartDmaControlMasks[index] = mask & (USART_CR_DMAT_EN | USART_CR_DMAR_EN);
+}
+
+static uint32_t ft32UartBaudDivider(uint32_t apbclock, uint32_t baudRate)
+{
+    if (baudRate == 0U) {
+        return 0U;
+    }
+
+    const uint64_t divisor = (uint64_t)baudRate * 16U;
+    const uint64_t scaledDivider = (((uint64_t)apbclock * 8U) + (divisor / 2U)) / divisor;
+    const uint32_t clockDivider = (uint32_t)(scaledDivider / 8U);
+    const uint32_t fracDivider = (uint32_t)(scaledDivider % 8U);
+
+    return ((clockDivider << USART_BRGR_CD_Pos) & USART_BRGR_CD) |
+           ((fracDivider << USART_BRGR_FP_Pos) & USART_BRGR_FP);
+}
+
+static void ft32UartInitAsyncDisabled(USART_TypeDef *USARTx, uint32_t baudRate, uint32_t wordLength, uint32_t stopBits, uint32_t parity)
+{
+    RCC_ClocksTypeDef clocks;
+    RCC_GetClocksFreq(&clocks);
+
+    const uint32_t apbclock = (USARTx == USART1 || USARTx == USART6)
+                                  ? clocks.P2CLK_Frequency
+                                  : clocks.PCLK_Frequency;
+
+    ft32UartSetDmaControlMask(USARTx, 0U);
+    USARTx->IDR = 0xffffffffU;
+    USARTx->CR = USART_CR_TXDIS | USART_CR_RXDIS;
+    USARTx->MR = wordLength |
+                 stopBits |
+                 parity |
+                 USART_CLOCK_OUTPUT_DISABLE |
+                 USART_CLOCK_SELECT_MCK |
+                 USART_MODE_OPERATION_NORMAL |
+                 USART_SYNC_MODE_ASYNC |
+                 USART_BIT_ORDER_LSBF |
+                 USART_CHANNEL_MODE_NORMAL |
+                 USART_OVERSAMPLING_16 |
+                 USART_INVDATA_DISABLE;
+    USARTx->BRGR = ft32UartBaudDivider(apbclock, baudRate);
+}
+
+static void ft32UartResetAndEnableTx(USART_TypeDef *USARTx)
+{
+    USARTx->CR = USART_CR_RSTTX;
+    USARTx->CR = USART_CR_TXEN;
+}
+
 void uartReconfigure(uartPort_t *uartPort)
 {
     USART_TypeDef *USARTx = (USART_TypeDef *)uartPort->USARTx;
@@ -61,38 +143,22 @@ void uartReconfigure(uartPort_t *uartPort)
     const uint32_t parity = (uartPort->port.options & SERIAL_PARITY_EVEN)
                                 ? USART_PARITY_EVEN
                                 : USART_PARITY_NONE;
-    uint32_t mode = 0;
-    if (uartPort->port.mode & MODE_RX) {
-        mode |= USART_MODE_RX;
-    }
-    if (uartPort->port.mode & MODE_TX) {
-        mode |= USART_MODE_TX;
-    }
 
     // UART4/5 are a separate peripheral family with their own init type and
     // APB1 baud divider; USART1/2/3/6 use the USART family. Both families share
     // the same MR field layout, so the configuration constants are common.
+    // Keep TX/RX disabled during format and baud setup; directions are enabled
+    // after MR/BRGR and DMA/IRQ setup below.
     if (USARTx == UART4 || USARTx == UART5) {
-        UART_Cmd(USARTx, DISABLE);
-        UART_InitTypeDef uartInit;
-        UART_StructInit(&uartInit);
-        uartInit.UART_BaudRate = uartPort->port.baudRate;
-        uartInit.UART_WordLength = wordLength;
-        uartInit.UART_StopBits = stopBits;
-        uartInit.UART_Parity = parity;
-        uartInit.UART_Mode = mode;
-        UART_Init(USARTx, &uartInit);
+        // Ensure the APB clock is present while applying the peripheral reset.
+        UART_Cmd(USARTx, ENABLE);
+        ft32UartDeInit(USARTx);
     } else {
-        USART_Cmd(USARTx, DISABLE);
-        USART_InitTypeDef usartInit;
-        USART_StructInit(&usartInit);
-        usartInit.USART_BaudRate = uartPort->port.baudRate;
-        usartInit.USART_WordLength = wordLength;
-        usartInit.USART_StopBits = stopBits;
-        usartInit.USART_Parity = parity;
-        usartInit.USART_Mode = mode;
-        USART_Init(USARTx, &usartInit);
+        // Ensure the APB clock is present while applying the peripheral reset.
+        USART_Cmd(USARTx, ENABLE);
+        ft32UartDeInit(USARTx);
     }
+    ft32UartInitAsyncDisabled(USARTx, uartPort->port.baudRate, wordLength, stopBits, parity);
 
     // Config external pin inverter (no internal pin inversion available)
     uartConfigureExternalPinInversion(uartPort);
@@ -109,8 +175,13 @@ void uartReconfigure(uartPort_t *uartPort)
         USART_Cmd(USARTx, ENABLE);
     }
 
+    if ((uartPort->port.mode & MODE_TX) && !(uartPort->port.options & SERIAL_CHECK_TX)) {
+        ft32UartResetAndEnableTx(USARTx);
+    }
+
     // Receive DMA or IRQ
     if (uartPort->port.mode & MODE_RX) {
+        ft32UartRXEN_Cmd(USARTx, ENABLE);
 #ifdef USE_DMA
         if (uartPort->rxDMAResource) {
             DMA_InitTypeDef ft32_dma_init;
@@ -130,13 +201,12 @@ void uartReconfigure(uartPort_t *uartPort)
             ft32_dma_init.ReloadSrc = DISABLE;
             ft32DmaSetSrcRequest(&ft32_dma_init, uartPort->rxDMAResource, uartPort->rxDMAChannel);
 
-            DMA_DeInit((DMA_Channel_TypeDef *)uartPort->rxDMAResource);
+            xDMA_DeInit(uartPort->rxDMAResource);
             xDMA_Init(uartPort->rxDMAResource, &ft32_dma_init);
-            DMA_Cmd((DMA_Channel_TypeDef *)uartPort->rxDMAResource, ENABLE);
+            xDMA_Cmd(uartPort->rxDMAResource, ENABLE);
             ft32UartDMARxEnable_Cmd(USARTx, ENABLE);
 
-            uartPort->rxDMAPos = DMA_GetCurrDataCounter(
-                (DMA_Channel_TypeDef *)uartPort->rxDMAResource);
+            uartPort->rxDMAPos = xDMA_GetCurrDataCounter(uartPort->rxDMAResource);
         } else
 #endif
         {
@@ -173,21 +243,26 @@ void uartReconfigure(uartPort_t *uartPort)
             ft32_dma_init.ReloadSrc = DISABLE;
             ft32DmaSetDstRequest(&ft32_dma_init, uartPort->txDMAResource, uartPort->txDMAChannel);
 
-            DMA_DeInit((DMA_Channel_TypeDef *)uartPort->txDMAResource);
+            xDMA_DeInit(uartPort->txDMAResource);
             xDMA_Init(uartPort->txDMAResource, &ft32_dma_init);
-            DMA_ITConfig((DMA_Channel_TypeDef *)uartPort->txDMAResource, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
+            xDMA_ITConfig(uartPort->txDMAResource, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
             ft32UartDMATxEnable_Cmd(USARTx, ENABLE);
-            DMA_SetCurrDataCounter((DMA_Channel_TypeDef *)uartPort->txDMAResource, 0);
+            xDMA_SetCurrDataCounter(uartPort->txDMAResource, 0);
         } else
 #endif
         {
-            ft32UartITConfig(USARTx, USART_IT_TXRDY, ENABLE);
+            // TXRDY is armed when data is queued; arming it here lets an empty
+            // TX buffer consume the initial ready condition before the first
+            // write reaches the port.
         }
         // TXEMPTY is a level flag set whenever the transmitter is idle, so its
         // interrupt is not enabled here; enabling it at configuration time would
         // assert continuously. The SERIAL_CHECK_TX completion path arms it
         // lazily after a byte is queued (see uartIrqHandler TXRDY branch); DMA
         // ports signal completion through the DMA transfer interrupt instead.
+        if (!(uartPort->port.options & SERIAL_CHECK_TX)) {
+            ft32UartTXEN_Cmd(USARTx, ENABLE);
+        }
     }
 }
 
@@ -198,9 +273,7 @@ void uartTryStartTxDMA(uartPort_t *s)
     // uartWrite and handleUsartTxDma (an ISR).
 
     ATOMIC_BLOCK(NVIC_PRIO_SERIALUART_TXDMA) {
-        // Check if DMA channel is already enabled by reading counter
-        // A non-zero counter means transfer is still in progress
-        if (DMA_GetCurrDataCounter((DMA_Channel_TypeDef *)s->txDMAResource)) {
+        if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
             return;
         }
 
@@ -226,8 +299,8 @@ void uartTryStartTxDMA(uartPort_t *s)
             s->port.txBufferTail = 0;
         }
         s->txDMAEmpty = false;
-        DMA_SetCurrDataCounter((DMA_Channel_TypeDef *)s->txDMAResource, chunk);
-        DMA_Cmd((DMA_Channel_TypeDef *)s->txDMAResource, ENABLE);
+        xDMA_SetCurrDataCounter(s->txDMAResource, chunk);
+        xDMA_Cmd(s->txDMAResource, ENABLE);
     }
 }
 #endif

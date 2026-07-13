@@ -93,7 +93,6 @@ USB_FS_StatusTypeDef USB_FS_CoreInit(void)
   /* waiting for update                             */
 
 
-
   return ret;
 }
 
@@ -302,7 +301,6 @@ uint8_t USB_FS_Read_Count0(void)
 }
 
 
-
 /**
   * @brief  USB_FS_GetCurrentFrame
   *         Return Host Current Frame number
@@ -320,50 +318,6 @@ uint32_t USB_FS_GetCurrentFrame(void)
   frame  = (framel | frameh);
 
   return frame;
-}
-
-/**
-  * @brief  USB_FS_Enable_EP
-  *         enable endpoint transfer
-  * @param  epnum  endpoint number
-  *         This parameter can be a value from 1 to 15
-            15 means Flush all Tx FIFOs
-  * @retval none
-  */
-/*
- *  MGC_Enable_EP_DRC:
- *      Following a successful "SetConfig" operation, use MGC_Enable_EP_DRC
- *  to enable the endpoint registers in the DRC previosly bound by a 
- *  ReturnEPMatch/SelectEP operation.  Following this operation, live
- *  traffic can occur on the endpoint. Note that this can be called prior
- *  to "SetConfig".  Either way, if SetConfig fails, the EPs previously 
- *  bound must be released.
- */
-void USB_FS_Enable_HEP(USB_OTG_FS_HEPTypeDef *hep)
-{
-  uint8_t epnum = (uint8_t)hep->epnum;
-  USB_FS_IndexSel(epnum);
-  if (hep->ep_is_in == 1U)
-  {
-    if ((USB_FS->RXCSR1 & OTG_FS_RXCSR1_REQPKT) == 0U)
-    {
-      USB_FS->RXTYPE = (hep->epnum & 0x0f) | ((hep->ep_type & 0x03) << 4);  /* set this endpoint */
-      USB_FS->RXMAXP = (hep->max_packet / 8);
-      USB_FS->RXCSR1 = OTG_FS_RXCSR1_CLRDT;
-    }
-  }
-  else
-  {
-    if ((USB_FS->TXCSR1 & OTG_FS_TXCSR1_TXPKTRDY) == 0U)
-    {
-      USB_FS->TXTYPE = (hep->epnum & 0x0f) | ((hep->ep_type & 0x03) << 4);  /* set this endpoint */
-      USB_FS->TXMAXP = (hep->max_packet / 8);
-      USB_FS->TXCSR2 = OTG_FS_TXCSR2_MODE;
-      USB_FS->TXCSR1 = OTG_FS_TXCSR1_FFIFO;
-      USB_FS->TXCSR1 = OTG_FS_TXCSR1_FFIFO;
-      USB_FS->TXCSR1 = OTG_FS_TXCSR1_CLRDT;
-    }
-  }
 }
 
 
@@ -420,7 +374,6 @@ void USB_FS_Enable_DEP(USB_OTG_FS_DEPTypeDef *dep)
     }
   }
 }
-
 
 
 /**
@@ -483,21 +436,21 @@ void USB_FS_DEP0StartXfer(USB_OTG_FS_DEPTypeDef *dep)
       dep->xfer_buff += pkt_len;
       dep->xfer_count = pkt_len;
       if (dep->xfer_len == 0U)
-      {
-        /* FT32 FS EP0 zero-length status must use DATAEND only.
-         * Adding TXPKTRDY here leaves EP0 busy (srx-tx-dataend SWD). */
-        USB_FS->CSR0 = OTG_FS_CSR0_DATAEND;
-      }
-      else if (pkt_len < dep->maxpacket)
-      {
-        USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY | OTG_FS_CSR0_DATAEND;
-      }
-      else
-      {
-        USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY;
-      }
-    }
-  }
+	      {
+	        /* FT32 FS EP0 zero-length status must use DATAEND only.
+	         * Adding TXPKTRDY here leaves EP0 busy (srx-tx-dataend SWD). */
+	        USB_FS->CSR0 = OTG_FS_CSR0_DATAEND;
+	      }
+	      else if (pkt_len < dep->maxpacket)
+	      {
+	        USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY | OTG_FS_CSR0_DATAEND;
+	      }
+	      else
+	      {
+	        USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY;
+	      }
+	    }
+	  }
 }
 
 
@@ -596,7 +549,6 @@ void USB_FS_FIFOWrite(uint8_t *src, uint8_t ep_num, uint16_t len)
 }
 
 
-
 /**
   * @brief  USB_FS_SetEPInt
   *         unmask or mask endpoint interrupt
@@ -660,178 +612,6 @@ void  USB_FS_ActivateSetup(void)
 {
   /* Set the MPS of the IN EP0 to 64 bytes */
   USB_FS->CSR0 |= (OTG_FS_CSR0_SETUPPKT | OTG_FS_TXCSR1_TXPKTRDY);
-}
-
-
-/**
-  * @brief  Initialize a host transfer
-  * @param  epnum  Endpoint number
-  *          This parameter can be a value from 1 to 15
-  * @param  dev_address  Current device address
-  *          This parameter can be a value from 0 to 255
-  * @param  speed  Current device speed
-  * @param  interval : for iso/interrupt interval
-  *                    for bulk: nakmit
-  * @param  ep_type  Endpoint Type
-  *          This parameter can be one of these values:
-  *            @arg EP_TYPE_CTRL: Control type
-  *            @arg EP_TYPE_ISOC: Isochronous type
-  *            @arg EP_TYPE_BULK: Bulk type
-  *            @arg EP_TYPE_INTR: Interrupt type
-  * @param  mps  Max Packet Size
-  * @retval USB_FS state
-  */
-USB_FS_StatusTypeDef USB_FS_HEP_Init(uint8_t epnum, uint8_t dev_address,
-                                     uint8_t ep_type, uint8_t interval,
-                                     uint16_t xfersize)
-{
-  USB_FS_StatusTypeDef ret = USB_FS_OK;
-  uint8_t ep_num;
-
-  ep_num = epnum & 0x7FU;
-
-  ret = USB_FS_IndexSel(ep_num);
-  /* Clear old interrupt conditions for this host channel. */
-  USB_FS_ClrUSBInt();
-  USB_FS_ClrEPInt();
-  USB_FS_SetEPInt(1 << ep_num);
-
-  USB_FS_SetAddress(dev_address);
-  if (ep_num != 0U)
-  {
-    if ((epnum & 0x80U) == 0x80U)  /* in rx */
-    {
-      USB_FS->RXTYPE = (ep_num | (ep_type << 4));
-      USB_FS->RXINTERVAL = interval;
-      USB_FS->RXMAXP = (xfersize / 8);
-    }
-    else
-    {
-      USB_FS->TXTYPE = (ep_num | (ep_type << 4));
-      USB_FS->TXINTERVAL = interval;
-      USB_FS->TXMAXP = (xfersize / 8);
-    }
-  }
-  return ret;
-}
-
-
-/**
-  * @brief  Start a transfer over a host endpoint
-  * @param  endpoint  pointer to host endpoint structure
-  * @retval none
-  */
-void USB_FS_HEP_StartXfer(USB_OTG_FS_HEPTypeDef *hep)
-{
-  uint8_t ep_num = (uint32_t)hep->epnum;
-  __IO uint32_t tmpreg;
-  uint16_t maxpacket = 0U;
-
-  (void)USB_FS_IndexSel(ep_num);
-
-  switch (hep->ep_type)
-  {
-    case EP_TYPE_BULK:
-      maxpacket = USB_OTG_FS_MAX_BULK_PACKET_SIZE;
-      break;
-
-    case EP_TYPE_INTR:
-      if ((USB_FS->DEVCTL & 0x40U) != 0)
-      {
-        maxpacket = USB_OTG_FS_MAX_INTR_PACKET_SIZE;
-      }
-      else
-      {
-        maxpacket = USB_OTG_LS_MAX_INTR_PACKET_SIZE;
-      }
-      break;
-
-    case EP_TYPE_ISOC:
-      maxpacket = USB_OTG_FS_MAX_ISOC_PACKET_SIZE;
-      break;
-
-    default:
-      break;
-  }
-
-  if (hep->xfer_len > maxpacket)
-  {
-    hep->XferSize = maxpacket;
-  }
-  else
-  {
-    hep->XferSize = hep->xfer_len;
-  }
-
-  if (hep->ep_is_in == 1U)  /* in rx */
-  {
-    USB_FS->RXTYPE = (ep_num | (hep->ep_type << 4));
-    USB_FS->RXMAXP = ((maxpacket + 7U) / 8U);
-    USB_FS->RXCSR1 |= OTG_FS_RXCSR1_CLRDT;
-    USB_FS->RXCSR1 |= OTG_FS_RXCSR1_REQPKT;
-  }
-  else
-  {
-    USB_FS->TXTYPE = (ep_num | (hep->ep_type << 4));
-    USB_FS->TXMAXP = ((maxpacket + 7U) / 8U);;
-    USB_FS->TXCSR1 |= OTG_FS_TXCSR1_CLRDT;
-    USB_FS->TXCSR2 |= OTG_FS_TXCSR2_MODE;
-  }
-  if ((hep->ep_is_in == 0U) & (hep->xfer_len > 0U))
-  {
-    /* Write packet into the Tx FIFO. */
-    (void)USB_FS_FIFOWrite(hep->xfer_buff, ep_num, (uint16_t)hep->XferSize);
-    USB_FS->TXCSR1 = OTG_FS_TXCSR1_TXPKTRDY;
-  }
-}
-
-/**
-  * @brief  Start a transfer over a host endpoint 0
-  * @param  endpoint  pointer to host endpoint structure
-  * @retval none
-  */
-void USB_FS_HEP0_StartXfer(USB_OTG_FS_HEPTypeDef *hep, uint8_t ctl_state)
-{
-  uint8_t ep_num = 0U;
-
-  (void)USB_FS_IndexSel(ep_num);
-
-  if (hep->data_pid == EP_PID_SETUP)
-  {
-    /* Write packet into the Tx FIFO. */
-    (void)USB_FS_FIFOWrite(hep->xfer_buff, ep_num, (uint16_t)hep->xfer_len);
-    USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY | OTG_FS_CSR0_SETUPPKT;
-  }
-  else if (ctl_state == CTRL_STATUS)
-  {
-    if (hep->ep_is_in == 0U)
-    {
-      USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY | OTG_FS_CSR0_STATUSPKT;
-    }
-    else
-    {
-      USB_FS->CSR0 = OTG_FS_CSR0_REQPKT | OTG_FS_CSR0_STATUSPKT;
-    }
-  }
-  else if (ctl_state == CTRL_DATA)
-  {
-    if (hep->ep_is_in == 0U)
-    {
-      if (hep->xfer_len > 0U)
-      {
-        (void)USB_FS_FIFOWrite(hep->xfer_buff, ep_num, (uint16_t)hep->xfer_len);
-      }
-      USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY;
-    }
-    else
-    {
-      USB_FS->CSR0 = OTG_FS_CSR0_REQPKT;
-    }
-  }
-  else
-  {
-    /*...*/
-  }
 }
 
 
@@ -1181,30 +961,6 @@ void USB_FS_ClrDevctl(uint8_t cfg)
 }
 
 /**
-  * @brief  USB_FS_Exiting_Host : exit host mode
-  * @param  toOTG cp
-  * @retval status
-  */
-int8_t USB_FS_Exiting_Host(uint8_t toOTG, USB_OTG_FS_CfgTypeDef *cfg)
-{
-  if (toOTG == A_SUSPEND)    /* A_SUSPEND itself is not exiting host */
-  {
-    return(0);
-  }
-  else if (toOTG == A_PERIPHERAL) /* Only way here is from a host(suspend) */
-  {
-    return(1);
-  }
-  else if ((cfg->OTGState == A_HOST) || (cfg->OTGState == B_HOST))
-  {
-    return(1);
-  }
-  else
-  {
-    return(0);
-  }
-}
-/**
   * @brief  USB_FS_Activate_Resume : set resume
   * @param  none
   * @retval none
@@ -1227,25 +983,6 @@ void USB_FS_DeActivate_Resume(void)
   USB_FS_ClrPower(OTG_FS_POWER_RESUME);  /* clear the RESUME bit */
 }
 
-/**
-  * @brief  USB_FS_ResetPort : Reset Host Port
-  * @param  USB_FS  Selected device
-  * @note (1)The application must wait at least 20 ms
-  *   before clearing the reset bit.
-  */
-void USB_FS_ResetPort(void)
-{
-  __IO uint8_t temp_reg = 0U;
-
-  temp_reg = USB_FS->POWER;
-
-  temp_reg |= OTG_FS_POWER_RESET;
-  USB_FS->POWER = temp_reg;
-  USB_FS_Delayms(20U);                          /* update delay 20ms */
-
-  temp_reg &= (~OTG_FS_POWER_RESET);
-  USB_FS->POWER = temp_reg;
-}
 
 int32_t usb_log2(int32_t x)
 {
@@ -1257,49 +994,6 @@ int32_t usb_log2(int32_t x)
   return i;
 }
 
-/**
-  * @brief  USB_FS_HostInit : Initializes the USB controller registers
-  *         for Host mode
-  * @param  USB_FS  Selected device
-  * @param  cfg   pointer to a USB_OTG_FS_CfgTypeDef structure that contains
-  *         the configuration information for the specified USB_FS peripheral.
-  * @retval USB_FS status
-  */
-USB_FS_StatusTypeDef USB_FS_HostInit(USB_OTG_FS_CfgTypeDef cfg)
-{
-  USB_FS_StatusTypeDef ret = USB_FS_OK;
-  uint32_t i;
-
-  /* initial ep0 */
-  (void)USB_FS_RstEP0Regs();
-  /* reset all ep register include flush fifo*/
-  for (i = 1U; i < cfg.endpoints; i++)
-  {
-    if (USB_FS_RstEPRegs(i) != USB_FS_OK)
-    {
-      ret = USB_FS_ERROR;
-    }
-  }
-
-  /* Clear all pending Interrupts */
-  USB_FS_ClrEPInt();
-  OTG_FS->INTRTX1E = 0U;
-  OTG_FS->INTRRX1E = 0U;
-
-  USB_FS_ClrUSBInt();
-  OTG_FS->INTRUSBE = 0U;
-
-  /* Enable VBUS driving */
-  USB_FS_SetUSBInt(OTG_FS_INTRUSBE_CONNINTE);
-  (void)USB_FS_DrvSess(1U);
-  USB_FS_Delayms(200U); /* update delay*/
-
-  /* Enable the common interrupts */
-  USB_FS_SetUSBInt(OTG_FS_INTRUSBE_SOFINTE  | OTG_FS_INTRUSBE_RSTINTE  |
-                   OTG_FS_INTRUSBE_DISCINTE | OTG_FS_INTRUSBE_SREQINTE |
-                   OTG_FS_INTRUSBE_VERRINTE);
-  return ret;
-}
 
 /**
   * @brief  USB_FS_ReadInterrupts: return the USB interrupt status

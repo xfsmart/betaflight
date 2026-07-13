@@ -43,6 +43,9 @@
 #include "drivers/dma_reqmap.h"
 #include "platform/dma.h"
 #include "platform/serial_uart_hal.h"
+#if defined(FT32F4)
+#include "platform/serial_uart.h"
+#endif
 
 #include "pg/serial_uart.h"
 
@@ -349,7 +352,9 @@ void uartEnableTxInterrupt(uartPort_t *uartPort)
 #elif defined(USE_ATBSP_DRIVER)
     usart_interrupt_enable((usart_type *)uartPort->USARTx, USART_TDBE_INT, TRUE);
 #elif defined(FT32F4)
-    USART_ITConfig((USART_TypeDef *)uartPort->USARTx, USART_IT_TXRDY, ENABLE);
+    USART_TypeDef *USARTx = (USART_TypeDef *)uartPort->USARTx;
+    ft32UartTXEN_Cmd(USARTx, ENABLE);
+    ft32UartITConfig(USARTx, USART_IT_TXRDY, ENABLE);
 #else
     USART_ITConfig((USART_TypeDef *)uartPort->USARTx, USART_IT_TXE, ENABLE);
 #endif

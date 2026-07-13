@@ -65,8 +65,7 @@ typedef uint16_t rccPeriphTag_t;
 #define USE_DYN_IDLE
 #define USE_DYN_NOTCH_FILTER
 
-// FT32F4: Internal temperature sensor not yet calibrated
-// #define USE_ADC_INTERNAL
+#define USE_ADC_INTERNAL
 
 #endif /* FT32F4 */
 

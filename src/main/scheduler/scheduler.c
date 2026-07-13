@@ -487,6 +487,7 @@ FAST_CODE void scheduler(void)
 {
     static uint32_t checkCycles = 0;
     static uint32_t scheduleCount = 0;
+    static timeUs_t lastNoGyroRxFrameCheckUs = 0;
 #if defined(USE_LATE_TASK_STATISTICS)
     static uint32_t gyroCyclesMean = 0;
     static uint32_t gyroCyclesCount = 0;
@@ -702,6 +703,16 @@ FAST_CODE void scheduler(void)
 
     if (!gyroEnabled || (schedLoopRemainingCycles > (int32_t)clockMicrosToCycles(CHECK_GUARD_MARGIN_US))) {
         currentTimeUs = micros();
+
+        if (!gyroEnabled) {
+            task_t *rxTask = getTask(TASK_RX);
+            const timeDelta_t rxFrameCheckDeltaUs = cmpTimeUs(currentTimeUs, lastNoGyroRxFrameCheckUs);
+            if (rxFrameCheckDeltaUs >= rxTask->attribute->desiredPeriodUs) {
+                // No gyro loop exists to poll RX before checkers on sensorless targets.
+                rxFrameCheck(currentTimeUs, cmpTimeUs(currentTimeUs, rxTask->lastExecutedAtUs));
+                lastNoGyroRxFrameCheckUs = currentTimeUs;
+            }
+        }
 
         // Update task dynamic priorities
         for (task_t *task = queueFirst(); task != NULL; task = queueNext()) {

@@ -40,6 +40,23 @@
 // USART_Init/USART_Cmd) also selects the correct APB baud clock and remains
 // handled directly in uartReconfigure.
 
+uint32_t ft32UartDmaControlMask(USART_TypeDef *USARTx);
+void ft32UartSetDmaControlMask(USART_TypeDef *USARTx, uint32_t mask);
+
+static inline void ft32UartWriteControl(USART_TypeDef *USARTx, uint32_t command)
+{
+    USARTx->CR = command | ft32UartDmaControlMask(USARTx);
+}
+
+static inline void ft32UartDeInit(USART_TypeDef *USARTx)
+{
+    if (USARTx == UART4 || USARTx == UART5) {
+        UART_DeInit(USARTx);
+    } else {
+        USART_DeInit(USARTx);
+    }
+}
+
 static inline FlagStatus ft32UartGetFlagStatus(USART_TypeDef *USARTx, uint32_t flag)
 {
     if (USARTx == UART4 || USARTx == UART5) {
@@ -93,47 +110,56 @@ static inline void ft32UartITDisableConfig(USART_TypeDef *USARTx, uint32_t it, F
 
 static inline void ft32UartClearFlag(USART_TypeDef *USARTx, uint32_t flag)
 {
-    if (USARTx == UART4 || USARTx == UART5) {
-        UART_ClearFlag(USARTx, flag);
-    } else {
-        USART_ClearFlag(USARTx, flag);
-    }
+    ft32UartWriteControl(USARTx, flag);
 }
 
 static inline void ft32UartTXEN_Cmd(USART_TypeDef *USARTx, FunctionalState state)
 {
-    if (USARTx == UART4 || USARTx == UART5) {
-        UART_TXEN_Cmd(USARTx, state);
-    } else {
-        USART_TXEN_Cmd(USARTx, state);
+    if (state != DISABLE) {
+        ft32UartWriteControl(USARTx, USART_CR_TXEN);
+    }
+}
+
+static inline void ft32UartRXEN_Cmd(USART_TypeDef *USARTx, FunctionalState state)
+{
+    if (state != DISABLE) {
+        ft32UartWriteControl(USARTx, USART_CR_RXEN);
     }
 }
 
 static inline void ft32UartTXDIS_Cmd(USART_TypeDef *USARTx, FunctionalState state)
 {
-    if (USARTx == UART4 || USARTx == UART5) {
-        UART_TXDIS_Cmd(USARTx, state);
-    } else {
-        USART_TXDIS_Cmd(USARTx, state);
+    if (state != DISABLE) {
+        ft32UartWriteControl(USARTx, USART_CR_TXDIS);
     }
 }
 
 static inline void ft32UartDMATxEnable_Cmd(USART_TypeDef *USARTx, FunctionalState state)
 {
-    if (USARTx == UART4 || USARTx == UART5) {
-        UART_DMATxEnable_Cmd(USARTx, state);
+    uint32_t mask = ft32UartDmaControlMask(USARTx);
+
+    if (state != DISABLE) {
+        mask |= USART_CR_DMAT_EN;
     } else {
-        USART_DMATxEnable_Cmd(USARTx, state);
+        mask &= ~USART_CR_DMAT_EN;
     }
+
+    ft32UartSetDmaControlMask(USARTx, mask);
+    USARTx->CR = mask;
 }
 
 static inline void ft32UartDMARxEnable_Cmd(USART_TypeDef *USARTx, FunctionalState state)
 {
-    if (USARTx == UART4 || USARTx == UART5) {
-        UART_DMARxEnable_Cmd(USARTx, state);
+    uint32_t mask = ft32UartDmaControlMask(USARTx);
+
+    if (state != DISABLE) {
+        mask |= USART_CR_DMAR_EN;
     } else {
-        USART_DMARxEnable_Cmd(USARTx, state);
+        mask &= ~USART_CR_DMAR_EN;
     }
+
+    ft32UartSetDmaControlMask(USARTx, mask);
+    USARTx->CR = mask;
 }
 
 static inline void ft32UartReceiver_TimeOut_Cfg(USART_TypeDef *USARTx, uint32_t timeout)

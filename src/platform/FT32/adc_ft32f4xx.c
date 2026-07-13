@@ -42,11 +42,12 @@
 #include "pg/adc.h"
 
 // FT32F4 calibration data addresses
-#define VREFINT_CAL_ADDR  0x1FFF0A18  // VREFINT calibration at 25°C, VDDA = 3.3V
-#define TS_CAL1_ADDR      0x1FFF0A1C  // Temperature sensor calibration at 25°C (±5°C)
+#define VREFINT_CAL_ADDR  0x1FFF0A18  // VREFINT calibration at 25 C, VDDA = 3.3V
+#define TS_CAL1_ADDR      0x1FFF0A1C  // Temperature sensor calibration at 25 C (+/-5 C)
 
-// ADC calibration timeout (typical calibration takes ~10 cycles at 26.25MHz)
-#define ADC_CAL_TIMEOUT_US  1000  // 1ms should be more than enough
+#define ADC_ENABLE_TIMEOUT_US  1000
+#define ADC_INTERNAL_CONVERSION_TIMEOUT_US  1000
+#define ADC_REGULATOR_STARTUP_US  20
 
 const adcDevice_t adcHardware[] = {
     {
@@ -84,7 +85,7 @@ const adcTagMap_t adcTagMap[] = {
 
 static void adcInitDevice(ADC_TypeDef *adcdev, int channelCount)
 {
-    ADC_InitTypeDef ADC_InitStructure;
+    ADC_InitTypeDef ADC_InitStructure = { 0 };
 
     ADC_StructInit(&ADC_InitStructure);
 
@@ -98,6 +99,27 @@ static void adcInitDevice(ADC_TypeDef *adcdev, int channelCount)
     ADC_InitStructure.DMAMode                  = ADC_DMAMODE_CIRCULAR;
 
     ADC_Init(adcdev, &ADC_InitStructure);
+}
+
+static void adcPrepare(ADC_TypeDef *adcdev)
+{
+    ADC_DeepPWDModeCmd(adcdev, DISABLE);
+    ADC_InternalRegulatorCmd(adcdev, ENABLE);
+    delayMicroseconds(ADC_REGULATOR_STARTUP_US);
+    ADC_StartSingleCalibration(adcdev);
+}
+
+static void adcEnableReady(ADC_TypeDef *adcdev)
+{
+    ADC_ClearFlag(adcdev, ADC_FLAG_ADRDY);
+    ADC_Cmd(adcdev, ENABLE);
+
+    const timeUs_t startTime = microsISR();
+    while (ADC_GetFlagStatus(adcdev, ADC_FLAG_ADRDY) == RESET) {
+        if (cmpTimeUs(microsISR(), startTime) > ADC_ENABLE_TIMEOUT_US) {
+            break;
+        }
+    }
 }
 
 #ifdef USE_ADC_INTERNAL
@@ -121,23 +143,23 @@ static void adcInitInternalInjected(const adcConfig_t *config)
     };
 
     InjectedConfig.InjectedChannel = ADC1_CHANNEL_VREFINT;
-    InjectedConfig.InjectedRank = 1;
+    InjectedConfig.InjectedRank = ADC_INJECTED_RANK_1;
     ADC_InjectedChannelConfig(ADC1, &InjectedConfig);
 
     InjectedConfig.InjectedChannel = ADC13_CHANNEL_TENOSENSOR;
-    InjectedConfig.InjectedRank = 2;
+    InjectedConfig.InjectedRank = ADC_INJECTED_RANK_2;
     ADC_InjectedChannelConfig(ADC1, &InjectedConfig);
 
     adcVREFINTCAL = config->vrefIntCalibration ? config->vrefIntCalibration : *(uint16_t *)VREFINT_CAL_ADDR;
     adcTSCAL1 = config->tempSensorCalibration1 ? config->tempSensorCalibration1 : *(uint16_t *)TS_CAL1_ADDR;
 
-    // Temperature sensor parameters: V25 = 0.76V, Avg_Slope = 2.6mV/°C
+    // Temperature sensor parameters: V25 = 0.76V, Avg_Slope = 2.6mV/C
     // Negative tempco: VSENSE decreases as temperature increases
-    // adcTSSlopeK unit: 0.001°C/count
-    // Calculation: -1000 / (2.6 / (3300/4096)) = -1000 / 3.227 = -309.9 ≈ -310
-    adcTSSlopeK = -310;  // -0.310°C per ADC count
+    // adcTSSlopeK unit: 0.001 C/count
+    // Calculation: -1000 / (2.6 / (3300/4096)) = -1000 / 3.227 = -309.9 ~= -310
+    adcTSSlopeK = -310;  // -0.310 C per ADC count
 
-    adcTSCAL2 = adcTSCAL1;  // Single calibration point at 25°C
+    adcTSCAL2 = adcTSCAL1;  // Single calibration point at 25 C
 }
 
 // Sampling time for temperature sensor and vrefint:
@@ -147,11 +169,15 @@ static void adcInitInternalInjected(const adcConfig_t *config)
 // Max sample time: 640.5 cycles = 24.4us (meets 10us minimum requirement)
 
 static bool adcInternalConversionInProgress = false;
+static timeUs_t adcInternalConversionStartUs;
 
 bool adcInternalIsBusy(void)
 {
     if (adcInternalConversionInProgress) {
-        if (ADC_GetFlagStatus(ADC1, ADC_FLAG_JEOC) != RESET) {
+        if (ADC_GetFlagStatus(ADC1, ADC_FLAG_JEOS) != RESET) {
+            adcInternalConversionInProgress = false;
+        } else if (cmpTimeUs(microsISR(), adcInternalConversionStartUs) > ADC_INTERNAL_CONVERSION_TIMEOUT_US) {
+            ADC_INJ_StopOfConversion(ADC1);
             adcInternalConversionInProgress = false;
         }
     }
@@ -161,9 +187,10 @@ bool adcInternalIsBusy(void)
 
 void adcInternalStartConversion(void)
 {
-    ADC_ClearFlag(ADC1, ADC_FLAG_JEOC);
+    ADC_ClearFlag(ADC1, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
     ADC_INJ_StartOfConversion(ADC1);
 
+    adcInternalConversionStartUs = microsISR();
     adcInternalConversionInProgress = true;
 }
 
@@ -236,6 +263,7 @@ void adcInit(const adcConfig_t *config)
 
     // Configure ADC common parameters
     // ADC clock: HCLK = 210MHz, DIV8 = 26.25MHz
+    RCC_ADCCLKConfig(RCC_ADCCLK_SYSCLK);
     ADC_ClockModeConfig(ADC_CLOCK_ASYNC_DIV8);
 
     // Multi-ADC mode: independent mode, DMA disabled, 5 cycles sampling delay
@@ -250,11 +278,11 @@ void adcInit(const adcConfig_t *config)
 #ifdef USE_ADC_INTERNAL
     if (device != ADCDEV_1 || !adcActive) {
         RCC_APB2PeriphClockCmd(adcHardware[ADCDEV_1].rccADC, ENABLE);
+        adcPrepare(ADC1);
         adcInitDevice(ADC1, 2);
-        ADC_Cmd(ADC1, ENABLE);
+        adcInitInternalInjected(config);
+        adcEnableReady(ADC1);
     }
-
-    adcInitInternalInjected(config);
 
     adcOperatingConfig[ADC_VREFINT].enabled = true;
     adcOperatingConfig[ADC_TEMPSENSOR].enabled = true;
@@ -264,9 +292,17 @@ void adcInit(const adcConfig_t *config)
     }
 #endif
 
+    adcPrepare(adc.ADCx);
     adcInitDevice(adc.ADCx, configuredAdcChannels);
+    ADC_DMACmd(adc.ADCx, ENABLE);
 
-    uint8_t rank = 1;
+#ifdef USE_ADC_INTERNAL
+    if (device == ADCDEV_1) {
+        adcInitInternalInjected(config);
+    }
+#endif
+
+    uint32_t rank = ADC_REGULAR_RANK_1;
     for (i = 0; i < ADC_EXTERNAL_COUNT; i++) {
         if (!adcOperatingConfig[i].enabled) {
             continue;
@@ -285,9 +321,6 @@ void adcInit(const adcConfig_t *config)
         
         ADC_RegularChannelConfig(adc.ADCx, &channelConfig);
     }
-
-    ADC_DMACmd(adc.ADCx, ENABLE);
-    ADC_Cmd(adc.ADCx, ENABLE);
 
     const dmaChannelSpec_t *dmaSpec = dmaGetChannelSpecByPeripheral(DMA_PERIPH_ADC, device, config->dmaopt[device]);
 
@@ -323,20 +356,13 @@ void adcInit(const adcConfig_t *config)
     xDMA_Init(dmaSpec->ref, &DMA_InitStructure);
     xDMA_Cmd(dmaSpec->ref, ENABLE);
 
-    // ADC calibration (FT32F4 specific)
-    ADC_StartSingleCalibration(adc.ADCx);
-    timeUs_t calStartTime = microsISR();
-    while (ADC_GetFlagStatus(adc.ADCx, ADC_FLAG_ADCAL) != RESET) {
-        if (cmpTimeUs(microsISR(), calStartTime) > ADC_CAL_TIMEOUT_US) {
-            break;  // Timeout - continue anyway
-        }
-    }
+    adcEnableReady(adc.ADCx);
 
     // Start conversions
     ADC_REG_StartOfConversion(adc.ADCx);
 
 #ifdef USE_ADC_INTERNAL
-    ADC_INJ_StartOfConversion(ADC1);
+    adcInternalStartConversion();
 #endif
 }
 
