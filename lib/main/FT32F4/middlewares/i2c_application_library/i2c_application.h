@@ -173,6 +173,8 @@ typedef struct
   __IO i2cStep_t                         step;
   __IO i2cState_t                        state;
   __IO i2c_status_type                   error_code;
+  __IO uint8_t                           arbitration_lost;
+  __IO uint8_t                           master_started;
   DMA_Channel_TypeDef                    *dma_tx_channel;
   DMA_Channel_TypeDef                    *dma_rx_channel;
   DMA_InitTypeDef                        dma_init_struct;
