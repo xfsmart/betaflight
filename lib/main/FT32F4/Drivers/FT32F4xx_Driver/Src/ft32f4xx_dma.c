@@ -358,42 +358,38 @@ void DMA_ITConfig(DMA_Channel_TypeDef* DMAy_Channelx, uint8_t DMA_IT, Functional
   DMA_BaseAddressAndChannelIndex DMA = CalBaseAddressAndChannelIndex(DMAy_Channelx);
 
   /* Config channel interrupt mask */
-  const uint32_t ch_mask = (1U << (DMA.ChannelIndex));
-  const uint32_t ch_en_mask = (0x100U << (DMA.ChannelIndex));
+  const uint64_t ch_mask = (1ULL << (DMA.ChannelIndex));
+  const uint64_t ch_en_mask = (ch_mask << 8U);
+  const uint64_t ch_write = ch_en_mask | ((NewState != DISABLE) ? ch_mask : 0ULL);
 
   /* Config channelx transfer complete interrupt */
   if((DMA_IT & DMA_IT_TFR) != 0U)
   {
-    (NewState) ? (DMA.BaseAddress->MASKTFR |= (ch_en_mask | ch_mask))
-               : (DMA.BaseAddress->MASKTFR &= (ch_en_mask | (~ch_mask)));
+    DMA.BaseAddress->MASKTFR = ch_write;
   }
 
   /* Config channelx block transfer complete interrupt */
   if((DMA_IT & DMA_IT_BLOCK) != 0U)
   {
-    (NewState) ? (DMA.BaseAddress->MASKBLOCK |= (ch_en_mask | ch_mask))
-               : (DMA.BaseAddress->MASKBLOCK &= (ch_en_mask | (~ch_mask)));
+    DMA.BaseAddress->MASKBLOCK = ch_write;
   }
 
   /* Config channelx source transfer complete interrupt */
   if((DMA_IT & DMA_IT_SRC) != 0U)
   {
-    (NewState) ? (DMA.BaseAddress->MASKSRCTRAN |= (ch_en_mask | ch_mask))
-               : (DMA.BaseAddress->MASKSRCTRAN &= (ch_en_mask | (~ch_mask)));
+    DMA.BaseAddress->MASKSRCTRAN = ch_write;
   }
 
   /* Config channelx destination transfer complete interrupt */
   if((DMA_IT & DMA_IT_DST) != 0U)
   {
-    (NewState) ? (DMA.BaseAddress->MASKDSTTRAN |= (ch_en_mask | ch_mask))
-               : (DMA.BaseAddress->MASKDSTTRAN &= (ch_en_mask | (~ch_mask)));
+    DMA.BaseAddress->MASKDSTTRAN = ch_write;
   }
 
   /* Config channelx transfer error interrupt */
   if((DMA_IT & DMA_IT_ERR) != 0U)
   {
-    (NewState) ? (DMA.BaseAddress->MASKERR |= (ch_en_mask | ch_mask))
-               : (DMA.BaseAddress->MASKERR &= (ch_en_mask | (~ch_mask)));
+    DMA.BaseAddress->MASKERR = ch_write;
   }
 
   /* Config global interrupt */
@@ -642,20 +638,11 @@ void DMA_Channel_Cmd(DMA_Channel_TypeDef* DMAy_Channelx, FunctionalState NewStat
   DMA_BaseAddressAndChannelIndex DMA = CalBaseAddressAndChannelIndex(DMAy_Channelx);
 
   /* Config channel mask */
-  const uint32_t ch_mask    = (1U     << (DMA.ChannelIndex));
-  const uint32_t ch_en_mask = (0x100U << (DMA.ChannelIndex));
+  const uint64_t ch_mask = (1ULL << (DMA.ChannelIndex));
+  const uint64_t ch_en_mask = (ch_mask << 8U);
+  const uint64_t ch_write = ch_en_mask | ((NewState != DISABLE) ? ch_mask : 0ULL);
 
-  if (NewState != DISABLE)
-  {
-    DMA.BaseAddress->CHEN |= (ch_en_mask | ch_mask);
-    DMA.BaseAddress->CHEN &= ~ch_en_mask;
-  }
-  else
-  {
-    DMA.BaseAddress->CHEN |= ch_en_mask;
-    DMA.BaseAddress->CHEN &= ~ch_mask;
-    DMA.BaseAddress->CHEN &= ~ch_en_mask;
-  }
+  DMA.BaseAddress->CHEN = ch_write;
 }
 
 
