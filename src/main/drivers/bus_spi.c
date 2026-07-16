@@ -185,6 +185,70 @@ static void spiCompleteFailedSegmentList(busDevice_t *bus, busSegment_t *endSegm
 }
 
 #ifdef FT32F4
+static void spiInvalidateDmaFailureQueue(volatile busSegment_t *segments)
+{
+    while (segments) {
+        busSegment_t *endSegment = spiInvalidateFailedSegmentTail(segments);
+        volatile busSegment_t *nextSegments = endSegment->u.link.segments;
+
+        endSegment->u.link.dev = NULL;
+        endSegment->u.link.segments = NULL;
+        segments = nextSegments;
+    }
+}
+
+void spiHandleDmaFailure(const extDevice_t *dev, bool hardwareIsolated)
+{
+    if (!dev || !dev->bus) {
+        return;
+    }
+
+    busDevice_t *bus = dev->bus;
+    IOHi(dev->busType_u.spi.csnPin);
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    __DMB();
+
+    volatile busSegment_t *failedSegments = bus->curSegment;
+    spiDevice_t *state = spiDeviceState(bus);
+    const bool releaseQueue = hardwareIsolated && state && failedSegments;
+
+    if (state) {
+        state->errorCount++;
+        state->polledRecoveryRequired = true;
+    }
+
+    if (releaseQueue) {
+        if (bus->dmaTx) {
+            bus->dmaTx->userParam = 0U;
+        }
+        if (bus->dmaRx) {
+            bus->dmaRx->userParam = 0U;
+        }
+    }
+
+    __DMB();
+    __set_PRIMASK(primask);
+
+    if (!releaseQueue || bus->curSegment != failedSegments) {
+        return;
+    }
+
+    spiInvalidateDmaFailureQueue(failedSegments);
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    __DMB();
+
+    if (bus->curSegment == failedSegments) {
+        bus->curSegment = (busSegment_t *)BUS_SPI_FREE;
+    }
+
+    __DMB();
+    __set_PRIMASK(primask);
+}
+
 static void spiInvalidateRejectedSegments(busSegment_t *segments)
 {
     busSegment_t *endSegment = spiInvalidateFailedSegmentTail(segments);
@@ -731,7 +795,14 @@ FAST_CODE void spiProcessSegmentsDMA(const extDevice_t *dev)
     IOLo(dev->busType_u.spi.csnPin);
 
     // Start the transfers
+#ifdef FT32F4
+    bool hardwareIsolated = false;
+    if (!spiInternalStartDMA(dev, &hardwareIsolated)) {
+        spiHandleDmaFailure(dev, hardwareIsolated);
+    }
+#else
     spiInternalStartDMA(dev);
+#endif
 }
 
 static void spiPreInitStream(const extDevice_t *dev)
@@ -750,18 +821,18 @@ FAST_IRQ_HANDLER void spiIrqHandler(const extDevice_t *dev)
 {
     busDevice_t *bus = dev->bus;
     busSegment_t *nextSegment;
+    bool repeatSegment = false;
 
     if (bus->curSegment->callback) {
         switch(bus->curSegment->callback(dev->callbackArg)) {
         case BUS_BUSY:
-            // Repeat the last DMA segment
-            bus->curSegment--;
-            // Reinitialise the cached init values as segment is not progressing
-            spiPreInitStream(dev);
+            // Repeat the completed DMA segment without moving before the list start.
+            repeatSegment = true;
             break;
 
         case BUS_ABORT:
-            // Skip to the end of the segment list
+            // Release chip select and skip to the end of the segment list.
+            IOHi(dev->busType_u.spi.csnPin);
             nextSegment = (busSegment_t *)bus->curSegment + 1;
             while (nextSegment->len != 0) {
                 bus->curSegment = nextSegment;
@@ -778,7 +849,9 @@ FAST_IRQ_HANDLER void spiIrqHandler(const extDevice_t *dev)
 
     // Advance through the segment list
     // OK to discard the volatile qualifier here
-    nextSegment = (busSegment_t *)bus->curSegment + 1;
+    nextSegment = repeatSegment ?
+        (busSegment_t *)bus->curSegment :
+        (busSegment_t *)bus->curSegment + 1;
 
     if (nextSegment->len == 0) {
         const extDevice_t *nextDev = spiFinishSegmentList(bus, nextSegment);
@@ -791,8 +864,8 @@ FAST_IRQ_HANDLER void spiIrqHandler(const extDevice_t *dev)
 
         bus->curSegment = nextSegment;
 
-        // After the completion of the first segment setup the init structure for the subsequent segment
-        if (bus->initSegment) {
+        // A repeated segment must replace the cached descriptor for its successor.
+        if (repeatSegment || bus->initSegment) {
             spiInternalInitStream(dev, bus->curSegment);
             bus->initSegment = false;
         }
@@ -803,7 +876,15 @@ FAST_IRQ_HANDLER void spiIrqHandler(const extDevice_t *dev)
         }
 
         // Launch the next transfer
+#ifdef FT32F4
+        bool hardwareIsolated = false;
+        if (!spiInternalStartDMA(dev, &hardwareIsolated)) {
+            spiHandleDmaFailure(dev, hardwareIsolated);
+            return;
+        }
+#else
         spiInternalStartDMA(dev);
+#endif
 
         // Prepare the init structures ready for the next segment to reduce inter-segment time
         spiPreInitStream(dev);
@@ -866,6 +947,7 @@ FAST_CODE void spiProcessSegmentsPolled(const extDevice_t *dev)
 
             case BUS_ABORT:
                 // Skip this list but preserve a linked successor transaction.
+                IOHi(dev->busType_u.spi.csnPin);
                 while ((bus->curSegment + 1)->len != 0) {
                     bus->curSegment++;
                 }

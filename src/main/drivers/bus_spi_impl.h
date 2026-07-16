@@ -93,9 +93,16 @@ extern spiDevice_t spiDevice[SPIDEV_COUNT];
 
 void spiInitDevice(spiDevice_e device);
 void spiInternalInitStream(const extDevice_t *dev, volatile busSegment_t *segment);
+#ifdef FT32F4
+bool spiInternalStartDMA(const extDevice_t *dev, bool *hardwareIsolated);
+bool spiInternalStopDMA(const extDevice_t *dev, const dmaChannelDescriptor_t *completionDescriptor, bool *hardwareIsolated);
+bool spiInternalResetStream(dmaChannelDescriptor_t *descriptor);
+void spiHandleDmaFailure(const extDevice_t *dev, bool hardwareIsolated);
+#else
 void spiInternalStartDMA(const extDevice_t *dev);
 void spiInternalStopDMA (const extDevice_t *dev);
 void spiInternalResetStream(dmaChannelDescriptor_t *descriptor);
+#endif
 void spiInternalResetDescriptors(busDevice_t *bus);
 bool spiInternalReadWriteBufPolled(spiResource_t *instance, const uint8_t *txData, uint8_t *rxData, int len);
 #ifdef FT32F4

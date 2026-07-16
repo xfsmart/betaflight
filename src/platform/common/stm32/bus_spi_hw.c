@@ -40,23 +40,123 @@
 extern spiDevice_t spiDevice[SPIDEV_COUNT];
 extern busDevice_t spiBusDevice[SPIDEV_COUNT];
 
+#ifdef FT32F4
+static bool spiFt32DmaIrqNumberIsValid(int32_t irq)
+{
+    return irq >= 0 && irq <= UART7_IRQn;
+}
+
+static bool spiFt32DmaIrqIsEnabled(IRQn_Type irqn)
+{
+    const uint32_t irq = (uint32_t)irqn;
+
+    return (NVIC->ISER[irq >> 5U] & (1UL << (irq & 0x1FU))) != 0U;
+}
+
+static bool spiFt32DmaRawFlagsAreClear(const dmaChannelDescriptor_t *descriptor)
+{
+    return xDMA_GetFlagStatus(descriptor->ref, DMA_FLAG_TFR) == RESET &&
+        xDMA_GetFlagStatus(descriptor->ref, DMA_FLAG_BLOCK) == RESET &&
+        xDMA_GetFlagStatus(descriptor->ref, DMA_FLAG_SRC) == RESET &&
+        xDMA_GetFlagStatus(descriptor->ref, DMA_FLAG_DST) == RESET &&
+        xDMA_GetFlagStatus(descriptor->ref, DMA_FLAG_ERR) == RESET;
+}
+
+static void spiFt32HandleTerminalDmaIrq(dmaChannelDescriptor_t *descriptor)
+{
+    if (!descriptor || !spiFt32DmaIrqNumberIsValid(descriptor->irqN)) {
+        return;
+    }
+
+    const IRQn_Type irqn = (IRQn_Type)descriptor->irqN;
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    __DMB();
+
+    const bool wasEnabled = spiFt32DmaIrqIsEnabled(irqn);
+    NVIC_DisableIRQ(irqn);
+    __DSB();
+    __ISB();
+
+    __DMB();
+    __set_PRIMASK(primask);
+
+    if (!descriptor->ref || descriptor->userParam != 0U ||
+        ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)descriptor->ref)) {
+        return;
+    }
+
+    DMA_CLEAR_FLAG(descriptor, DMA_IT_TCIF | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
+    NVIC_ClearPendingIRQ(irqn);
+    __DSB();
+    __ISB();
+
+    if (!spiFt32DmaRawFlagsAreClear(descriptor) ||
+        NVIC_GetPendingIRQ(irqn) != 0U) {
+        return;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    __DMB();
+
+    if (wasEnabled) {
+        NVIC_EnableIRQ(irqn);
+    } else {
+        NVIC_DisableIRQ(irqn);
+    }
+    __DSB();
+    __ISB();
+
+    __DMB();
+    __set_PRIMASK(primask);
+}
+#endif
+
 // Interrupt handler for SPI receive DMA completion
 FAST_IRQ_HANDLER static void spiRxIrqHandler(dmaChannelDescriptor_t* descriptor)
 {
+    if (!descriptor) {
+        return;
+    }
+
+#ifdef FT32F4
+    if (!descriptor->ref || !spiFt32DmaIrqNumberIsValid(descriptor->irqN)) {
+        spiFt32HandleTerminalDmaIrq(descriptor);
+        return;
+    }
+#endif
+
     const extDevice_t *dev = (const extDevice_t *)descriptor->userParam;
 
     if (!dev) {
+#ifdef FT32F4
+        spiFt32HandleTerminalDmaIrq(descriptor);
+#endif
         return;
     }
 
     busDevice_t *bus = dev->bus;
 
+#ifdef FT32F4
+    bool hardwareIsolated = false;
+    if (!spiInternalStopDMA(dev, descriptor, &hardwareIsolated)) {
+        spiFt32HandleTerminalDmaIrq(descriptor);
+        spiHandleDmaFailure(dev, hardwareIsolated);
+        return;
+    }
+
     if (bus->curSegment->negateCS) {
         // Negate Chip Select
         IOHi(dev->busType_u.spi.csnPin);
     }
-
+#else
+    if (bus->curSegment->negateCS) {
+        // Negate Chip Select
+        IOHi(dev->busType_u.spi.csnPin);
+    }
     spiInternalStopDMA(dev);
+#endif
 
 #ifdef __DCACHE_PRESENT
 #ifdef STM32H7
@@ -80,15 +180,38 @@ FAST_IRQ_HANDLER static void spiRxIrqHandler(dmaChannelDescriptor_t* descriptor)
 // Interrupt handler for SPI transmit DMA completion
 FAST_IRQ_HANDLER static void spiTxIrqHandler(dmaChannelDescriptor_t* descriptor)
 {
+    if (!descriptor) {
+        return;
+    }
+
+#ifdef FT32F4
+    if (!descriptor->ref || !spiFt32DmaIrqNumberIsValid(descriptor->irqN)) {
+        spiFt32HandleTerminalDmaIrq(descriptor);
+        return;
+    }
+#endif
+
     const extDevice_t *dev = (const extDevice_t *)descriptor->userParam;
 
     if (!dev) {
+#ifdef FT32F4
+        spiFt32HandleTerminalDmaIrq(descriptor);
+#endif
         return;
     }
 
     busDevice_t *bus = dev->bus;
 
+#ifdef FT32F4
+    bool hardwareIsolated = false;
+    if (!spiInternalStopDMA(dev, descriptor, &hardwareIsolated)) {
+        spiFt32HandleTerminalDmaIrq(descriptor);
+        spiHandleDmaFailure(dev, hardwareIsolated);
+        return;
+    }
+#else
     spiInternalStopDMA(dev);
+#endif
 
     if (bus->curSegment->negateCS) {
         // Negate Chip Select
@@ -250,8 +373,19 @@ void spiInitBusDMA(void)
 
         if (dmaTxIdentifier && dmaRxIdentifier) {
             // Ensure streams are disabled
+#ifdef FT32F4
+            const bool rxReset = spiInternalResetStream(bus->dmaRx);
+            const bool txReset = spiInternalResetStream(bus->dmaTx);
+            if (!rxReset || !txReset) {
+                bus->useDMA = false;
+                bus->dmaRx = (dmaChannelDescriptor_t *)NULL;
+                bus->dmaTx = (dmaChannelDescriptor_t *)NULL;
+                continue;
+            }
+#else
             spiInternalResetStream(bus->dmaRx);
             spiInternalResetStream(bus->dmaTx);
+#endif
 
             spiInternalResetDescriptors(bus);
 
@@ -268,7 +402,15 @@ void spiInitBusDMA(void)
             bus->dmaRx = (dmaChannelDescriptor_t *)NULL;
 
             // Ensure streams are disabled
+#ifdef FT32F4
+            if (!spiInternalResetStream(bus->dmaTx)) {
+                bus->useDMA = false;
+                bus->dmaTx = (dmaChannelDescriptor_t *)NULL;
+                continue;
+            }
+#else
             spiInternalResetStream(bus->dmaTx);
+#endif
 
             spiInternalResetDescriptors(bus);
 
