@@ -132,6 +132,17 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >RAM AT> MOVABLE_FLASH
 
+  ram_code = LOADADDR(.ram_code);
+  .ram_code :
+  {
+    . = ALIGN(4);
+    ram_code_start = .;
+    *(.ram_code)
+    *(.ram_code*)
+    . = ALIGN(4);
+    ram_code_end = .;
+  } >RAM AT> MOVABLE_FLASH
+
   /* Uninitialized data section */
   . = ALIGN(4);
   .bss (NOLOAD) :

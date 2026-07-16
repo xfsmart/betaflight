@@ -67,6 +67,9 @@ typedef uint16_t rccPeriphTag_t;
 
 #define USE_ADC_INTERNAL
 
+#define USE_RAM_CODE
+#define RAM_CODE __attribute__((section(".ram_code")))
+
 #endif /* FT32F4 */
 
 // ============================================================

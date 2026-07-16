@@ -363,6 +363,9 @@ void configClearFlags(void)
 #endif
 }
 
+#if defined(FT32F4)
+RAM_CODE NOINLINE __attribute__((noipa))
+#endif
 configStreamerResult_e configWriteWord(uintptr_t address, config_streamer_buffer_type_t *buffer)
 {
 #if defined(STM32H7)
@@ -478,22 +481,134 @@ configStreamerResult_e configWriteWord(uintptr_t address, config_streamer_buffer
         return CONFIG_RESULT_ADDRESS_INVALID;
     }
 #elif defined(FT32F4)
-    if (address % FLASH_PAGE_SIZE == 0) {
-        if (address < FLASH_BASE) {
-            return CONFIG_RESULT_ADDRESS_INVALID;
+    STATIC_ASSERT(CONFIG_STREAMER_BUFFER_SIZE == sizeof(uint32_t),  "CONFIG_STREAMER_BUFFER_SIZE does not match written size");
+
+    const uint32_t data = *buffer;
+    const uintptr_t configStart = (uintptr_t)&__config_start;
+    const uintptr_t configEnd = (uintptr_t)&__config_end;
+    const uint32_t clearFlags = FLASH_FR_EOP | FLASH_FR_PGERR | FLASH_FR_PGSERR | FLASH_FR_WRPRTERR;
+    const uint32_t operationMask = FLASH_WRC_PG | FLASH_WRC_PER | FLASH_WRC_MER | FLASH_WRC_STRT
+        | FLASH_WRC_PNB_Msk | FLASH_WRC_ESIZE_0 | FLASH_WRC_ESIZE_1;
+    configStreamerResult_e result = CONFIG_RESULT_SUCCESS;
+
+    if ((address & (sizeof(uint32_t) - 1U)) != 0U
+        || address < configStart
+        || address > configEnd - sizeof(uint32_t)
+        || (FLASH->WRC & FLASH_WRC_LOCK) != 0U) {
+        return CONFIG_RESULT_ADDRESS_INVALID;
+    }
+
+    RCC->CR |= RCC_CR_HSION;
+    uint32_t timeout = FLASH_ER_PRG_TIMEOUT;
+    while ((RCC->CR & RCC_CR_HSIRDY) == 0U && timeout != 0U) {
+        timeout--;
+    }
+    if ((RCC->CR & RCC_CR_HSIRDY) == 0U) {
+        return CONFIG_RESULT_TIMEOUT;
+    }
+
+    const uint32_t savedPrimask = __get_PRIMASK();
+    __disable_irq();
+    __DSB();
+    __ISB();
+
+    timeout = FLASH_ER_PRG_TIMEOUT;
+    while ((FLASH->FR & FLASH_FR_BSY) != 0U && timeout != 0U) {
+        timeout--;
+    }
+    if ((FLASH->FR & FLASH_FR_BSY) != 0U) {
+        goto ft32FlashReset;
+    }
+    if (timeout == 0U) {
+        result = CONFIG_RESULT_TIMEOUT;
+        goto ft32FlashRestorePrimask;
+    }
+
+    if ((address % FLASH_PAGE_SIZE) == 0U) {
+        const uint32_t page = (uint32_t)((address - FLASH_BASE) / FLASH_PAGE_SIZE);
+        uint32_t wrc = FLASH->WRC & ~operationMask;
+
+        FLASH->FR = clearFlags;
+        wrc |= FLASH_WRC_PER | (page << FLASH_WRC_PNB_Pos);
+        FLASH->WRC = wrc;
+        FLASH->WRC = wrc | FLASH_WRC_STRT;
+
+        timeout = FLASH_ER_PRG_TIMEOUT;
+        while ((FLASH->FR & FLASH_FR_BSY) != 0U && timeout != 0U) {
+            timeout--;
         }
-        // FLASH_ErasePage takes a page index, not an absolute address.
-        const uint32_t page = (address - FLASH_BASE) / FLASH_PAGE_SIZE;
-        const FLASH_Status status = FLASH_ErasePage(page, ERASE_SIZE_0);
-        if (status != FLASH_COMPLETE) {
-            return CONFIG_RESULT_FAILURE;
+        if ((FLASH->FR & FLASH_FR_BSY) != 0U) {
+            goto ft32FlashReset;
+        }
+
+        const uint32_t eraseStatus = FLASH->FR;
+        FLASH->WRC &= ~(FLASH_WRC_PER | FLASH_WRC_STRT | FLASH_WRC_PNB_Msk | FLASH_WRC_ESIZE_0 | FLASH_WRC_ESIZE_1);
+
+        if (timeout == 0U) {
+            result = CONFIG_RESULT_TIMEOUT;
+            goto ft32FlashRestorePrimask;
+        }
+        if ((eraseStatus & FLASH_FR_WRPRTERR) != 0U) {
+            result = CONFIG_RESULT_ADDRESS_INVALID;
+            goto ft32FlashRestorePrimask;
+        }
+        if ((eraseStatus & (FLASH_FR_PGERR | FLASH_FR_PGSERR)) != 0U) {
+            result = CONFIG_RESULT_FAILURE;
+            goto ft32FlashRestorePrimask;
+        }
+
+        const volatile uint32_t *erased = (const volatile uint32_t *)address;
+        for (unsigned i = 0; i < FLASH_PAGE_SIZE / sizeof(uint32_t); i++) {
+            if (erased[i] != UINT32_MAX) {
+                result = CONFIG_RESULT_FAILURE;
+                goto ft32FlashRestorePrimask;
+            }
         }
     }
 
-    STATIC_ASSERT(CONFIG_STREAMER_BUFFER_SIZE == sizeof(uint32_t),  "CONFIG_STREAMER_BUFFER_SIZE does not match written size");
-    const FLASH_Status status = FLASH_Program_oneWord(address, *buffer);
-    if (status != FLASH_COMPLETE) {
-        return CONFIG_RESULT_ADDRESS_INVALID;
+    FLASH->FR = clearFlags;
+    FLASH->WRC = (FLASH->WRC & ~operationMask) | FLASH_WRC_PG;
+    *(volatile uint32_t *)address = data;
+
+    timeout = FLASH_ER_PRG_TIMEOUT;
+    while ((FLASH->FR & FLASH_FR_BSY) != 0U && timeout != 0U) {
+        timeout--;
+    }
+    if ((FLASH->FR & FLASH_FR_BSY) != 0U) {
+        goto ft32FlashReset;
+    }
+
+    const uint32_t programStatus = FLASH->FR;
+    FLASH->WRC &= ~FLASH_WRC_PG;
+
+    if (timeout == 0U) {
+        result = CONFIG_RESULT_TIMEOUT;
+    } else if ((programStatus & FLASH_FR_WRPRTERR) != 0U) {
+        result = CONFIG_RESULT_ADDRESS_INVALID;
+    } else if ((programStatus & (FLASH_FR_PGERR | FLASH_FR_PGSERR)) != 0U
+        || *(const volatile uint32_t *)address != data) {
+        result = CONFIG_RESULT_INCOMPLETE;
+    }
+
+ft32FlashRestorePrimask:
+    __DSB();
+    __set_PRIMASK(savedPrimask);
+    __ISB();
+    return result;
+
+ft32FlashReset:
+    {
+        // A stuck controller cannot safely return to code stored in Flash.
+        volatile uint32_t *const aircr = &SCB->AIRCR;
+        const uint32_t priorityGroup = *aircr & SCB_AIRCR_PRIGROUP_Msk;
+
+        __DSB();
+        *aircr = priorityGroup
+            | (0x5FAUL << SCB_AIRCR_VECTKEY_Pos)
+            | SCB_AIRCR_SYSRESETREQ_Msk;
+        __DSB();
+        __asm volatile ("1: b 1b" ::: "memory");
+        __builtin_unreachable();
     }
 #else
 #error "MCU not catered for in configWriteWord for config_streamer"
