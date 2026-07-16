@@ -24,6 +24,8 @@
 #define PLL_OUTPUT_ENABLE_Q    RCC_PLLCFGR_PLLQEN
 #define PLL_OUTPUT_ENABLE_R    RCC_PLLCFGR_PLLREN
 
+#define CLOCK_READY_TIMEOUT    5000
+
 // AHB prescaler table: index = HPRE[3:0], value = log2(divisor)
 __I uint8_t AHBPrescTable[16] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 6, 7, 8, 9};
 
@@ -109,6 +111,25 @@ static uint32_t getFlashLatency(uint32_t freqMhz)
     if (freqMhz <= 180) return 5;
     if (freqMhz <= 210) return 6;
     return 7;
+}
+
+static int configureHighSpeedVoltageScale(void)
+{
+    RCC->APB1ENR |= RCC_APB1Periph_PWR;
+    (void)RCC->APB1ENR;
+
+    PWR_VosLevelConfig(PWR_VosLevel_3);
+    if ((PWR->CR & PWR_CR_VOS_3) != PWR_CR_VOS_3) {
+        return 0;
+    }
+
+    for (int waitCounter = 0; waitCounter < CLOCK_READY_TIMEOUT; waitCounter++) {
+        if (PWR->CSR & PWR_CSR_VOSRDY) {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 static void SystemInitPLLParameters(void)
@@ -283,7 +304,7 @@ void SetSysClock(void)
     // Target: pll_input = 2 MHz for best flexibility (or 1 MHz for odd HSE values).
     if (hse_value == 0) {
         // HSE unknown or not present; use HSI as PLL source
-        if (!StartHSx(RCC_CR_HSION, RCC_CR_HSIRDY, 5000)) {
+        if (!StartHSx(RCC_CR_HSION, RCC_CR_HSIRDY, CLOCK_READY_TIMEOUT)) {
             return;
         }
 
@@ -293,7 +314,7 @@ void SetSysClock(void)
         pll_input = 2;
     } else {
         // HSE is available
-        if (!StartHSx(RCC_CR_HSEON, RCC_CR_HSERDY, 5000)) {
+        if (!StartHSx(RCC_CR_HSEON, RCC_CR_HSERDY, CLOCK_READY_TIMEOUT)) {
             // HSE failed; fall back to HSI
             pll_src = RCC_PLLCFGR_PLLSRC_HSI;
             pll_m = 8;
@@ -316,6 +337,22 @@ void SetSysClock(void)
     }
 
     SystemInitPLLParameters();
+
+    if (!configureHighSpeedVoltageScale()) {
+        return;
+    }
+
+    const uint32_t targetMhz = (pll_n * pll_input) / pll_p;
+    const uint32_t flashConfigMask = FLASH_RDC_PRFTBE | FLASH_RDC_LATENCY;
+    const uint32_t flashConfig = FLASH_RDC_PRFTBE | getFlashLatency(targetMhz);
+
+    FLASH->RDC = (FLASH->RDC & ~flashConfigMask) | flashConfig;
+    if ((FLASH->RDC & flashConfigMask) != flashConfig) {
+        return;
+    }
+
+    __DSB();
+    __ISB();
 
     // Bus dividers:
     // HCLK = SYSCLK / 1
@@ -356,11 +393,6 @@ void SetSysClock(void)
 
     // Wait till PLL is ready
     while ((RCC->CR & RCC_CR_PLLRDY) == 0);
-
-    // Configure Flash wait states and prefetch buffer.
-    // Prefetch: FLASH_RDC_PRFTBE (bit 4).
-    // Wait states: FLASH_RDC_LATENCY (bits [3:0]).
-    FLASH->RDC = FLASH_RDC_PRFTBE | getFlashLatency((pll_n * pll_input) / pll_p);
 
     // Select PLL as system clock
     RCC->CFGR &= (uint32_t)((uint32_t)~(RCC_CFGR_SW));
