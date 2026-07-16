@@ -224,17 +224,9 @@ bool mpuAccReadSPI(accDev_t *acc)
     {
         acc->gyro->dev.txBuf[0] = acc->gyro->accDataReg | 0x80;
 
-        busSegment_t segments[] = {
-                {.u.buffers = {NULL, NULL}, 7, true, NULL},
-                {.u.link = {NULL, NULL}, 0, true, NULL},
-        };
-        segments[0].u.buffers.txData = acc->gyro->dev.txBuf;
-        segments[0].u.buffers.rxData = &acc->gyro->dev.rxBuf[1];
-
-        spiSequence(&acc->gyro->dev, &segments[0]);
-
-        // Wait for completion
-        spiWait(&acc->gyro->dev);
+        if (!spiReadWriteBufRB(&acc->gyro->dev, acc->gyro->dev.txBuf, &acc->gyro->dev.rxBuf[1], 7)) {
+            return false;
+        }
 
         // Non-DMA read starts at accDataReg, so data is always at index 1
         int16_t *accData = (int16_t *)acc->gyro->dev.rxBuf;
@@ -308,17 +300,9 @@ bool mpuGyroReadSPI(gyroDev_t *gyro)
     {
         gyro->dev.txBuf[0] = gyro->gyroDataReg | 0x80;
 
-        busSegment_t segments[] = {
-                {.u.buffers = {NULL, NULL}, 7, true, NULL},
-                {.u.link = {NULL, NULL}, 0, true, NULL},
-        };
-        segments[0].u.buffers.txData = gyro->dev.txBuf;
-        segments[0].u.buffers.rxData = &gyro->dev.rxBuf[1];
-
-        spiSequence(&gyro->dev, &segments[0]);
-
-        // Wait for completion
-        spiWait(&gyro->dev);
+        if (!spiReadWriteBufRB(&gyro->dev, gyro->dev.txBuf, &gyro->dev.rxBuf[1], 7)) {
+            return false;
+        }
 
         gyro->gyroADCRaw[X] = __builtin_bswap16(gyroData[1]);
         gyro->gyroADCRaw[Y] = __builtin_bswap16(gyroData[2]);

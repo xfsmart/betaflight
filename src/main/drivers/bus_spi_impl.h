@@ -80,6 +80,9 @@ typedef struct spiDevice_s {
     rccPeriphTag_t rcc;
 #endif
     volatile uint16_t errorCount;
+#ifdef FT32F4
+    volatile bool polledRecoveryRequired;
+#endif
     bool leadingEdge;
 #ifdef USE_DMA
     uint8_t dmaIrqHandler;
@@ -95,4 +98,7 @@ void spiInternalStopDMA (const extDevice_t *dev);
 void spiInternalResetStream(dmaChannelDescriptor_t *descriptor);
 void spiInternalResetDescriptors(busDevice_t *bus);
 bool spiInternalReadWriteBufPolled(spiResource_t *instance, const uint8_t *txData, uint8_t *rxData, int len);
+#ifdef FT32F4
+bool spiInternalRecoverPolled(const extDevice_t *dev);
+#endif
 void spiSequenceStart(const extDevice_t *dev);

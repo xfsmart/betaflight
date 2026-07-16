@@ -40,6 +40,59 @@
 #include "pg/bus_spi.h"
 
 const spiHardware_t spiHardware[] = {
+#ifdef FT32F4
+    {
+        .device = SPIDEV_1,
+        .reg = (spiResource_t *)SPI1,
+        .sckPins = {
+            { DEFIO_TAG_E(PA5), GPIO_AF_5 },
+            { DEFIO_TAG_E(PB3), GPIO_AF_5 },
+        },
+        .misoPins = {
+            { DEFIO_TAG_E(PA6), GPIO_AF_5 },
+            { DEFIO_TAG_E(PB4), GPIO_AF_5 },
+        },
+        .mosiPins = {
+            { DEFIO_TAG_E(PA7), GPIO_AF_5 },
+            { DEFIO_TAG_E(PB5), GPIO_AF_5 },
+        },
+        .rcc = RCC_APB2(SPI1),
+    },
+    {
+        .device = SPIDEV_2,
+        .reg = (spiResource_t *)SPI2,
+        .sckPins = {
+            { DEFIO_TAG_E(PB10), GPIO_AF_5 },
+            { DEFIO_TAG_E(PB13), GPIO_AF_5 },
+        },
+        .misoPins = {
+            { DEFIO_TAG_E(PB14), GPIO_AF_5 },
+            { DEFIO_TAG_E(PC2), GPIO_AF_5 },
+        },
+        .mosiPins = {
+            { DEFIO_TAG_E(PB15), GPIO_AF_5 },
+            { DEFIO_TAG_E(PC3), GPIO_AF_5 },
+        },
+        .rcc = RCC_APB1(SPI2),
+    },
+    {
+        .device = SPIDEV_3,
+        .reg = (spiResource_t *)SPI3,
+        .sckPins = {
+            { DEFIO_TAG_E(PB3), GPIO_AF_6 },
+            { DEFIO_TAG_E(PC10), GPIO_AF_4 },
+        },
+        .misoPins = {
+            { DEFIO_TAG_E(PB4), GPIO_AF_6 },
+            { DEFIO_TAG_E(PC11), GPIO_AF_4 },
+        },
+        .mosiPins = {
+            { DEFIO_TAG_E(PB5), GPIO_AF_6 },
+            { DEFIO_TAG_E(PC12), GPIO_AF_4 },
+        },
+        .rcc = RCC_APB1(SPI3),
+    },
+#endif
 #ifdef STM32F4
     {
         .device = SPIDEV_1,

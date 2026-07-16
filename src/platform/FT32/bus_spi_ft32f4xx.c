@@ -35,10 +35,14 @@
 #include "drivers/bus_spi_impl.h"
 #include "drivers/exti.h"
 #include "drivers/io.h"
+#include "drivers/system.h"
 #include "drivers/time.h"
 #include "platform/rcc.h"
 
 #define SPI_DMA_THRESHOLD 8
+#define SPI_ERROR_FLAG_MASK (SPI_FLAG_OVR | SPI_FLAG_MODF | SPI_FLAG_FRE)
+#define SPI_CR1_CLOCK_MODE_MASK (SPI_CR1_CPOL | SPI_CR1_CPHA)
+#define SPI_CR1_DIRECTION_MASK (SPI_CR1_BIDIMODE | SPI_CR1_BIDIOE | SPI_CR1_RXONLY)
 
 static SPI_InitTypeDef defaultInit = {
     .SPI_Mode = SPI_Mode_Master,
@@ -87,6 +91,29 @@ static void spiSetDivisorBRreg(SPI_TypeDef *instance, uint16_t divisor)
 #undef BR_BITS
 }
 
+static bool spiWaitForFlagState(SPI_TypeDef *instance, uint16_t flag, bool set, bool failOnError)
+{
+    const uint32_t startCycles = getCycleCounter();
+    const uint32_t timeoutCycles = clockMicrosToCycles(SPI_TIMEOUT_US);
+
+    do {
+        const uint16_t status = instance->SR;
+        if (failOnError && (status & SPI_ERROR_FLAG_MASK)) {
+            return false;
+        }
+        if (((status & flag) != 0U) == set) {
+            return true;
+        }
+    } while (cmpTimeCycles(getCycleCounter(), startCycles) <= (int32_t)timeoutCycles);
+
+    return false;
+}
+
+static void spiSettleBeforeReset(SPI_TypeDef *instance)
+{
+    (void)spiWaitForFlagState(instance, SPI_FLAG_BSY, false, false);
+}
+
 /**
  * @brief  Initialize SPI device
  * @param  device: SPI device enumeration
@@ -98,6 +125,8 @@ void spiInitDevice(spiDevice_e device)
     if (!spi->dev) {
         return;
     }
+
+    spi->polledRecoveryRequired = false;
 
     // Enable SPI clock
     RCC_ClockCmd(spi->rcc, ENABLE);
@@ -117,8 +146,9 @@ void spiInitDevice(spiDevice_e device)
     // Disable SPI DMA requests by default
     // DMA will be enabled in spiInternalStartDMA() when needed
     SPI_DMACmd((SPI_TypeDef*)spi->dev, SPI_CR2_TXDMAEN | SPI_CR2_RXDMAEN, DISABLE);
-    
+
     SPI_Init((SPI_TypeDef*)spi->dev, &defaultInit);
+    SPI_RxFIFOThresholdConfig((SPI_TypeDef*)spi->dev, SPI_RxFIFOThreshold_QF);
     SPI_Cmd((SPI_TypeDef*)spi->dev, ENABLE);
 }
 
@@ -201,23 +231,18 @@ bool spiInternalReadWriteBufPolled(spiResource_t *spiInstance, const uint8_t *tx
     // Convert opaque spiResource_t* to SPI_TypeDef*
     SPI_TypeDef *instance = (SPI_TypeDef *)spiInstance;
     uint8_t b;
-    timeUs_t startTime;
 
     while (len--) {
         b = txData ? *(txData++) : 0xFF;
-        startTime = microsISR();
-        while (SPI_GetFlagStatus(instance, SPI_FLAG_TXE) == RESET) {
-            if (cmpTimeUs(microsISR(), startTime) > SPI_TIMEOUT_US) {
-                return false;  // Timeout
-            }
+        if (!spiWaitForFlagState(instance, SPI_FLAG_TXE, true, true) ||
+            (instance->SR & SPI_ERROR_FLAG_MASK)) {
+            return false;
         }
         SPI_SendData8(instance, b);
 
-        startTime = microsISR();
-        while (SPI_GetFlagStatus(instance, SPI_FLAG_RXNE) == RESET) {
-            if (cmpTimeUs(microsISR(), startTime) > SPI_TIMEOUT_US) {
-                return false;  // Timeout
-            }
+        if (!spiWaitForFlagState(instance, SPI_FLAG_RXNE, true, true) ||
+            (instance->SR & SPI_ERROR_FLAG_MASK)) {
+            return false;
         }
         b = SPI_ReceiveData8(instance);
         if (rxData) {
@@ -225,7 +250,60 @@ bool spiInternalReadWriteBufPolled(spiResource_t *spiInstance, const uint8_t *tx
         }
     }
 
-    return true;
+    return spiWaitForFlagState(instance, SPI_FLAG_BSY, false, true) &&
+        SPI_GetReceptionFIFOStatus(instance) == SPI_ReceptionFIFOStatus_Empty &&
+        (instance->SR & SPI_ERROR_FLAG_MASK) == 0U;
+}
+
+bool spiInternalRecoverPolled(const extDevice_t *dev)
+{
+    busDevice_t *bus = dev->bus;
+    SPI_TypeDef *instance = (SPI_TypeDef *)bus->busType_u.spi.instance;
+
+    SPI_DMACmd(instance, SPI_CR2_RXDMAEN | SPI_CR2_TXDMAEN, DISABLE);
+    spiSettleBeforeReset(instance);
+    SPI_Cmd(instance, DISABLE);
+
+    for (unsigned int count = 0; count < 8U &&
+         SPI_GetReceptionFIFOStatus(instance) != SPI_ReceptionFIFOStatus_Empty; count++) {
+        (void)SPI_ReceiveData8(instance);
+    }
+
+    if (instance->SR & SPI_FLAG_OVR) {
+        (void)instance->DR;
+        (void)instance->SR;
+    }
+
+    SPI_DeInit(instance);
+    SPI_Init(instance, &defaultInit);
+    SPI_RxFIFOThresholdConfig(instance, SPI_RxFIFOThreshold_QF);
+    spiSetDivisorBRreg(instance, bus->busType_u.spi.speed);
+
+    instance->CR1 &= ~(SPI_CPOL_High | SPI_CPHA_2Edge);
+    if (!bus->busType_u.spi.leadingEdge) {
+        instance->CR1 |= SPI_CPOL_High | SPI_CPHA_2Edge;
+    }
+
+    SPI_DMACmd(instance, SPI_CR2_RXDMAEN | SPI_CR2_TXDMAEN, DISABLE);
+    SPI_Cmd(instance, ENABLE);
+
+    const uint16_t cr1 = instance->CR1;
+    const uint16_t expectedClockMode = bus->busType_u.spi.leadingEdge ?
+        (SPI_CPOL_Low | SPI_CPHA_1Edge) : (SPI_CPOL_High | SPI_CPHA_2Edge);
+
+    return SPI_GetReceptionFIFOStatus(instance) == SPI_ReceptionFIFOStatus_Empty &&
+        SPI_GetTransmissionFIFOStatus(instance) == SPI_TransmissionFIFOStatus_Empty &&
+        (instance->SR & SPI_ERROR_FLAG_MASK) == 0U &&
+        (instance->SR & SPI_FLAG_BSY) == 0U &&
+        (instance->SR & SPI_FLAG_TXE) != 0U &&
+        (instance->CR2 & (SPI_CR2_RXDMAEN | SPI_CR2_TXDMAEN)) == 0U &&
+        (instance->CR2 & SPI_CR2_DS) == SPI_DataSize_8b &&
+        (instance->CR2 & SPI_CR2_FRXTH) == SPI_RxFIFOThreshold_QF &&
+        (cr1 & (SPI_CR1_SSM | SPI_CR1_SSI | SPI_CR1_MSTR | SPI_CR1_SPE)) ==
+            (SPI_CR1_SSM | SPI_CR1_SSI | SPI_CR1_MSTR | SPI_CR1_SPE) &&
+        (cr1 & SPI_CR1_DIRECTION_MASK) == 0U &&
+        (cr1 & SPI_CR1_BR) == spiDivisorToBRbits(instance, bus->busType_u.spi.speed) &&
+        (cr1 & SPI_CR1_CLOCK_MODE_MASK) == expectedClockMode;
 }
 
 /**

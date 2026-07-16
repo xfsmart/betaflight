@@ -38,12 +38,160 @@
 #include "drivers/nvic.h"
 #include "pg/bus_spi.h"
 
-#define NUM_QUEUE_SEGS 5
-
 static uint8_t spiRegisteredDeviceCount = 0;
 
 spiDevice_t spiDevice[SPIDEV_COUNT];
 busDevice_t spiBusDevice[SPIDEV_COUNT];
+
+#define SPI_RB_MAX_POLLED_LENGTH 7
+
+typedef enum {
+    SPI_SUBMIT_INVALID,
+    SPI_SUBMIT_QUARANTINED,
+    SPI_SUBMIT_BUSY,
+    SPI_SUBMIT_QUEUED,
+    SPI_SUBMIT_START,
+} spiSubmitResult_e;
+
+static bool spiTransferBlockingIfIdle(const extDevice_t *dev, busSegment_t *segments);
+
+static spiDevice_t *spiDeviceState(const busDevice_t *bus)
+{
+    const spiDevice_e device = spiDeviceByInstance(bus->busType_u.spi.instance);
+
+    return device == SPIINVALID ? NULL : &spiDevice[device];
+}
+
+static bool spiReadErrorCount(const extDevice_t *dev, uint16_t *errorCount)
+{
+    const spiDevice_t *state = spiDeviceState(dev->bus);
+
+    if (!state
+#ifdef FT32F4
+        || state->polledRecoveryRequired
+#endif
+    ) {
+        return false;
+    }
+
+    *errorCount = state->errorCount;
+    return true;
+}
+
+static busSegment_t *spiSegmentListEnd(busSegment_t *segments)
+{
+    while (segments->len > 0) {
+        segments++;
+    }
+
+    return segments;
+}
+
+static bool spiSegmentListNext(busSegment_t *segments, busSegment_t **nextSegments)
+{
+    if (!segments || segments->len <= 0) {
+        return false;
+    }
+
+    busSegment_t *endSegment = spiSegmentListEnd(segments);
+    if (endSegment->len < 0) {
+        return false;
+    }
+    const bool hasNextDev = endSegment->u.link.dev != NULL;
+    const bool hasNextSegments = endSegment->u.link.segments != NULL;
+
+    if (hasNextDev != hasNextSegments) {
+        return false;
+    }
+
+    *nextSegments = hasNextSegments ? (busSegment_t *)endSegment->u.link.segments : NULL;
+    return true;
+}
+
+static bool spiSegmentQueueAdvance(busSegment_t **segments)
+{
+    if (!*segments) {
+        return true;
+    }
+
+    return spiSegmentListNext(*segments, segments);
+}
+
+static bool spiSegmentQueueIsValid(busSegment_t *segments)
+{
+    busSegment_t *slow = segments;
+    busSegment_t *fast = segments;
+
+    while (fast) {
+        if (!spiSegmentQueueAdvance(&slow) || !spiSegmentQueueAdvance(&fast)) {
+            return false;
+        }
+        if (fast && !spiSegmentQueueAdvance(&fast)) {
+            return false;
+        }
+        if (fast && slow == fast) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static busSegment_t *spiSegmentQueueTail(busSegment_t *segments);
+
+static bool spiSegmentQueuesOverlap(busSegment_t *first, busSegment_t *second)
+{
+    return spiSegmentQueueTail(first) == spiSegmentQueueTail(second);
+}
+
+static busSegment_t *spiSegmentQueueTail(busSegment_t *segments)
+{
+    busSegment_t *nextSegments;
+
+    while (spiSegmentListNext(segments, &nextSegments) && nextSegments) {
+        segments = nextSegments;
+    }
+
+    return spiSegmentListEnd(segments);
+}
+
+static busSegment_t *spiInvalidateFailedSegmentTail(volatile busSegment_t *segments)
+{
+    busSegment_t *segment = (busSegment_t *)segments;
+
+    while (segment->len > 0) {
+        if (segment->u.buffers.rxData) {
+            memset(segment->u.buffers.rxData, 0xff, segment->len);
+        }
+        segment++;
+    }
+
+    return segment;
+}
+
+static void spiCompleteFailedSegmentList(busDevice_t *bus, busSegment_t *endSegment, bool recovered)
+{
+    endSegment->u.link.dev = NULL;
+    endSegment->u.link.segments = NULL;
+
+    spiDevice_t *state = spiDeviceState(bus);
+    if (state) {
+        state->errorCount += recovered ? 1U : 2U;
+#ifdef FT32F4
+        state->polledRecoveryRequired = !recovered;
+#endif
+    }
+    bus->curSegment = (busSegment_t *)BUS_SPI_FREE;
+}
+
+#ifdef FT32F4
+static void spiInvalidateRejectedSegments(busSegment_t *segments)
+{
+    busSegment_t *endSegment = spiInvalidateFailedSegmentTail(segments);
+    endSegment->u.link.dev = NULL;
+    endSegment->u.link.segments = NULL;
+}
+#endif
 
 spiDevice_e spiDeviceByInstance(const spiResource_t *instance)
 {
@@ -159,6 +307,10 @@ void spiRelease(const extDevice_t *dev)
 // Wait for bus to become free, then read/write block of data
 void spiReadWriteBuf(const extDevice_t *dev, uint8_t *txData, uint8_t *rxData, int len)
 {
+    if (len <= 0) {
+        return;
+    }
+
     // This routine blocks so no need to use static data
     busSegment_t segments[] = {
             {.u.buffers = {txData, rxData}, len, true, NULL},
@@ -173,14 +325,16 @@ void spiReadWriteBuf(const extDevice_t *dev, uint8_t *txData, uint8_t *rxData, i
 // Read/Write a block of data, returning false if the bus is busy
 bool spiReadWriteBufRB(const extDevice_t *dev, uint8_t *txData, uint8_t *rxData, int length)
 {
-    // Ensure any prior DMA has completed before continuing
-    if (spiIsBusy(dev)) {
+    if (length <= 0 || length > SPI_RB_MAX_POLLED_LENGTH) {
         return false;
     }
 
-    spiReadWriteBuf(dev, txData, rxData, length);
+    busSegment_t segments[] = {
+            {.u.buffers = {txData, rxData}, length, true, NULL},
+            {.u.link = {NULL, NULL}, 0, true, NULL},
+    };
 
-    return true;
+    return spiTransferBlockingIfIdle(dev, &segments[0]);
 }
 
 // Wait for bus to become free, then read/write a single byte
@@ -265,6 +419,10 @@ bool spiWriteRegRB(const extDevice_t *dev, uint8_t reg, uint8_t data)
 // Read a block of data from a register
 void spiReadRegBuf(const extDevice_t *dev, uint8_t reg, uint8_t *data, uint8_t length)
 {
+    if (length == 0) {
+        return;
+    }
+
     // This routine blocks so no need to use static data
     busSegment_t segments[] = {
             {.u.buffers = {&reg, NULL}, sizeof(reg), false, NULL},
@@ -299,6 +457,10 @@ bool spiReadRegMskBufRB(const extDevice_t *dev, uint8_t reg, uint8_t *data, uint
 // Wait for bus to become free, then write a block of data to a register
 void spiWriteRegBuf(const extDevice_t *dev, uint8_t reg, uint8_t *data, uint32_t length)
 {
+    if (length == 0 || length > INT32_MAX) {
+        return;
+    }
+
     // This routine blocks so no need to use static data
     busSegment_t segments[] = {
             {.u.buffers = {&reg, NULL}, sizeof(reg), false, NULL},
@@ -423,67 +585,140 @@ uint8_t spiGetExtDeviceCount(const extDevice_t *dev)
 // Note that there is no need to unlink segment lists as this is done automatically as they are processed
 void spiLinkSegments(const extDevice_t *dev, busSegment_t *firstSegment, busSegment_t *secondSegment)
 {
-    busSegment_t *endSegment;
+    if (!firstSegment || !secondSegment ||
+        !spiSegmentQueueIsValid(firstSegment) || !spiSegmentQueueIsValid(secondSegment) ||
+        spiSegmentQueuesOverlap(firstSegment, secondSegment)) {
+        return;
+    }
 
-    // Find the last segment of the new transfer
-    for (endSegment = firstSegment; endSegment->len; endSegment++);
-
+    busSegment_t *endSegment = spiSegmentQueueTail(firstSegment);
     endSegment->u.link.dev = dev;
     endSegment->u.link.segments = secondSegment;
+}
+
+static spiSubmitResult_e spiSubmitLocked(const extDevice_t *dev, busSegment_t *segments, bool allowQueue, uint16_t *errorSnapshot)
+{
+    busDevice_t *bus = dev->bus;
+    spiDevice_t *state = spiDeviceState(bus);
+
+    if (!state) {
+        return SPI_SUBMIT_INVALID;
+    }
+
+#ifdef FT32F4
+    if (state->polledRecoveryRequired) {
+        state->errorCount++;
+        return SPI_SUBMIT_QUARANTINED;
+    }
+#endif
+
+    if (!spiIsBusy(dev)) {
+        if (errorSnapshot) {
+            *errorSnapshot = state->errorCount;
+        }
+        bus->curSegment = segments;
+        return SPI_SUBMIT_START;
+    }
+
+    if (!allowQueue) {
+        return SPI_SUBMIT_BUSY;
+    }
+
+    busSegment_t *queuedSegments = (busSegment_t *)bus->curSegment;
+    if (spiSegmentQueuesOverlap(queuedSegments, segments)) {
+        return SPI_SUBMIT_INVALID;
+    }
+
+    busSegment_t *endSegment = spiSegmentQueueTail(queuedSegments);
+    endSegment->u.link.dev = dev;
+    endSegment->u.link.segments = segments;
+    return SPI_SUBMIT_QUEUED;
+}
+
+static spiSubmitResult_e spiSubmitSegments(const extDevice_t *dev, busSegment_t *segments, bool allowQueue, uint16_t *errorSnapshot)
+{
+    if (!segments || !spiSegmentQueueIsValid(segments)) {
+        return SPI_SUBMIT_INVALID;
+    }
+
+    spiSubmitResult_e result;
+#ifdef FT32F4
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    __DMB();
+    result = spiSubmitLocked(dev, segments, allowQueue, errorSnapshot);
+    __DMB();
+    __set_PRIMASK(primask);
+
+    if (result == SPI_SUBMIT_QUARANTINED) {
+        spiInvalidateRejectedSegments(segments);
+    }
+#else
+    ATOMIC_BLOCK(NVIC_PRIO_MAX) {
+        result = spiSubmitLocked(dev, segments, allowQueue, errorSnapshot);
+    }
+#endif
+
+    if (result == SPI_SUBMIT_START) {
+        spiSequenceStart(dev);
+    }
+
+    return result;
+}
+
+static bool spiTransferBlockingIfIdle(const extDevice_t *dev, busSegment_t *segments)
+{
+    uint16_t errorCount;
+    if (spiSubmitSegments(dev, segments, false, &errorCount) != SPI_SUBMIT_START) {
+        return false;
+    }
+
+    spiWait(dev);
+
+    uint16_t completedErrorCount;
+    return spiReadErrorCount(dev, &completedErrorCount) && completedErrorCount == errorCount;
+}
+
+static const extDevice_t *spiFinishSegmentListLocked(busDevice_t *bus, busSegment_t *endSegment)
+{
+    const extDevice_t *nextDev = endSegment->u.link.dev;
+    busSegment_t *nextSegments = (busSegment_t *)endSegment->u.link.segments;
+
+    if ((nextDev == NULL) != (nextSegments == NULL)) {
+        nextDev = NULL;
+        nextSegments = NULL;
+    }
+
+    bus->curSegment = nextDev ? nextSegments : (busSegment_t *)BUS_SPI_FREE;
+    endSegment->u.link.dev = NULL;
+    endSegment->u.link.segments = NULL;
+
+    return nextDev;
+}
+
+static const extDevice_t *spiFinishSegmentList(busDevice_t *bus, busSegment_t *endSegment)
+{
+    const extDevice_t *nextDev;
+#ifdef FT32F4
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    __DMB();
+    nextDev = spiFinishSegmentListLocked(bus, endSegment);
+    __DMB();
+    __set_PRIMASK(primask);
+#else
+    ATOMIC_BLOCK(NVIC_PRIO_MAX) {
+        nextDev = spiFinishSegmentListLocked(bus, endSegment);
+    }
+#endif
+
+    return nextDev;
 }
 
 // DMA transfer setup and start
 void spiSequence(const extDevice_t *dev, busSegment_t *segments)
 {
-    busDevice_t *bus = dev->bus;
-
-    ATOMIC_BLOCK(NVIC_PRIO_MAX) {
-        if (spiIsBusy(dev)) {
-            busSegment_t *endSegment;
-
-            // Defer this transfer to be triggered upon completion of the current transfer
-
-            // Find the last segment of the new transfer
-            for (endSegment = segments; endSegment->len; endSegment++);
-
-            // Safe to discard the volatile qualifier as we're in an atomic block
-            busSegment_t *endCmpSegment = (busSegment_t *)bus->curSegment;
-
-            if (endCmpSegment) {
-                while (true) {
-                    // Find the last segment of the current transfer
-                    for (; endCmpSegment->len; endCmpSegment++);
-
-                    if (endCmpSegment == endSegment) {
-                        /* Attempt to use the new segment list twice in the same queue. Abort.
-                         * Note that this can only happen with non-blocking transfers so drivers must take
-                         * care to avoid this.
-                         * */
-                        return;
-                    }
-
-                    if (endCmpSegment->u.link.dev == NULL) {
-                        // End of the segment list queue reached
-                        break;
-                    } else {
-                        // Follow the link to the next queued segment list
-                        endCmpSegment = (busSegment_t *)endCmpSegment->u.link.segments;
-                    }
-                }
-
-                // Record the dev and segments parameters in the terminating segment entry
-                endCmpSegment->u.link.dev = dev;
-                endCmpSegment->u.link.segments = segments;
-            }
-
-            return;
-        } else {
-            // Claim the bus with this list of segments
-            bus->curSegment = segments;
-        }
-    }
-
-    spiSequenceStart(dev);
+    (void)spiSubmitSegments(dev, segments, true, NULL);
 }
 
 // Process segments using DMA - expects DMA irq handler to have been set up to feed into spiIrqHandler.
@@ -546,18 +781,9 @@ FAST_IRQ_HANDLER void spiIrqHandler(const extDevice_t *dev)
     nextSegment = (busSegment_t *)bus->curSegment + 1;
 
     if (nextSegment->len == 0) {
-        // If a following transaction has been linked, start it
-        if (nextSegment->u.link.dev) {
-            const extDevice_t *nextDev = nextSegment->u.link.dev;
-            busSegment_t *nextSegments = (busSegment_t *)nextSegment->u.link.segments;
-            // The end of the segment list has been reached
-            bus->curSegment = nextSegments;
-            nextSegment->u.link.dev = NULL;
-            nextSegment->u.link.segments = NULL;
+        const extDevice_t *nextDev = spiFinishSegmentList(bus, nextSegment);
+        if (nextDev) {
             spiSequenceStart(nextDev);
-        } else {
-            // The end of the segment list has been reached, so mark transactions as complete
-            bus->curSegment = (busSegment_t *)BUS_SPI_FREE;
         }
     } else {
         // Do as much processing as possible before asserting CS to avoid violating minimum high time
@@ -597,11 +823,32 @@ FAST_CODE void spiProcessSegmentsPolled(const extDevice_t *dev)
             IOLo(dev->busType_u.spi.csnPin);
         }
 
-        spiInternalReadWriteBufPolled(
+        const bool transferComplete = spiInternalReadWriteBufPolled(
             bus->busType_u.spi.instance,
             bus->curSegment->u.buffers.txData,
             bus->curSegment->u.buffers.rxData,
             bus->curSegment->len);
+
+        if (!transferComplete) {
+            IOHi(dev->busType_u.spi.csnPin);
+#ifdef FT32F4
+            const bool recovered = spiInternalRecoverPolled(dev);
+
+            busSegment_t *endSegment = spiInvalidateFailedSegmentTail(bus->curSegment);
+            const uint32_t primask = __get_PRIMASK();
+            __disable_irq();
+            __DMB();
+            spiCompleteFailedSegmentList(bus, endSegment, recovered);
+            __DMB();
+            __set_PRIMASK(primask);
+#else
+            busSegment_t *endSegment = spiInvalidateFailedSegmentTail(bus->curSegment);
+            ATOMIC_BLOCK(NVIC_PRIO_MAX) {
+                spiCompleteFailedSegmentList(bus, endSegment, true);
+            }
+#endif
+            return;
+        }
 
         if (bus->curSegment->negateCS) {
             // Negate Chip Select
@@ -612,14 +859,17 @@ FAST_CODE void spiProcessSegmentsPolled(const extDevice_t *dev)
         if (bus->curSegment->callback) {
             switch(bus->curSegment->callback(dev->callbackArg)) {
             case BUS_BUSY:
-                // Repeat the last DMA segment
+                // Repeat with the chip-select state produced by this segment.
+                lastSegment = (busSegment_t *)bus->curSegment;
                 segmentComplete = false;
                 break;
 
             case BUS_ABORT:
-                bus->curSegment = (busSegment_t *)BUS_SPI_FREE;
-                segmentComplete = false;
-                return;
+                // Skip this list but preserve a linked successor transaction.
+                while ((bus->curSegment + 1)->len != 0) {
+                    bus->curSegment++;
+                }
+                break;
 
             case BUS_READY:
             default:
@@ -633,18 +883,10 @@ FAST_CODE void spiProcessSegmentsPolled(const extDevice_t *dev)
         }
     }
 
-    // If a following transaction has been linked, start it
-    if (bus->curSegment->u.link.dev) {
-        busSegment_t *endSegment = (busSegment_t *)bus->curSegment;
-        const extDevice_t *nextDev = endSegment->u.link.dev;
-        busSegment_t *nextSegments = (busSegment_t *)endSegment->u.link.segments;
-        bus->curSegment = nextSegments;
-        endSegment->u.link.dev = NULL;
-        endSegment->u.link.segments = NULL;
+    busSegment_t *endSegment = (busSegment_t *)bus->curSegment;
+    const extDevice_t *nextDev = spiFinishSegmentList(bus, endSegment);
+    if (nextDev) {
         spiSequenceStart(nextDev);
-    } else {
-        // The end of the segment list has been reached, so mark transactions as complete
-        bus->curSegment = (busSegment_t *)BUS_SPI_FREE;
     }
 }
 

@@ -127,6 +127,7 @@ uint8_t spiReadWrite(const extDevice_t *dev, uint8_t data);
 void spiWriteRegBuf(const extDevice_t *dev, uint8_t reg, uint8_t *data, uint32_t length);
 uint8_t spiReadWriteReg(const extDevice_t *dev, uint8_t reg, uint8_t data);
 void spiReadWriteBuf(const extDevice_t *dev, uint8_t *txData, uint8_t *rxData, int len);
+// Polled 1..7-byte transfer; false means invalid input, busy, transport failure, or failed recovery.
 bool spiReadWriteBufRB(const extDevice_t *dev, uint8_t *txData, uint8_t *rxData, int length);
 
 //
