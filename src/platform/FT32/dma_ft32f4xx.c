@@ -167,6 +167,10 @@ uint8_t ft32DmaIsChannelEnabled(DMA_ARCH_TYPE *dmaResource)
 
 void ft32DmaSetCurrDataCounter(DMA_ARCH_TYPE *dmaResource, uint16_t count)
 {
+    ft32DmaCmd(dmaResource, DISABLE);
+    if (ft32DmaIsChannelEnabled(dmaResource)) {
+        return;
+    }
     ft32DmaBlockSize[ft32DmaLinearIndex(dmaResource)] = count;
     ft32DmaWriteBlockSize(dmaResource, count);
 }
@@ -223,6 +227,9 @@ void ft32DmaDeInit(DMA_ARCH_TYPE *dmaResource)
     const DMA_BaseAddressAndChannelIndex dma = ft32DmaAddressAndChannel(dmaResource);
 
     ft32DmaCmd(dmaResource, DISABLE);
+    if (ft32DmaIsChannelEnabled(dmaResource)) {
+        return;
+    }
     ft32DmaClearChannelStatus(dmaResource);
     ft32DmaClearRequestSlot(dmaResource, dma.ChannelIndex);
     dmaResource->SAR = 0U;
@@ -234,6 +241,9 @@ void ft32DmaDeInit(DMA_ARCH_TYPE *dmaResource)
 void ft32DmaInit(DMA_ARCH_TYPE *dmaResource, DMA_InitTypeDef *init)
 {
     ft32DmaCmd(dmaResource, DISABLE);
+    if (ft32DmaIsChannelEnabled(dmaResource)) {
+        return;
+    }
     ft32DmaClearChannelStatus(dmaResource);
     ft32DmaApplyMasterSelect(init);
     ft32DmaClearActiveRequestSlots(dmaResource, init);

@@ -487,6 +487,17 @@ static SD_Error_t SD_InitializeCard(void)
 }
 
 /** -----------------------------------------------------------------------------------------------------------------*/
+static bool SD_EnableDMAInterrupt(DMA_ARCH_TYPE *dmaChannel)
+{
+    xDMA_Cmd(dmaChannel, DISABLE);
+    if (ft32DmaIsChannelEnabled(dmaChannel)) {
+        return false;
+    }
+
+    xDMA_ITConfig(dmaChannel, DMA_IT_TFR, ENABLE);
+    return true;
+}
+
 static void SD_StartBlockTransfer(uint32_t* pBuffer, uint32_t BlockSize, uint32_t NumberOfBlocks, uint8_t dir)
 {
     // Complete rewrite for DesignWare DMA architecture
@@ -504,11 +515,12 @@ static void SD_StartBlockTransfer(uint32_t* pBuffer, uint32_t BlockSize, uint32_
         SDIO_ITConfig(SDIO_IT_MASK_DCRC | SDIO_IT_MASK_DTO | SDIO_IT_MASK_FRUN);
     }
 
-    // Enable SDIO DMA
-    SDIO->CTRL |= SDIO_CTRL_DMA_ENABLE;
-
     // Configure DMA transfer
     xDMA_Cmd(sdioDmaResource, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)sdioDmaResource)) {
+        SD_Handle.TransferError = SD_ERROR;
+        return;
+    }
 
     DMA_InitTypeDef DMA_InitStructure;
     DMA_StructInit(&DMA_InitStructure);
@@ -540,8 +552,12 @@ static void SD_StartBlockTransfer(uint32_t* pBuffer, uint32_t BlockSize, uint32_
     }
 
     xDMA_Init(sdioDmaResource, &DMA_InitStructure);
-    xDMA_ITConfig(sdioDmaResource, DMA_IT_TFR, ENABLE);
+    if (!SD_EnableDMAInterrupt((DMA_ARCH_TYPE *)sdioDmaResource)) {
+        SD_Handle.TransferError = SD_ERROR;
+        return;
+    }
     xDMA_Cmd(sdioDmaResource, ENABLE);
+    SDIO->CTRL |= SDIO_CTRL_DMA_ENABLE;
 }
 
 /** -----------------------------------------------------------------------------------------------------------------*/

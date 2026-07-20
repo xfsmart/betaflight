@@ -76,6 +76,11 @@ FAST_CODE void pwmDshotSetDirectionOutput(
 
     dmaResource_t *dmaRef = motor->dmaRef;
 
+    TIM_DMACmd(timer, motor->timerDmaSource, DISABLE);
+    xDMA_Cmd(dmaRef, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaRef)) {
+        return;
+    }
     xDMA_DeInit(dmaRef);
 
 #ifdef USE_DSHOT_TELEMETRY
@@ -114,6 +119,11 @@ static void pwmDshotSetDirectionInput(
 
     dmaResource_t *dmaRef = motor->dmaRef;
 
+    TIM_DMACmd(timer, motor->timerDmaSource, DISABLE);
+    xDMA_Cmd(dmaRef, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaRef)) {
+        return;
+    }
     xDMA_DeInit(dmaRef);
 
     motor->isInput = true;

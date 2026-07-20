@@ -111,6 +111,10 @@ void bbTimerChannelInit(bbPort_t *bbPort)
 static void bbLoadDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache)
 {
     DMA_Channel_TypeDef *ch = (DMA_Channel_TypeDef *)dmaResource;
+    xDMA_Cmd(ch, DISABLE);
+    if (ft32DmaIsChannelEnabled(ch)) {
+        return;
+    }
     ch->SAR = dmaRegCache->SAR;
     ch->DAR = dmaRegCache->DAR;
     ch->CTL = dmaRegCache->CTL;
@@ -119,9 +123,16 @@ static void bbLoadDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache
 static void bbSaveDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache)
 {
     DMA_Channel_TypeDef *ch = (DMA_Channel_TypeDef *)dmaResource;
-    dmaRegCache->SAR = ch->SAR;
-    dmaRegCache->DAR = ch->DAR;
-    dmaRegCache->CTL = ch->CTL;
+    xDMA_Cmd(ch, DISABLE);
+    if (ft32DmaIsChannelEnabled(ch)) {
+        return;
+    }
+    const dmaRegCache_t snapshot = {
+        .SAR = ch->SAR,
+        .DAR = ch->DAR,
+        .CTL = ch->CTL,
+    };
+    *dmaRegCache = snapshot;
 }
 #endif
 
@@ -144,6 +155,10 @@ void bbSwitchToOutput(bbPort_t * bbPort)
     // Reinitialize port group DMA for output
 
     dmaResource_t *dmaResource = bbPort->dmaResource;
+    xDMA_Cmd(dmaResource, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaResource)) {
+        return;
+    }
 #ifdef USE_DMA_REGISTER_CACHE
     bbLoadDMARegs(dmaResource, &bbPort->dmaRegOutput);
 #else
@@ -175,6 +190,10 @@ void bbSwitchToInput(bbPort_t *bbPort)
     // Reinitialize port group DMA for input
 
     dmaResource_t *dmaResource = bbPort->dmaResource;
+    xDMA_Cmd(dmaResource, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaResource)) {
+        return;
+    }
 #ifdef USE_DMA_REGISTER_CACHE
     bbLoadDMARegs(dmaResource, &bbPort->dmaRegInput);
 #else
@@ -200,6 +219,10 @@ void bbDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
 {
     DMA_InitTypeDef *dmainit = (direction == DSHOT_BITBANG_DIRECTION_OUTPUT) ? &bbPort->outputDmaInit : &bbPort->inputDmaInit;
 
+    xDMA_Cmd(bbPort->dmaResource, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
+        return;
+    }
     DMA_StructInit(dmainit);
 
     dmainit->SrcAddrMode = DMA_SRC_ADDRMODE_INC;
@@ -260,6 +283,10 @@ void bbTIM_DMACmd(void *TIMx, uint16_t TIM_DMASource, FunctionalState NewState)
 
 void bbDMA_ITConfig(bbPort_t *bbPort)
 {
+    xDMA_Cmd(bbPort->dmaResource, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
+        return;
+    }
     xDMA_ITConfig(bbPort->dmaResource, DMA_IT_TFR, ENABLE);
 }
 

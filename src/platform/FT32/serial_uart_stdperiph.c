@@ -243,8 +243,16 @@ void uartReconfigure(uartPort_t *uartPort)
             ft32_dma_init.ReloadSrc = DISABLE;
             ft32DmaSetDstRequest(&ft32_dma_init, uartPort->txDMAResource, uartPort->txDMAChannel);
 
+            ft32UartDMATxEnable_Cmd(USARTx, DISABLE);
+            xDMA_Cmd(uartPort->txDMAResource, DISABLE);
+            if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)uartPort->txDMAResource)) {
+                return;
+            }
             xDMA_DeInit(uartPort->txDMAResource);
             xDMA_Init(uartPort->txDMAResource, &ft32_dma_init);
+            if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)uartPort->txDMAResource)) {
+                return;
+            }
             xDMA_ITConfig(uartPort->txDMAResource, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
             ft32UartDMATxEnable_Cmd(USARTx, ENABLE);
             xDMA_SetCurrDataCounter(uartPort->txDMAResource, 0);
@@ -273,6 +281,8 @@ void uartTryStartTxDMA(uartPort_t *s)
     // uartWrite and handleUsartTxDma (an ISR).
 
     ATOMIC_BLOCK(NVIC_PRIO_SERIALUART_TXDMA) {
+        ft32UartDMATxEnable_Cmd((USART_TypeDef *)s->USARTx, DISABLE);
+        xDMA_Cmd(s->txDMAResource, DISABLE);
         if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
             return;
         }
@@ -301,6 +311,7 @@ void uartTryStartTxDMA(uartPort_t *s)
         s->txDMAEmpty = false;
         xDMA_SetCurrDataCounter(s->txDMAResource, chunk);
         xDMA_Cmd(s->txDMAResource, ENABLE);
+        ft32UartDMATxEnable_Cmd((USART_TypeDef *)s->USARTx, ENABLE);
     }
 }
 #endif

@@ -164,10 +164,12 @@ bool ws2811LedStripHardwareInit(void)
     dmaEnable(dmaGetIdentifier(dmaRef));
     dmaSetHandler(dmaGetIdentifier(dmaRef), WS2811_DMA_IRQHandler, NVIC_PRIO_WS2811_DMA, 0);
 
-    xDMA_DeInit(dmaRef);
-
-    /* configure DMA */
+    TIM_DMACmd(timer, timerDmaSource(timerHardware->channel), DISABLE);
     xDMA_Cmd(dmaRef, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaRef)) {
+        return false;
+    }
+    /* configure DMA */
     xDMA_DeInit(dmaRef);
     DMA_StructInit(&DMA_InitStructure);
 
@@ -197,8 +199,11 @@ bool ws2811LedStripHardwareInit(void)
 #endif
 
     xDMA_Init(dmaRef, &DMA_InitStructure);
-    TIM_DMACmd(timer, timerDmaSource(timerHardware->channel), ENABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaRef)) {
+        return false;
+    }
     xDMA_ITConfig(dmaRef, DMA_IT_TFR, ENABLE);
+    TIM_DMACmd(timer, timerDmaSource(timerHardware->channel), ENABLE);
 
     return true;
 }

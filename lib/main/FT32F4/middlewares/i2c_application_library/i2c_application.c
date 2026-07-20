@@ -297,6 +297,9 @@ static void i2c_dma_config(i2c_handle_type* hi2c, DMA_Channel_TypeDef* dma_chann
   uint32_t direction;
   
   DMA_Cmd(dma_channel, DISABLE);
+  if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dma_channel)) {
+    return;
+  }
   DMA_ITConfig(dma_channel, DMA_IT_TFR, DISABLE);
   DMA_StructInit(&ft32_dma_init);
   
@@ -1405,14 +1408,20 @@ static void i2c_abort_transfer(i2c_handle_type* hi2c, i2c_status_type error, boo
 
   if ((hi2c->mode == I2C_DMA_MA_TX || hi2c->mode == I2C_DMA_SLA_TX) && hi2c->dma_tx_channel)
   {
-    DMA_ITConfig(hi2c->dma_tx_channel, DMA_IT_TFR, DISABLE);
     DMA_Cmd(hi2c->dma_tx_channel, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)hi2c->dma_tx_channel)) {
+      return;
+    }
+    DMA_ITConfig(hi2c->dma_tx_channel, DMA_IT_TFR, DISABLE);
     DMA_ClearFlagStatus(hi2c->dma_tx_channel, DMA_IT_TFR);
   }
   else if ((hi2c->mode == I2C_DMA_MA_RX || hi2c->mode == I2C_DMA_SLA_RX) && hi2c->dma_rx_channel)
   {
-    DMA_ITConfig(hi2c->dma_rx_channel, DMA_IT_TFR, DISABLE);
     DMA_Cmd(hi2c->dma_rx_channel, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)hi2c->dma_rx_channel)) {
+      return;
+    }
+    DMA_ITConfig(hi2c->dma_rx_channel, DMA_IT_TFR, DISABLE);
     DMA_ClearFlagStatus(hi2c->dma_rx_channel, DMA_IT_TFR);
   }
 
@@ -1682,10 +1691,13 @@ static void i2c_dma_tx_rx_irq_handler(i2c_handle_type* hi2c, DMA_Channel_TypeDef
 {
   if (DMA_GetFlagStatus(dma_channel, DMA_FLAG_TFR) != RESET)
   {
-    DMA_ITConfig(dma_channel, DMA_IT_TFR, DISABLE);
-    DMA_ClearFlagStatus(dma_channel, DMA_IT_TFR);
     I2C_DMACmd(hi2c->i2cx, (dma_channel == hi2c->dma_tx_channel) ? I2C_DMA_REQUEST_TX : I2C_DMA_REQUEST_RX, DISABLE);
     DMA_Cmd(dma_channel, DISABLE);
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dma_channel)) {
+      return;
+    }
+    DMA_ITConfig(dma_channel, DMA_IT_TFR, DISABLE);
+    DMA_ClearFlagStatus(dma_channel, DMA_IT_TFR);
 
     switch(hi2c->mode)
     {

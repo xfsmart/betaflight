@@ -190,11 +190,26 @@ static bool spiDmaControllerIsEnabled(DMA_ARCH_TYPE *channel)
 
 static void spiDmaInterruptConfig(DMA_ARCH_TYPE *channel, FunctionalState state)
 {
+    xDMA_Cmd(channel, DISABLE);
+    if (ft32DmaIsChannelEnabled(channel)) {
+        return;
+    }
     xDMA_ITConfig(channel, DMA_IT_TFR, state);
     xDMA_ITConfig(channel, DMA_IT_BLOCK, state);
     xDMA_ITConfig(channel, DMA_IT_SRC, state);
     xDMA_ITConfig(channel, DMA_IT_DST, state);
     xDMA_ITConfig(channel, DMA_IT_ERR, state);
+}
+
+static bool spiDmaEnableTransferInterrupt(DMA_ARCH_TYPE *channel)
+{
+    xDMA_Cmd(channel, DISABLE);
+    if (ft32DmaIsChannelEnabled(channel)) {
+        return false;
+    }
+
+    xDMA_ITConfig(channel, DMA_IT_TFR, ENABLE);
+    return true;
 }
 
 static bool spiDmaInterruptStateMatches(DMA_ARCH_TYPE *channel, bool transferEnabled)
@@ -837,9 +852,13 @@ bool spiInternalStartDMA(const extDevice_t *dev, bool *hardwareIsolated)
     }
 
     if (channelRx) {
-        xDMA_ITConfig(channelRx, DMA_IT_TFR, ENABLE);
+        if (!spiDmaEnableTransferInterrupt(channelRx)) {
+            goto exit;
+        }
     } else {
-        xDMA_ITConfig(channelTx, DMA_IT_TFR, ENABLE);
+        if (!spiDmaEnableTransferInterrupt(channelTx)) {
+            goto exit;
+        }
     }
 
     if (channelRx && !spiDmaClearFlagsAndPending(dmaRx)) {
