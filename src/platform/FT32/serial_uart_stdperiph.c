@@ -281,6 +281,12 @@ void uartTryStartTxDMA(uartPort_t *s)
     // uartWrite and handleUsartTxDma (an ISR).
 
     ATOMIC_BLOCK(NVIC_PRIO_SERIALUART_TXDMA) {
+        if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
+            // The active block owns the channel until its completion or error
+            // handler schedules the queued suffix.
+            return;
+        }
+
         ft32UartDMATxEnable_Cmd((USART_TypeDef *)s->USARTx, DISABLE);
         xDMA_Cmd(s->txDMAResource, DISABLE);
         if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
