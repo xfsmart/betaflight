@@ -79,7 +79,7 @@ spiResource_t *spiInstanceByDevice(spiDevice_e device);
 bool spiSetBusInstance(extDevice_t *dev, uint32_t device);
 // Determine the divisor to use for a given bus frequency
 uint16_t spiCalculateDivider(uint32_t freq);
-// Return the SPI clock based on the given divisor
+// Return the SPI clock for the given divisor
 uint32_t spiCalculateClock(uint16_t spiClkDivisor);
 // Set the clock divisor to be used for accesses by the given device
 void spiSetClkDivisor(const extDevice_t *dev, uint16_t divider);
@@ -92,6 +92,7 @@ void spiDmaEnable(const extDevice_t *dev, bool enable);
 void spiSequence(const extDevice_t *dev, busSegment_t *segments);
 // Wait for DMA completion
 void spiWait(const extDevice_t *dev);
+void spiDmaService(void);
 // Negate CS if held asserted after a transfer
 void spiRelease(const extDevice_t *dev);
 // Return true if DMA engine is busy
@@ -109,7 +110,7 @@ void spiLinkSegments(const extDevice_t *dev, busSegment_t *firstSegment, busSegm
  *      ReadWrite: Perform both a read and write, returning the value read unless 'Buf' is specified
  *      Reg: Register number 'reg' is written prior to the read being performed
  *      Msk: Register number is logically ORed with 0x80 as some devices indicate a read by accessing a register with bit 7 set
- *      Buf: Pass data of given length by reference
+ *      Buf: Pass data of the requested length
  *      RB:  Return false immediately if the bus is busy, otherwise complete the access and return true
  */
 uint8_t spiReadReg(const extDevice_t *dev, uint8_t reg);

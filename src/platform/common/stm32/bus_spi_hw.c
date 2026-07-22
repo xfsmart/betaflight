@@ -114,7 +114,7 @@ static void spiFt32HandleTerminalDmaIrq(dmaChannelDescriptor_t *descriptor)
 #endif
 
 // Interrupt handler for SPI receive DMA completion
-FAST_IRQ_HANDLER static void spiRxIrqHandler(dmaChannelDescriptor_t* descriptor)
+FAST_IRQ_HANDLER void spiRxIrqHandler(dmaChannelDescriptor_t* descriptor)
 {
     if (!descriptor) {
         return;
@@ -178,7 +178,7 @@ FAST_IRQ_HANDLER static void spiRxIrqHandler(dmaChannelDescriptor_t* descriptor)
 
 #ifdef USE_TX_IRQ_HANDLER
 // Interrupt handler for SPI transmit DMA completion
-FAST_IRQ_HANDLER static void spiTxIrqHandler(dmaChannelDescriptor_t* descriptor)
+FAST_IRQ_HANDLER void spiTxIrqHandler(dmaChannelDescriptor_t* descriptor)
 {
     if (!descriptor) {
         return;

@@ -116,6 +116,10 @@
 
 #include "tasks.h"
 
+#ifdef USE_SPI
+#include "drivers/bus_spi.h"
+#endif
+
 // taskUpdateRxMain() has occasional peaks in execution time so normal moving average duration estimation doesn't work
 // Decay the estimated max task duration by 1/(1 << RX_TASK_DECAY_SHIFT) on every invocation
 #define RX_TASK_DECAY_SHIFT 6
@@ -125,6 +129,10 @@
 static void taskMain(timeUs_t currentTimeUs)
 {
     UNUSED(currentTimeUs);
+
+#ifdef USE_SPI
+    spiDmaService();
+#endif
 
 #ifdef USE_SDCARD
     afatfs_poll();

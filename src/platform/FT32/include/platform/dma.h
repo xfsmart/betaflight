@@ -134,6 +134,13 @@ uint8_t ft32DmaIsChannelEnabled(DMA_ARCH_TYPE *dmaResource);
 // DMA common macro definitions
 #define xDMA_DeInit(dmaResource) ft32DmaDeInit((DMA_ARCH_TYPE *)(dmaResource))
 #define xDMA_Cmd(dmaResource, newState) ft32DmaCmd((DMA_ARCH_TYPE *)(dmaResource), newState)
+
+// Issue the one-shot channel disable command without waiting for CHEN convergence.
+// ISR callers must use this primitive and defer convergence to foreground service.
+static inline void ft32DmaRequestDisable(DMA_ARCH_TYPE *dmaResource)
+{
+    DMA_Channel_Cmd(dmaResource, DISABLE);
+}
 #define xDMA_ITConfig(dmaResource, flags, newState) DMA_ITConfig((DMA_ARCH_TYPE *)(dmaResource), flags, newState)
 #define xDMA_GetCurrDataCounter(dmaResource) ft32DmaGetCurrDataCounter((DMA_ARCH_TYPE *)(dmaResource))
 #define xDMA_SetCurrDataCounter(dmaResource, count) ft32DmaSetCurrDataCounter((DMA_ARCH_TYPE *)(dmaResource), count)

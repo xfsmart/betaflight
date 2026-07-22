@@ -203,8 +203,12 @@ void ft32DmaCmd(DMA_ARCH_TYPE *dmaResource, FunctionalState newState)
     const DMA_BaseAddressAndChannelIndex dma = ft32DmaAddressAndChannel(dmaResource);
 
     if (newState != DISABLE) {
+        const uint32_t primask = __get_PRIMASK();
+        __disable_irq();
         DMA_ENABLE(dma.BaseAddress);
         DMA_Channel_Cmd(dmaResource, ENABLE);
+        __DMB();
+        __set_PRIMASK(primask);
         return;
     }
 
@@ -217,9 +221,15 @@ void ft32DmaCmd(DMA_ARCH_TYPE *dmaResource, FunctionalState newState)
 
     ft32DmaBlockSize[ft32DmaLinearIndex(dmaResource)] = 0U;
 
-    if ((dma.BaseAddress->CHEN & ((1ULL << FT32_DMA_CHANNELS_PER_CONTROLLER) - 1ULL)) == 0U) {
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    const bool targetStopped = (dma.BaseAddress->CHEN & ft32DmaChannelMask(&dma)) == 0U;
+    const bool controllerIdle = (dma.BaseAddress->CHEN & ((1ULL << FT32_DMA_CHANNELS_PER_CONTROLLER) - 1ULL)) == 0U;
+    if (targetStopped && controllerIdle) {
         DMA_DISABLE(dma.BaseAddress);
     }
+    __DMB();
+    __set_PRIMASK(primask);
 }
 
 void ft32DmaDeInit(DMA_ARCH_TYPE *dmaResource)
@@ -230,12 +240,16 @@ void ft32DmaDeInit(DMA_ARCH_TYPE *dmaResource)
     if (ft32DmaIsChannelEnabled(dmaResource)) {
         return;
     }
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
     ft32DmaClearChannelStatus(dmaResource);
     ft32DmaClearRequestSlot(dmaResource, dma.ChannelIndex);
     dmaResource->SAR = 0U;
     dmaResource->DAR = 0U;
     dmaResource->CTL = 0U;
     dmaResource->CFG = 0U;
+    __DMB();
+    __set_PRIMASK(primask);
 }
 
 void ft32DmaInit(DMA_ARCH_TYPE *dmaResource, DMA_InitTypeDef *init)
@@ -244,11 +258,15 @@ void ft32DmaInit(DMA_ARCH_TYPE *dmaResource, DMA_InitTypeDef *init)
     if (ft32DmaIsChannelEnabled(dmaResource)) {
         return;
     }
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
     ft32DmaClearChannelStatus(dmaResource);
     ft32DmaApplyMasterSelect(init);
     ft32DmaClearActiveRequestSlots(dmaResource, init);
     ft32DmaBlockSize[ft32DmaLinearIndex(dmaResource)] = init->BlockTransSize;
     DMA_Init(dmaResource, init);
+    __DMB();
+    __set_PRIMASK(primask);
 }
 
 /*

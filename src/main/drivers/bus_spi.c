@@ -36,6 +36,8 @@
 #include "drivers/io.h"
 #include "drivers/motor.h"
 #include "drivers/nvic.h"
+#include "drivers/time.h"
+#include "drivers/system.h"
 #include "pg/bus_spi.h"
 
 static uint8_t spiRegisteredDeviceCount = 0;
@@ -80,7 +82,10 @@ static bool spiReadErrorCount(const extDevice_t *dev, uint16_t *errorCount)
 
 static busSegment_t *spiSegmentListEnd(busSegment_t *segments)
 {
-    while (segments->len > 0) {
+    for (uint32_t count = 0; segments && segments->len > 0; count++) {
+        if (count >= SPI_MAX_SEGMENTS_PER_LIST) {
+            return NULL;
+        }
         segments++;
     }
 
@@ -94,7 +99,7 @@ static bool spiSegmentListNext(busSegment_t *segments, busSegment_t **nextSegmen
     }
 
     busSegment_t *endSegment = spiSegmentListEnd(segments);
-    if (endSegment->len < 0) {
+    if (!endSegment || endSegment->len < 0) {
         return false;
     }
     const bool hasNextDev = endSegment->u.link.dev != NULL;
@@ -122,7 +127,7 @@ static bool spiSegmentQueueIsValid(busSegment_t *segments)
     busSegment_t *slow = segments;
     busSegment_t *fast = segments;
 
-    while (fast) {
+    for (uint32_t count = 0; fast && count < SPI_MAX_QUEUE_LISTS; count++) {
         if (!spiSegmentQueueAdvance(&slow) || !spiSegmentQueueAdvance(&fast)) {
             return false;
         }
@@ -134,7 +139,7 @@ static bool spiSegmentQueueIsValid(busSegment_t *segments)
         }
     }
 
-    return true;
+    return fast == NULL;
 }
 
 static busSegment_t *spiSegmentQueueTail(busSegment_t *segments);
@@ -148,7 +153,7 @@ static busSegment_t *spiSegmentQueueTail(busSegment_t *segments)
 {
     busSegment_t *nextSegments;
 
-    while (spiSegmentListNext(segments, &nextSegments) && nextSegments) {
+    for (uint32_t count = 0; count < SPI_MAX_QUEUE_LISTS && spiSegmentListNext(segments, &nextSegments) && nextSegments; count++) {
         segments = nextSegments;
     }
 
@@ -159,7 +164,10 @@ static busSegment_t *spiInvalidateFailedSegmentTail(volatile busSegment_t *segme
 {
     busSegment_t *segment = (busSegment_t *)segments;
 
-    while (segment->len > 0) {
+    for (uint32_t count = 0; segment && segment->len > 0; count++) {
+        if (count >= SPI_MAX_SEGMENTS_PER_LIST) {
+            return NULL;
+        }
         if (segment->u.buffers.rxData) {
             memset(segment->u.buffers.rxData, 0xff, segment->len);
         }
@@ -189,6 +197,9 @@ static void spiInvalidateDmaFailureQueue(volatile busSegment_t *segments)
 {
     while (segments) {
         busSegment_t *endSegment = spiInvalidateFailedSegmentTail(segments);
+        if (!endSegment) {
+            return;
+        }
         volatile busSegment_t *nextSegments = endSegment->u.link.segments;
 
         endSegment->u.link.dev = NULL;
@@ -217,6 +228,7 @@ void spiHandleDmaFailure(const extDevice_t *dev, bool hardwareIsolated)
     if (state) {
         state->errorCount++;
         state->polledRecoveryRequired = true;
+        state->dmaServicePending = hardwareIsolated;
     }
 
     if (releaseQueue) {
@@ -234,19 +246,6 @@ void spiHandleDmaFailure(const extDevice_t *dev, bool hardwareIsolated)
     if (!releaseQueue || bus->curSegment != failedSegments) {
         return;
     }
-
-    spiInvalidateDmaFailureQueue(failedSegments);
-
-    primask = __get_PRIMASK();
-    __disable_irq();
-    __DMB();
-
-    if (bus->curSegment == failedSegments) {
-        bus->curSegment = (busSegment_t *)BUS_SPI_FREE;
-    }
-
-    __DMB();
-    __set_PRIMASK(primask);
 }
 
 static void spiInvalidateRejectedSegments(busSegment_t *segments)
@@ -358,7 +357,43 @@ bool spiIsBusy(const extDevice_t *dev)
 void spiWait(const extDevice_t *dev)
 {
     // Wait for completion
-    while (spiIsBusy(dev));
+    while (spiIsBusy(dev)) {
+#ifdef FT32F4
+        spiDmaService();
+#endif
+    }
+}
+
+void spiDmaService(void)
+{
+#ifdef FT32F4
+    for (spiDevice_e device = SPIDEV_FIRST; device < SPIDEV_COUNT; device++) {
+        spiDevice_t *state = &spiDevice[device];
+        if (state->activeDev) {
+            spiInternalServiceDMA(state->activeDev);
+        }
+        if (state->dmaServicePending) {
+            busDevice_t *bus = state->activeDev ? state->activeDev->bus : NULL;
+            if (bus && bus->curSegment != (busSegment_t *)BUS_SPI_FREE) {
+                spiInvalidateDmaFailureQueue(bus->curSegment);
+                const uint32_t primask = __get_PRIMASK();
+                __disable_irq();
+                __DMB();
+                if (bus->curSegment != (busSegment_t *)BUS_SPI_FREE) {
+                    bus->curSegment = (busSegment_t *)BUS_SPI_FREE;
+                }
+                state->activeDev = NULL;
+                state->dmaServicePending = false;
+                __DMB();
+                __set_PRIMASK(primask);
+            } else {
+                state->dmaServicePending = false;
+            }
+        }
+    }
+#else
+    UNUSED(spiDevice);
+#endif
 }
 
 // Negate CS if held asserted after a transfer
@@ -681,6 +716,12 @@ static spiSubmitResult_e spiSubmitLocked(const extDevice_t *dev, busSegment_t *s
             *errorSnapshot = state->errorCount;
         }
         bus->curSegment = segments;
+#ifdef FT32F4
+        state->activeDev = dev;
+        state->dmaGeneration++;
+        state->dmaLastProgress = 0U;
+        state->dmaLastProgressCycles = getCycleCounter();
+#endif
         return SPI_SUBMIT_START;
     }
 
@@ -754,6 +795,17 @@ static const extDevice_t *spiFinishSegmentListLocked(busDevice_t *bus, busSegmen
     }
 
     bus->curSegment = nextDev ? nextSegments : (busSegment_t *)BUS_SPI_FREE;
+#ifdef FT32F4
+    spiDevice_t *state = spiDeviceState(bus);
+    if (state) {
+        state->activeDev = nextDev;
+        if (nextDev) {
+            state->dmaGeneration++;
+            state->dmaLastProgress = 0U;
+            state->dmaLastProgressCycles = getCycleCounter();
+        }
+    }
+#endif
     endSegment->u.link.dev = NULL;
     endSegment->u.link.segments = NULL;
 

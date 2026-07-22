@@ -29,6 +29,9 @@
 #endif
 
 #define SPI_TIMEOUT_US  10000
+#define SPI_MAX_QUEUE_LISTS 8U
+#define SPI_MAX_QUEUE_SEGMENTS 32U
+#define SPI_MAX_SEGMENTS_PER_LIST 8U
 
 #define BUS_SPI_FREE   0x0
 
@@ -82,6 +85,11 @@ typedef struct spiDevice_s {
     volatile uint16_t errorCount;
 #ifdef FT32F4
     volatile bool polledRecoveryRequired;
+    volatile bool dmaServicePending;
+    volatile uint32_t dmaGeneration;
+    volatile uint32_t dmaLastProgress;
+    volatile uint32_t dmaLastProgressCycles;
+    const extDevice_t *activeDev;
 #endif
     bool leadingEdge;
 #ifdef USE_DMA
@@ -98,6 +106,9 @@ bool spiInternalStartDMA(const extDevice_t *dev, bool *hardwareIsolated);
 bool spiInternalStopDMA(const extDevice_t *dev, const dmaChannelDescriptor_t *completionDescriptor, bool *hardwareIsolated);
 bool spiInternalResetStream(dmaChannelDescriptor_t *descriptor);
 void spiHandleDmaFailure(const extDevice_t *dev, bool hardwareIsolated);
+void spiInternalServiceDMA(const extDevice_t *dev);
+void spiRxIrqHandler(dmaChannelDescriptor_t *descriptor);
+void spiTxIrqHandler(dmaChannelDescriptor_t *descriptor);
 #else
 void spiInternalStartDMA(const extDevice_t *dev);
 void spiInternalStopDMA (const extDevice_t *dev);

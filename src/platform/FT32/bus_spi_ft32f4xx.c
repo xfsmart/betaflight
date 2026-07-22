@@ -344,47 +344,23 @@ static bool spiDmaProducerMatches(const SPI_TypeDef *instance, uint16_t expected
     return (instance->CR2 & SPI_DMA_REQUEST_MASK) == expected;
 }
 
-static bool spiDmaWaitForWireIdle(SPI_TypeDef *instance, bool hasRxDma)
+static bool spiDmaWireIdleSample(SPI_TypeDef *instance, bool hasRxDma)
 {
-    const uint32_t startCycles = getCycleCounter();
-    const uint32_t timeoutCycles = clockMicrosToCycles(SPI_TIMEOUT_US);
-    bool timedOut = false;
-    bool transportError = false;
-    bool unexpectedRxResidue = false;
-
-    while (SPI_GetTransmissionFIFOStatus(instance) != SPI_TransmissionFIFOStatus_Empty ||
-        (instance->SR & SPI_FLAG_BSY) != 0U ||
-        SPI_GetReceptionFIFOStatus(instance) != SPI_ReceptionFIFOStatus_Empty) {
-        const uint16_t status = instance->SR;
-        const uint16_t fatalMask = hasRxDma ? SPI_ERROR_FLAG_MASK : (SPI_FLAG_MODF | SPI_FLAG_FRE);
-
-        transportError = transportError || (status & fatalMask) != 0U;
-        if (SPI_GetReceptionFIFOStatus(instance) != SPI_ReceptionFIFOStatus_Empty) {
-            unexpectedRxResidue = unexpectedRxResidue || hasRxDma;
-            (void)SPI_ReceiveData8(instance);
-        }
-        if (transportError ||
-            cmpTimeCycles(getCycleCounter(), startCycles) > (int32_t)timeoutCycles) {
-            timedOut = !transportError;
-            break;
-        }
-    }
-
-    const uint16_t finalStatus = instance->SR;
+    const uint16_t status = instance->SR;
     const uint16_t fatalMask = hasRxDma ? SPI_ERROR_FLAG_MASK : (SPI_FLAG_MODF | SPI_FLAG_FRE);
-    transportError = transportError || (finalStatus & fatalMask) != 0U;
 
-    if (finalStatus & SPI_FLAG_OVR) {
+    if (status & SPI_FLAG_OVR) {
         (void)instance->DR;
         (void)instance->SR;
     }
-
-    return !timedOut &&
-        !transportError &&
-        !unexpectedRxResidue &&
+    if (SPI_GetReceptionFIFOStatus(instance) != SPI_ReceptionFIFOStatus_Empty && hasRxDma) {
+        (void)SPI_ReceiveData8(instance);
+        return false;
+    }
+    return (status & fatalMask) == 0U &&
         SPI_GetTransmissionFIFOStatus(instance) == SPI_TransmissionFIFOStatus_Empty &&
         SPI_GetReceptionFIFOStatus(instance) == SPI_ReceptionFIFOStatus_Empty &&
-        (instance->SR & SPI_FLAG_BSY) == 0U;
+        (status & SPI_FLAG_BSY) == 0U;
 }
 
 static bool spiDmaHardwareIsolated(const busDevice_t *bus)
@@ -422,10 +398,10 @@ static bool spiDmaAbortStart(const extDevice_t *dev, bool *irqSourceClean)
     SPI_DMACmd(instance, SPI_DMA_REQUEST_MASK, DISABLE);
 
     if (bus->dmaRx && bus->dmaRx->ref) {
-        xDMA_Cmd(bus->dmaRx->ref, DISABLE);
+        ft32DmaRequestDisable((DMA_ARCH_TYPE *)bus->dmaRx->ref);
     }
     if (bus->dmaTx && bus->dmaTx->ref) {
-        xDMA_Cmd(bus->dmaTx->ref, DISABLE);
+        ft32DmaRequestDisable((DMA_ARCH_TYPE *)bus->dmaTx->ref);
     }
 
     const bool hardwareIsolated = spiDmaHardwareIsolated(bus);
@@ -612,7 +588,7 @@ bool spiInternalResetStream(dmaChannelDescriptor_t *descriptor)
     DMA_ARCH_TYPE *channelRegs = (DMA_ARCH_TYPE *)descriptor->ref;
     const spiDmaIrqFence_t irqFence = spiDmaIrqFenceEnter(descriptor, NULL);
 
-    xDMA_Cmd(channelRegs, DISABLE);
+    ft32DmaRequestDisable(channelRegs);
     if (ft32DmaIsChannelEnabled(channelRegs)) {
         spiDmaIrqFenceExit(&irqFence, false);
         return false;
@@ -812,9 +788,9 @@ bool spiInternalStartDMA(const extDevice_t *dev, bool *hardwareIsolated)
     }
 
     if (channelRx) {
-        xDMA_Cmd(channelRx, DISABLE);
+        ft32DmaRequestDisable(channelRx);
     }
-    xDMA_Cmd(channelTx, DISABLE);
+    ft32DmaRequestDisable(channelTx);
     if ((channelRx && ft32DmaIsChannelEnabled(channelRx)) ||
         ft32DmaIsChannelEnabled(channelTx)) {
         goto exit;
@@ -956,9 +932,9 @@ bool spiInternalStopDMA(
     const bool producerStopped = spiDmaProducerMatches(instance, 0U);
 
     if (channelRx) {
-        xDMA_Cmd(channelRx, DISABLE);
+        ft32DmaRequestDisable(channelRx);
     }
-    xDMA_Cmd(channelTx, DISABLE);
+    ft32DmaRequestDisable(channelTx);
 
     const bool channelsStopped =
         (!channelRx || !ft32DmaIsChannelEnabled(channelRx)) &&
@@ -971,7 +947,7 @@ bool spiInternalStopDMA(
     bool transferValidBeforeErrorCleanup = false;
 
     if (producerStopped && channelsStopped) {
-        wireIdle = spiDmaWaitForWireIdle(instance, channelRx != NULL);
+        wireIdle = spiDmaWireIdleSample(instance, channelRx != NULL);
         completionObserved = completionObserved ||
             xDMA_GetFlagStatus(completionChannel, DMA_FLAG_TFR) != RESET;
         dmaErrorObserved = dmaErrorObserved ||
@@ -1046,6 +1022,67 @@ bool spiInternalStopDMA(
     }
     spiDmaIrqFenceExit(&irqFence, isolated && irqSourceClean);
     return stopped;
+}
+
+void spiInternalServiceDMA(const extDevice_t *dev)
+{
+    if (!dev || !dev->bus || !dev->bus->dmaTx) {
+        return;
+    }
+
+    busDevice_t *bus = dev->bus;
+    dmaChannelDescriptor_t *completion = bus->dmaRx ? bus->dmaRx : bus->dmaTx;
+    DMA_ARCH_TYPE *channel = completion ? (DMA_ARCH_TYPE *)completion->ref : NULL;
+    spiDevice_e device = spiDeviceByInstance(bus->busType_u.spi.instance);
+    if (!completion || !channel || device == SPIINVALID) {
+        return;
+    }
+
+    spiDevice_t *state = &spiDevice[device];
+    if (completion->userParam != (uint32_t)dev) {
+        return;
+    }
+
+    if (xDMA_GetFlagStatus(channel, DMA_FLAG_ERR) != RESET) {
+        bool isolated = false;
+        const bool stopped = spiInternalStopDMA(dev, completion, &isolated);
+        spiHandleDmaFailure(dev, stopped && isolated);
+        return;
+    }
+
+    if (xDMA_GetFlagStatus(channel, DMA_FLAG_TFR) != RESET) {
+        if (bus->dmaRx) {
+            spiRxIrqHandler(completion);
+        } else {
+#ifdef USE_TX_IRQ_HANDLER
+            spiTxIrqHandler(completion);
+#else
+            spiRxIrqHandler(completion);
+#endif
+        }
+        return;
+    }
+
+    if (!ft32DmaIsChannelEnabled(channel)) {
+        return;
+    }
+
+    const uint32_t remaining = xDMA_GetCurrDataCounter(channel);
+    const uint32_t now = getCycleCounter();
+    if (remaining != state->dmaLastProgress) {
+        state->dmaLastProgress = remaining;
+        state->dmaLastProgressCycles = now;
+        return;
+    }
+
+    if (cmpTimeCycles(now, state->dmaLastProgressCycles) <=
+        (int32_t)clockMicrosToCycles(SPI_TIMEOUT_US)) {
+        return;
+    }
+
+    bool isolated = false;
+    const bool stopped = spiInternalStopDMA(dev, completion, &isolated);
+    spiHandleDmaFailure(dev, stopped && isolated);
 }
 
 // DMA transfer setup and start
