@@ -588,7 +588,7 @@ bool spiInternalResetStream(dmaChannelDescriptor_t *descriptor)
     DMA_ARCH_TYPE *channelRegs = (DMA_ARCH_TYPE *)descriptor->ref;
     const spiDmaIrqFence_t irqFence = spiDmaIrqFenceEnter(descriptor, NULL);
 
-    ft32DmaRequestDisable(channelRegs);
+    xDMA_Cmd(channelRegs, DISABLE);
     if (ft32DmaIsChannelEnabled(channelRegs)) {
         spiDmaIrqFenceExit(&irqFence, false);
         return false;
@@ -788,9 +788,9 @@ bool spiInternalStartDMA(const extDevice_t *dev, bool *hardwareIsolated)
     }
 
     if (channelRx) {
-        ft32DmaRequestDisable(channelRx);
+        xDMA_Cmd(channelRx, DISABLE);
     }
-    ft32DmaRequestDisable(channelTx);
+    xDMA_Cmd(channelTx, DISABLE);
     if ((channelRx && ft32DmaIsChannelEnabled(channelRx)) ||
         ft32DmaIsChannelEnabled(channelTx)) {
         goto exit;
