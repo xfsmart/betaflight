@@ -344,6 +344,14 @@ static bool spiDmaProducerMatches(const SPI_TypeDef *instance, uint16_t expected
     return (instance->CR2 & SPI_DMA_REQUEST_MASK) == expected;
 }
 
+static bool spiDmaChannelActiveOrComplete(DMA_ARCH_TYPE *channel)
+{
+    // A one-byte channel can reach TFR and clear CHEN before start publication is sampled.
+    return ft32DmaIsChannelEnabled(channel) ||
+        (xDMA_GetFlagStatus(channel, DMA_FLAG_TFR) != RESET &&
+         xDMA_GetFlagStatus(channel, DMA_FLAG_ERR) == RESET);
+}
+
 static bool spiDmaWireIdleSample(SPI_TypeDef *instance, bool hasRxDma)
 {
     const uint16_t status = instance->SR;
@@ -866,8 +874,8 @@ bool spiInternalStartDMA(const extDevice_t *dev, bool *hardwareIsolated)
     if (!spiDmaProducerMatches(instance, producerMask) ||
         !spiDmaControllerIsEnabled(channelTx) ||
         (channelRx && !spiDmaControllerIsEnabled(channelRx)) ||
-        !ft32DmaIsChannelEnabled(channelTx) ||
-        (channelRx && !ft32DmaIsChannelEnabled(channelRx))) {
+        !spiDmaChannelActiveOrComplete(channelTx) ||
+        (channelRx && !spiDmaChannelActiveOrComplete(channelRx))) {
         goto exit;
     }
 
