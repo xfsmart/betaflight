@@ -571,6 +571,12 @@ static void bbUpdateComplete(void)
         }
     }
 
+    for (int i = 0; i < usedMotorPacers; i++) {
+        bbPacer_t *bbPacer = &bbPacers[i];
+        bbTIM_DMACmd(bbPacer->tim, bbPacer->dmaSources, DISABLE);
+    }
+
+    bool rearmReady = true;
     for (int i = 0; i < usedMotorPorts; i++) {
         bbPort_t *bbPort = &bbPorts[i];
 
@@ -578,11 +584,25 @@ static void bbUpdateComplete(void)
         if (useDshotTelemetry) {
             if (bbPort->direction == DSHOT_BITBANG_DIRECTION_INPUT) {
                 bbPort->inputActive = false;
-                bbSwitchToOutput(bbPort);
             }
         }
 #endif
 
+        // FT32 DesignWare DMA advances SAR and BLOCK_TS while transferring.
+        // Restore the complete cached output descriptor before every frame.
+        bbSwitchToOutput(bbPort);
+        if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
+            dshotDmaErrorCount++;
+            rearmReady = false;
+        }
+    }
+
+    if (!rearmReady) {
+        return;
+    }
+
+    for (int i = 0; i < usedMotorPorts; i++) {
+        bbPort_t *bbPort = &bbPorts[i];
         bbDMA_Cmd(bbPort, ENABLE);
     }
 
