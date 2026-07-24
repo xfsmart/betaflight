@@ -175,6 +175,22 @@ void ft32DmaSetCurrDataCounter(DMA_ARCH_TYPE *dmaResource, uint16_t count)
     ft32DmaWriteBlockSize(dmaResource, count);
 }
 
+bool ft32DmaTrySetCurrDataCounter(DMA_ARCH_TYPE *dmaResource, uint16_t count)
+{
+    // The caller must stop the peripheral request first.  This helper is for
+    // high-rate producers that must skip a frame instead of polling a channel
+    // that has not yet converged to CHEN=0.
+    DMA_Channel_Cmd(dmaResource, DISABLE);
+    if (ft32DmaIsChannelEnabled(dmaResource)) {
+        return false;
+    }
+
+    ft32DmaClearChannelStatus(dmaResource);
+    ft32DmaBlockSize[ft32DmaLinearIndex(dmaResource)] = count;
+    ft32DmaWriteBlockSize(dmaResource, count);
+    return true;
+}
+
 uint16_t ft32DmaGetCurrDataCounter(DMA_ARCH_TYPE *dmaResource)
 {
     const uint16_t blockSize = ft32DmaBlockSize[ft32DmaLinearIndex(dmaResource)];

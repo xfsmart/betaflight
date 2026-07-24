@@ -119,9 +119,10 @@ typedef struct dmaRegCache_s {
     uint32_t M0ADDR;
 #elif defined(FT32F4)
     // FT32 DesignWare DMA register cache (no LLP support)
-    uint32_t SAR;
-    uint32_t DAR;
-    uint32_t CTL;
+    uint64_t SAR;
+    uint64_t DAR;
+    uint64_t CTL;
+    uint64_t CFG;
 #elif defined(STM32N6)
     // TODO: N6 HPDMA/GPDMA register cache - placeholder for future implementation
     uint32_t placeholder;

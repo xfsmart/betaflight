@@ -129,6 +129,7 @@ void ft32DmaInit(DMA_ARCH_TYPE *dmaResource, DMA_InitTypeDef *init);
 void ft32DmaCmd(DMA_ARCH_TYPE *dmaResource, FunctionalState newState);
 uint16_t ft32DmaGetCurrDataCounter(DMA_ARCH_TYPE *dmaResource);
 void ft32DmaSetCurrDataCounter(DMA_ARCH_TYPE *dmaResource, uint16_t count);
+bool ft32DmaTrySetCurrDataCounter(DMA_ARCH_TYPE *dmaResource, uint16_t count);
 uint8_t ft32DmaIsChannelEnabled(DMA_ARCH_TYPE *dmaResource);
 
 // DMA common macro definitions

@@ -139,13 +139,25 @@ FAST_CODE void pwmWriteDshotInt(uint8_t index, uint16_t value)
     {
         bufferSize = loadDmaBuffer(motor->dmaBuffer, 1, packet);
 
-        motor->timer->timerDmaSources |= motor->timerDmaSource;
-
 #ifdef USE_FULL_LL_DRIVER
+        motor->timer->timerDmaSources |= motor->timerDmaSource;
         xLL_EX_DMA_SetDataLength(motor->dmaRef, bufferSize);
         xLL_EX_DMA_EnableResource(motor->dmaRef);
 #else
+#ifdef FT32F4
+        // A prior timer-paced transfer may still own CHEN if its terminal
+        // event was lost.  Stop the producer first and skip this motor frame
+        // unless the channel is already safe to reprogram.
+        motor->timer->timerDmaSources &= ~motor->timerDmaSource;
+        TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
+        if (!ft32DmaTrySetCurrDataCounter((DMA_ARCH_TYPE *)motor->dmaRef, bufferSize)) {
+            return;
+        }
+#else
         xDMA_SetCurrDataCounter(motor->dmaRef, bufferSize);
+#endif
+
+        motor->timer->timerDmaSources |= motor->timerDmaSource;
 
 // XXX we can remove this ifdef if we add a new macro for the TRUE/ENABLE constants
 #ifdef AT32F435

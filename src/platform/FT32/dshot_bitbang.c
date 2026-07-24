@@ -74,16 +74,21 @@ FAST_DATA_ZERO_INIT timeUs_t dshotFrameUs;
 // DMA error counter for debugging
 static volatile uint32_t dshotDmaErrorCount = 0;
 
-const timerHardware_t bbTimerHardware[] = {
-    DEF_TIM(TIM8,  CH1, NONE, 0, 1),
-    DEF_TIM(TIM8,  CH2, NONE, 0, 1),
-    DEF_TIM(TIM8,  CH3, NONE, 0, 1),
-    DEF_TIM(TIM8,  CH4, NONE, 0, 0),
-    DEF_TIM(TIM1,  CH1, NONE, 0, 1),
-    DEF_TIM(TIM1,  CH1, NONE, 0, 2),
-    DEF_TIM(TIM1,  CH2, NONE, 0, 1),
-    DEF_TIM(TIM1,  CH3, NONE, 0, 1),
-    DEF_TIM(TIM1,  CH4, NONE, 0, 0),
+typedef struct bbTimerSpec_s {
+    timerHardware_t hardware;
+    dmaoptValue_t dmaopt;
+} bbTimerSpec_t;
+
+static const bbTimerSpec_t bbTimerSpecs[] = {
+    { DEF_TIM(TIM8, CH1, NONE, 0, 0), 0 },
+    { DEF_TIM(TIM8, CH2, NONE, 0, 1), 1 },
+    { DEF_TIM(TIM8, CH3, NONE, 0, 1), 1 },
+    { DEF_TIM(TIM8, CH4, NONE, 0, 0), 0 },
+    { DEF_TIM(TIM1, CH1, NONE, 0, 1), 1 },
+    { DEF_TIM(TIM1, CH1, NONE, 0, 2), 2 },
+    { DEF_TIM(TIM1, CH2, NONE, 0, 1), 1 },
+    { DEF_TIM(TIM1, CH3, NONE, 0, 1), 1 },
+    { DEF_TIM(TIM1, CH4, NONE, 0, 0), 0 },
 };
 
 static FAST_DATA_ZERO_INIT timeUs_t lastSendUs;
@@ -192,6 +197,13 @@ static bbPort_t *bbAllocateMotorPort(int portIndex)
         return NULL;
     }
 
+#ifdef USE_DMA_SPEC
+    if (!bbPort->dmaResource) {
+        bbStatus = DSHOT_BITBANG_STATUS_NO_PACER;
+        return NULL;
+    }
+#endif
+
     bbPort->portIndex = portIndex;
     bbPort->resourceOwner.owner = OWNER_DSHOT_BITBANG;
     bbPort->resourceOwner.index = RESOURCE_INDEX(portIndex);
@@ -299,8 +311,9 @@ FAST_IRQ_HANDLER void bbDMAIrqHandler(dmaChannelDescriptor_t *descriptor)
 static void bbFindPacerTimer(void)
 {
     for (int bbPortIndex = 0; bbPortIndex < MAX_SUPPORTED_MOTOR_PORTS; bbPortIndex++) {
-        for (unsigned timerIndex = 0; timerIndex < ARRAYLEN(bbTimerHardware); timerIndex++) {
-            const timerHardware_t *timer = &bbTimerHardware[timerIndex];
+        for (unsigned timerIndex = 0; timerIndex < ARRAYLEN(bbTimerSpecs); timerIndex++) {
+            const bbTimerSpec_t *timerSpec = &bbTimerSpecs[timerIndex];
+            const timerHardware_t *timer = &timerSpec->hardware;
             int timNumber = timerGetTIMNumber(timer);
             if ((motorConfig()->dev.useDshotBitbangedTimer == DSHOT_BITBANGED_TIMER_TIM1 && timNumber != 1)
                 || (motorConfig()->dev.useDshotBitbangedTimer == DSHOT_BITBANGED_TIMER_TIM8 && timNumber != 8)) {
@@ -329,8 +342,10 @@ static void bbFindPacerTimer(void)
             }
 
 #ifdef USE_DMA_SPEC
-            dmaoptValue_t dmaopt = dmaGetOptionByTimer(timer);
-            const dmaChannelSpec_t *dmaChannelSpec = dmaGetChannelSpecByTimerValue(timer->tim, timer->channel, dmaopt);
+            const dmaChannelSpec_t *dmaChannelSpec = dmaGetChannelSpecByTimerValue(timer->tim, timer->channel, timerSpec->dmaopt);
+            if (!dmaChannelSpec) {
+                continue;
+            }
             dmaResource_t *dma = dmaChannelSpec->ref;
 #else
             dmaResource_t *dma = timer->dmaRef;
@@ -338,6 +353,10 @@ static void bbFindPacerTimer(void)
             dmaIdentifier_e dmaIdentifier = dmaGetIdentifier(dma);
             if (dmaGetOwner(dmaIdentifier)->owner == OWNER_FREE) {
                 bbPorts[bbPortIndex].timhw = timer;
+#ifdef USE_DMA_SPEC
+                bbPorts[bbPortIndex].dmaResource = dmaChannelSpec->ref;
+                bbPorts[bbPortIndex].dmaChannel = dmaChannelSpec->channel;
+#endif
 
                 break;
             }
@@ -378,13 +397,8 @@ static bool bbMotorConfig(IO_t io, uint8_t motorIndex, motorProtocolTypes_e pwmP
         bbPort = bbAllocateMotorPort(portIndex);
 
         if (bbPort) {
+#ifndef USE_DMA_SPEC
             const timerHardware_t *timhw = bbPort->timhw;
-
-#ifdef USE_DMA_SPEC
-            const dmaChannelSpec_t *dmaChannelSpec = dmaGetChannelSpecByTimerValue(timhw->tim, timhw->channel, dmaGetOptionByTimer(timhw));
-            bbPort->dmaResource = dmaChannelSpec->ref;
-            bbPort->dmaChannel = dmaChannelSpec->channel;
-#else
             bbPort->dmaResource = timhw->dmaRef;
             bbPort->dmaChannel = timhw->dmaChannel;
 #endif

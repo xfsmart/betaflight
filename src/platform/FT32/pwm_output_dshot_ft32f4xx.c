@@ -104,6 +104,7 @@ FAST_CODE void pwmDshotSetDirectionOutput(
 
     xDMA_Init(dmaRef, pDmaInit);
     xDMA_ITConfig(dmaRef, DMA_IT_TFR, ENABLE);
+    xDMA_ITConfig(dmaRef, DMA_IT_ERR, ENABLE);
 }
 
 #ifdef USE_DSHOT_TELEMETRY
@@ -157,9 +158,13 @@ void pwmCompleteDshotMotorUpdate(void)
     for (int i = 0; i < dmaMotorTimerCount; i++) {
 #ifdef USE_DSHOT_DMAR
         if (useBurstDshot) {
-            xDMA_SetCurrDataCounter(dmaMotorTimers[i].dmaBurstRef, dmaMotorTimers[i].dmaBurstLength);
-            xDMA_Cmd(dmaMotorTimers[i].dmaBurstRef, ENABLE);
             TIM_TypeDef *tim = (TIM_TypeDef *)dmaMotorTimers[i].timer;
+            TIM_DMACmd(tim, TIM_DMA_Update, DISABLE);
+            if (!ft32DmaTrySetCurrDataCounter((DMA_ARCH_TYPE *)dmaMotorTimers[i].dmaBurstRef,
+                    dmaMotorTimers[i].dmaBurstLength)) {
+                continue;
+            }
+            xDMA_Cmd(dmaMotorTimers[i].dmaBurstRef, ENABLE);
             TIM_DMAConfig(tim, TIM_DMABase_CCR1, TIM_DMABurstLength_4Transfers);
             TIM_DMACmd(tim, TIM_DMA_Update, ENABLE);
         } else
@@ -178,32 +183,37 @@ void pwmCompleteDshotMotorUpdate(void)
 
 FAST_CODE static void motor_DMA_IRQHandler(dmaChannelDescriptor_t *descriptor)
 {
-    if (DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TFR)) {
+    const bool transferComplete = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TFR) != RESET;
+    const bool transferError = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR) != RESET;
+
+    if (transferComplete || transferError) {
         motorDmaOutput_t * const motor = &dmaMotors[descriptor->userParam];
 #ifdef USE_DSHOT_TELEMETRY
         dshotDMAHandlerCycleCounters.irqAt = getCycleCounter();
 #endif
 #ifdef USE_DSHOT_DMAR
         if (useBurstDshot) {
-            xDMA_Cmd(motor->dmaRef, DISABLE);
             TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, TIM_DMA_Update, DISABLE);
         } else
 #endif
         {
-            xDMA_Cmd(motor->dmaRef, DISABLE);
             TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
         }
 
+        ft32DmaRequestDisable((DMA_ARCH_TYPE *)motor->dmaRef);
+        DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
+
 #ifdef USE_DSHOT_TELEMETRY
-        if (useDshotTelemetry) {
+        if (transferComplete && !transferError && useDshotTelemetry &&
+            !ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)motor->dmaRef)) {
             pwmDshotSetDirectionInput(motor);
-            xDMA_SetCurrDataCounter(motor->dmaRef, GCR_TELEMETRY_INPUT_LEN);
-            xDMA_Cmd(motor->dmaRef, ENABLE);
-            TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, ENABLE);
-            dshotDMAHandlerCycleCounters.changeDirectionCompletedAt = getCycleCounter();
+            if (ft32DmaTrySetCurrDataCounter((DMA_ARCH_TYPE *)motor->dmaRef, GCR_TELEMETRY_INPUT_LEN)) {
+                xDMA_Cmd(motor->dmaRef, ENABLE);
+                TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, ENABLE);
+                dshotDMAHandlerCycleCounters.changeDirectionCompletedAt = getCycleCounter();
+            }
         }
 #endif
-        DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR);
     }
 }
 

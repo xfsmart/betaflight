@@ -118,6 +118,8 @@ static void bbLoadDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache
     ch->SAR = dmaRegCache->SAR;
     ch->DAR = dmaRegCache->DAR;
     ch->CTL = dmaRegCache->CTL;
+    ch->CFG = dmaRegCache->CFG;
+    xDMA_ITConfig(ch, DMA_IT_TFR, ENABLE);
 }
 
 static void bbSaveDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache)
@@ -131,6 +133,7 @@ static void bbSaveDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache
         .SAR = ch->SAR,
         .DAR = ch->DAR,
         .CTL = ch->CTL,
+        .CFG = ch->CFG,
     };
     *dmaRegCache = snapshot;
 }
