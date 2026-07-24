@@ -40,6 +40,7 @@
 #define USE_BARO
 #define USE_BARO_BMP280
 #define USE_BARO_DPS310
+#define USE_OSD_SD
 #define USE_MAX7456
 
 #define BEEPER_PIN                 PB8
