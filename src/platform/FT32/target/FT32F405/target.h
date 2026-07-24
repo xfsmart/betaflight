@@ -42,6 +42,7 @@
 #define USE_UART5
 #define USE_UART6
 
+#if !defined(USE_CONFIG)
 #define UART1_RX_PIN            PB7
 #define UART1_TX_PIN            PB6
 #define UART2_RX_PIN            PA3
@@ -56,6 +57,7 @@
 #define UART6_TX_PIN            PC6
 
 #define USE_MSP_UART            SERIAL_PORT_USART1
+#endif
 
 #define TARGET_IO_PORTA         0xffff
 #define TARGET_IO_PORTB         0xffff
@@ -81,12 +83,19 @@
 
 #define USE_ADC
 
+#if defined(USE_CONFIG) && defined(TARGET_ADC_INSTANCE)
+#undef ADC_INSTANCE
+#define ADC_INSTANCE            TARGET_ADC_INSTANCE
+#endif
+
 #define USE_BEEPER
 #define USE_TIMER
 
 // DSHOT basic support only
 #define USE_DSHOT
 
+// Keep generic board defaults out of concrete CONFIG builds.
+#if !defined(USE_CONFIG)
 // Enable SDCARD support (SDIO only, SPI not routed on this target)
 #define USE_SDCARD
 #define USE_SDCARD_SDIO
@@ -96,5 +105,6 @@
 #undef USE_RX_SPI
 #undef USE_RX_CC2500
 #undef USE_RX_EXPRESSLRS
+#endif
 
 #define FLASH_PAGE_SIZE ((uint32_t)0x0200)
