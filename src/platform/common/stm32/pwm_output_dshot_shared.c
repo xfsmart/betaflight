@@ -60,6 +60,22 @@ motorDmaTimer_t dmaMotorTimers[MAX_DMA_TIMERS];
 motorDmaOutput_t dmaMotors[MAX_SUPPORTED_MOTORS];
 #endif
 
+#ifdef FT32F4
+static bool pwmDshotTryRearmMotor(motorDmaOutput_t *motor, uint16_t count)
+{
+    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)motor->dmaRef;
+    xDMA_Cmd(dmaRef, DISABLE);
+    if (ft32DmaIsChannelEnabled(dmaRef)) {
+        return false;
+    }
+    if (!ft32DmaTrySetCurrDataCounter(dmaRef, count)) {
+        return false;
+    }
+    DMA_SetSrcAddress(dmaRef, (uint32_t)motor->dmaBuffer);
+    return true;
+}
+#endif
+
 #ifdef USE_DSHOT_TELEMETRY
 FAST_DATA_ZERO_INIT uint32_t inputStampUs;
 
@@ -150,7 +166,7 @@ FAST_CODE void pwmWriteDshotInt(uint8_t index, uint16_t value)
         // unless the channel is already safe to reprogram.
         motor->timer->timerDmaSources &= ~motor->timerDmaSource;
         TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
-        if (!ft32DmaTrySetCurrDataCounter((DMA_ARCH_TYPE *)motor->dmaRef, bufferSize)) {
+        if (!pwmDshotTryRearmMotor(motor, bufferSize)) {
             return;
         }
 #else

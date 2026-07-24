@@ -146,6 +146,20 @@ static void pwmDshotSetDirectionInput(
 }
 #endif
 
+static bool pwmDshotTryRearmBurst(DMA_ARCH_TYPE *dmaRef, uint16_t count, uint32_t srcAddress)
+{
+    xDMA_Cmd(dmaRef, DISABLE);
+    if (ft32DmaIsChannelEnabled(dmaRef)) {
+        return false;
+    }
+    if (!ft32DmaTrySetCurrDataCounter(dmaRef, count)) {
+        return false;
+    }
+    DMA_SetSrcAddress(dmaRef, srcAddress);
+    xDMA_Cmd(dmaRef, ENABLE);
+    return true;
+}
+
 void pwmCompleteDshotMotorUpdate(void)
 {
     /* If there is a dshot command loaded up, time it correctly with motor update*/
@@ -160,11 +174,11 @@ void pwmCompleteDshotMotorUpdate(void)
         if (useBurstDshot) {
             TIM_TypeDef *tim = (TIM_TypeDef *)dmaMotorTimers[i].timer;
             TIM_DMACmd(tim, TIM_DMA_Update, DISABLE);
-            if (!ft32DmaTrySetCurrDataCounter((DMA_ARCH_TYPE *)dmaMotorTimers[i].dmaBurstRef,
-                    dmaMotorTimers[i].dmaBurstLength)) {
+            if (!pwmDshotTryRearmBurst((DMA_ARCH_TYPE *)dmaMotorTimers[i].dmaBurstRef,
+                    dmaMotorTimers[i].dmaBurstLength,
+                    (uint32_t)dmaMotorTimers[i].dmaBurstBuffer)) {
                 continue;
             }
-            xDMA_Cmd(dmaMotorTimers[i].dmaBurstRef, ENABLE);
             TIM_DMAConfig(tim, TIM_DMABase_CCR1, TIM_DMABurstLength_4Transfers);
             TIM_DMACmd(tim, TIM_DMA_Update, ENABLE);
         } else
