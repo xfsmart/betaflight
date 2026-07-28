@@ -430,14 +430,11 @@ static void SD_DMA_Complete(dmaChannelDescriptor_t *descriptor)
             SD_TransmitCommand((SDMMC_CMD_STOP_TRANSMISSION | SD_CMD_RESPONSE_SHORT), 0, 1);
         }
 
-        // Disable DMA via CTRL register instead of SDIO_DCTRL_DMAEN
         SDIO->CTRL &= ~SDIO_CTRL_DMA_ENABLE;
-
-        SDIO->RINTSTS = 0xFFFFFFFF;
-        SD_Handle.RXCplt = 0;
-
-        // Disable DMA channel via xDMA_Cmd
         xDMA_Cmd(sdioDmaResource, DISABLE);
+        SD_Handle.RXCplt = 0;
+        SD_Handle.TransferComplete = 1;
+        SD_Handle.TransferError = SD_OK;
     } else {
         // Enable data end interrupt
         SDIO_ITConfig(SDIO_IT_MASK_DTO);
@@ -498,7 +495,21 @@ static bool SD_EnableDMAInterrupt(DMA_ARCH_TYPE *dmaChannel)
     return true;
 }
 
-static void SD_StartBlockTransfer(uint32_t* pBuffer, uint32_t BlockSize, uint32_t NumberOfBlocks, uint8_t dir)
+static void SD_TerminateBlockTransfer(SD_Error_t error)
+{
+    SDIO->CTRL &= ~SDIO_CTRL_DMA_ENABLE;
+    if (sdioDmaResource) {
+        xDMA_Cmd(sdioDmaResource, DISABLE);
+    }
+
+    SDIO->INTMASK = 0;
+    SD_Handle.RXCplt = 0;
+    SD_Handle.TXCplt = 0;
+    SD_Handle.TransferError = error;
+    SD_Handle.TransferComplete = 1;
+}
+
+static SD_Error_t SD_StartBlockTransfer(uint32_t* pBuffer, uint32_t BlockSize, uint32_t NumberOfBlocks, uint8_t dir)
 {
     // Complete rewrite for DesignWare DMA architecture
     SD_Handle.TransferComplete = 0;
@@ -516,10 +527,15 @@ static void SD_StartBlockTransfer(uint32_t* pBuffer, uint32_t BlockSize, uint32_
     }
 
     // Configure DMA transfer
+    if (!sdioDmaResource || !sdioDmaSpec) {
+        SD_TerminateBlockTransfer(SD_ERROR);
+        return SD_ERROR;
+    }
+
     xDMA_Cmd(sdioDmaResource, DISABLE);
     if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)sdioDmaResource)) {
-        SD_Handle.TransferError = SD_ERROR;
-        return;
+        SD_TerminateBlockTransfer(SD_ERROR);
+        return SD_ERROR;
     }
 
     DMA_InitTypeDef DMA_InitStructure;
@@ -553,11 +569,17 @@ static void SD_StartBlockTransfer(uint32_t* pBuffer, uint32_t BlockSize, uint32_
 
     xDMA_Init(sdioDmaResource, &DMA_InitStructure);
     if (!SD_EnableDMAInterrupt((DMA_ARCH_TYPE *)sdioDmaResource)) {
-        SD_Handle.TransferError = SD_ERROR;
-        return;
+        SD_TerminateBlockTransfer(SD_ERROR);
+        return SD_ERROR;
     }
     xDMA_Cmd(sdioDmaResource, ENABLE);
+    if (!ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)sdioDmaResource)) {
+        SD_TerminateBlockTransfer(SD_ERROR);
+        return SD_ERROR;
+    }
     SDIO->CTRL |= SDIO_CTRL_DMA_ENABLE;
+
+    return SD_OK;
 }
 
 /** -----------------------------------------------------------------------------------------------------------------*/
@@ -573,11 +595,18 @@ SD_Error_t SD_ReadBlocks_DMA(uint64_t ReadAddress, uint32_t *buffer, uint32_t Bl
     }
 
     // Set up data transfer before command (DesignWare sequence)
-    SD_StartBlockTransfer(buffer, BlockSize, NumberOfBlocks, SDIO_DIR_RX);
+    ErrorState = SD_StartBlockTransfer(buffer, BlockSize, NumberOfBlocks, SDIO_DIR_RX);
+    if (ErrorState != SD_OK) {
+        return ErrorState;
+    }
 
     SD_DataTransferInit(BlockSize * NumberOfBlocks, SDIO_DATABLOCK_SIZE_512B, true);
 
     ErrorState = SD_TransmitCommand((SDMMC_CMD_SET_BLOCKLEN | SD_CMD_RESPONSE_SHORT), BlockSize, 1);
+    if (ErrorState != SD_OK) {
+        SD_TerminateBlockTransfer(ErrorState);
+        return ErrorState;
+    }
 
     CmdIndex   = (NumberOfBlocks > 1) ? SDMMC_CMD_READ_MULT_BLOCK : SDMMC_CMD_READ_SINGLE_BLOCK;
     // Use SEND_AUTO_STOP for multi-block instead of manual STOP command
@@ -595,7 +624,8 @@ SD_Error_t SD_ReadBlocks_DMA(uint64_t ReadAddress, uint32_t *buffer, uint32_t Bl
     } while (ErrorState != SD_OK && retries);
 
     if (ErrorState != SD_OK) {
-        SD_Handle.RXCplt = 0;
+        SD_TerminateBlockTransfer(ErrorState);
+        return ErrorState;
     }
 
     SD_Handle.TransferError = ErrorState;
@@ -615,6 +645,13 @@ SD_Error_t SD_WriteBlocks_DMA(uint64_t WriteAddress, uint32_t *buffer, uint32_t 
         WriteAddress *= 512;
     }
 
+    ErrorState = SD_StartBlockTransfer(buffer, BlockSize, NumberOfBlocks, SDIO_DIR_TX);
+    if (ErrorState != SD_OK) {
+        return ErrorState;
+    }
+
+    SD_DataTransferInit(BlockSize * NumberOfBlocks, SDIO_DATABLOCK_SIZE_512B, false);
+
     CmdIndex = (NumberOfBlocks > 1) ? SDMMC_CMD_WRITE_MULT_BLOCK : SDMMC_CMD_WRITE_SINGLE_BLOCK;
 
     uint32_t cmdFlags = SD_CMD_RESPONSE_SHORT | SD_CMD_CHECK_CRC | SD_CMD_DATA_EXPECTED_BIT | SD_CMD_WRITE_BIT;
@@ -631,13 +668,9 @@ SD_Error_t SD_WriteBlocks_DMA(uint64_t WriteAddress, uint32_t *buffer, uint32_t 
     } while (ErrorState != SD_OK && retries);
 
     if (ErrorState != SD_OK) {
-        SD_Handle.TXCplt = 0;
+        SD_TerminateBlockTransfer(ErrorState);
         return ErrorState;
     }
-
-    SD_StartBlockTransfer(buffer, BlockSize, NumberOfBlocks, SDIO_DIR_TX);
-
-    SD_DataTransferInit(BlockSize * NumberOfBlocks, SDIO_DATABLOCK_SIZE_512B, false);
 
     SD_Handle.TransferError = ErrorState;
 
@@ -647,13 +680,13 @@ SD_Error_t SD_WriteBlocks_DMA(uint64_t WriteAddress, uint32_t *buffer, uint32_t 
 SD_Error_t SD_CheckWrite(void)
 {
     if (SD_Handle.TXCplt != 0) return SD_BUSY;
-    return SD_OK;
+    return SD_Handle.TransferError;
 }
 
 SD_Error_t SD_CheckRead(void)
 {
     if (SD_Handle.RXCplt != 0) return SD_BUSY;
-    return SD_OK;
+    return SD_Handle.TransferError;
 }
 
 /** -----------------------------------------------------------------------------------------------------------------*/
@@ -1290,37 +1323,33 @@ SD_Error_t SD_Init(void)
 /** -----------------------------------------------------------------------------------------------------------------*/
 void SDIO_IRQHandler(void)
 {
-    // Use MINTSTS for masked interrupt status, RINTSTS for clearing
-    if (SDIO_GetITFlag(SDIO_IT_FLAG_DTO)) {
-        SDIO_ClearITFlag(SDIO_IT_CLEAN_DTO);
-        SDIO->RINTSTS = 0xFFFFFFFF;
+    const uint32_t status = SDIO->MINTSTS;
+    SD_Error_t error = SD_OK;
 
-        // Disable data-related interrupts
-        SDIO->INTMASK &= ~(SDIO_IT_MASK_DTO | SDIO_IT_MASK_DCRC | SDIO_IT_MASK_DRTO |
-                           SDIO_IT_MASK_FRUN | SDIO_IT_MASK_TXDR | SDIO_IT_MASK_RXDR);
+    if (status & SDIO_IT_FLAG_DCRC) {
+        error = SD_DATA_CRC_FAIL;
+    } else if (status & SDIO_IT_FLAG_DRTO) {
+        error = SD_DATA_TIMEOUT;
+    } else if (status & SDIO_IT_FLAG_FRUN) {
+        error = SD_RX_OVERRUN;
+    }
 
+    if (error != SD_OK) {
+        SD_TerminateBlockTransfer(error);
+    } else if (status & SDIO_IT_FLAG_DTO) {
         if ((SD_Handle.Operation & 0x02) == (SDIO_DIR_TX << 1)) {
-            xDMA_Cmd(sdioDmaResource, DISABLE);
-            SDIO->CTRL &= ~SDIO_CTRL_DMA_ENABLE;
-            SD_Handle.TXCplt = 0;
             if ((SD_Handle.Operation & 0x01) == SD_MULTIPLE_BLOCK) {
                 SD_TransmitCommand((SDMMC_CMD_STOP_TRANSMISSION | SD_CMD_RESPONSE_SHORT), 0, 1);
             }
+            SD_TerminateBlockTransfer(SD_OK);
+        } else {
+            SD_Handle.TransferComplete = 1;
+            SD_Handle.TransferError = SD_OK;
+            SDIO->INTMASK = 0;
         }
-        SD_Handle.TransferComplete = 1;
-        SD_Handle.TransferError = SD_OK;
     }
-    else if (SDIO_GetITFlag(SDIO_IT_FLAG_DCRC))
-        SD_Handle.TransferError = SD_DATA_CRC_FAIL;
-    else if (SDIO_GetITFlag(SDIO_IT_FLAG_DRTO))
-        SD_Handle.TransferError = SD_DATA_TIMEOUT;
-    else if (SDIO_GetITFlag(SDIO_IT_FLAG_FRUN))
-        SD_Handle.TransferError = SD_RX_OVERRUN;
 
-    SDIO->RINTSTS = 0xFFFFFFFF;
-
-    // Disable all SDIO interrupt sources
-    SDIO->INTMASK = 0;
+    SDIO->RINTSTS = status;
 }
 
 /** -----------------------------------------------------------------------------------------------------------------*/
@@ -1328,13 +1357,20 @@ void SDIO_IRQHandler(void)
 // Uses DMA_GET_FLAG_STATUS/DMA_CLEAR_FLAG instead of direct register access
 void SDIO_DMA_IRQHandler(dmaChannelDescriptor_t *descriptor)
 {
-    if (DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR)) {
-        DMA_CLEAR_FLAG(descriptor, DMA_IT_ERR);
-    }
+    const bool error = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR);
+    const bool complete = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TCIF);
 
-    if (DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TCIF)) {
+    if (error) {
+        DMA_CLEAR_FLAG(descriptor, DMA_IT_ERR);
+        if (complete) {
+            DMA_CLEAR_FLAG(descriptor, DMA_IT_TCIF);
+        }
+        SD_TerminateBlockTransfer(SD_ERROR);
+    } else if (complete) {
         DMA_CLEAR_FLAG(descriptor, DMA_IT_TCIF);
-        SD_DMA_Complete(descriptor);
+        if (SD_Handle.TransferError == SD_OK) {
+            SD_DMA_Complete(descriptor);
+        }
     }
 }
 
