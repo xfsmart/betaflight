@@ -182,11 +182,8 @@ typedef enum
 #define  DMA_IT_DST    0x08U
 #define  DMA_IT_ERR    0x10U
 
-#define IS_DMA_IT(TYPE) (((TYPE) == DMA_IT_TFR)   || \
-                         ((TYPE) == DMA_IT_BLOCK) || \
-                         ((TYPE) == DMA_IT_SRC)   || \
-                         ((TYPE) == DMA_IT_DST)   || \
-                         ((TYPE) == DMA_IT_ERR))
+#define DMA_IT_ALL (DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR)
+#define IS_DMA_IT(TYPE) (((TYPE) != 0U) && (((TYPE) & ~DMA_IT_ALL) == 0U))
 
 
 /**

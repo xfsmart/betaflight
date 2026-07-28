@@ -473,14 +473,14 @@ void DMA_ClearFlagStatus(DMA_Channel_TypeDef* DMAy_Channelx, uint8_t DMA_IT)
   * @brief  Checks whether the specified DMAy Channelx interrupt has occurred or not.
   * @param  DMAy_Channelx Where y can be 1 or 2 to select the DMA and x can be 0 to 7
   *                       for DMAy to select the DMA Channel.
-  * @param  DMA_IT  specifies the DMA interrupt source to check
-  *                 This parameter can be one of the following values:
+  * @param  DMA_IT  specifies the DMA interrupt sources to check.
+  *                 This parameter can be any combination of the following values:
   *                 @arg DMA_IT_TFR    Transfer complete interrupt.
   *                 @arg DMA_IT_BLOCK  Block transfer complete interrupt.
   *                 @arg DMA_IT_SRC    Source transfer complete interrupt.
   *                 @arg DMA_IT_DST    Destination transfer complete interrupt.
   *                 @arg DMA_IT_ERR    Transfer error interrupt.
-  * @retval The new state of DMA_IT (SET or RESET).
+  * @retval SET if any selected DMA interrupt is pending, otherwise RESET.
   */
 ITStatus DMA_GetITStatus(DMA_Channel_TypeDef* DMAy_Channelx, uint8_t DMA_IT)
 {
@@ -501,31 +501,31 @@ ITStatus DMA_GetITStatus(DMA_Channel_TypeDef* DMAy_Channelx, uint8_t DMA_IT)
   /* Get channelx transfer complete interrupt status */
   if((DMA_IT & DMA_IT_TFR) != 0U)
   {
-    tmpreg = DMA.BaseAddress->STATUSTFR;
+    tmpreg |= DMA.BaseAddress->STATUSTFR;
   }
 
   /* Get channelx block transfer complete interrupt status */
   if((DMA_IT & DMA_IT_BLOCK) != 0U)
   {
-    tmpreg = DMA.BaseAddress->STATUSBLOCK;
+    tmpreg |= DMA.BaseAddress->STATUSBLOCK;
   }
 
   /* Get channelx source transfer complete interrupt status */
   if((DMA_IT & DMA_IT_SRC) != 0U)
   {
-    tmpreg = DMA.BaseAddress->STATUSSRCTRAN;
+    tmpreg |= DMA.BaseAddress->STATUSSRCTRAN;
   }
 
   /* Get channelx destination transfer complete interrupt status */
   if((DMA_IT & DMA_IT_DST) != 0U)
   {
-    tmpreg = DMA.BaseAddress->STATUSDSTTRAN;
+    tmpreg |= DMA.BaseAddress->STATUSDSTTRAN;
   }
 
   /* Get channelx transfer error interrupt status */
   if((DMA_IT & DMA_IT_ERR) != 0U)
   {
-    tmpreg = DMA.BaseAddress->STATUSERR;
+    tmpreg |= DMA.BaseAddress->STATUSERR;
   }
 
   /* Check the status of the specified DMAy interrupt */
@@ -677,37 +677,37 @@ void DMA_SoftWare_Request(DMA_Channel_TypeDef* DMAy_Channelx, DMA_SoftwareReques
   /* Config the source software transaction request */
   if(SoftwareRequest == DMA_SW_REQUEST_SRC)
   {
-    DMA.BaseAddress->REQSRC |= (ch_en_mask | ch_mask);
+    DMA.BaseAddress->REQSRC = (ch_en_mask | ch_mask);
   }
 
   /* Config the destination software transaction request */
   if(SoftwareRequest == DMA_SW_REQUEST_DST)
   {
-    DMA.BaseAddress->REQDST |= (ch_en_mask | ch_mask);
+    DMA.BaseAddress->REQDST = (ch_en_mask | ch_mask);
   }
 
   /* Config the source single transaction request */
   if(SoftwareRequest == DMA_SW_REQUEST_SRC_SGL)
   {
-    DMA.BaseAddress->SGLRQSRC |= (ch_en_mask | ch_mask);
+    DMA.BaseAddress->SGLRQSRC = (ch_en_mask | ch_mask);
   }
 
   /* Config the destination single transaction request */
   if(SoftwareRequest == DMA_SW_REQUEST_DST_SGL)
   {
-    DMA.BaseAddress->SGLRQDST |= (ch_en_mask | ch_mask);
+    DMA.BaseAddress->SGLRQDST = (ch_en_mask | ch_mask);
   }
 
   /* Config the source last transaction request */
   if(SoftwareRequest == DMA_SW_REQUEST_SRC_LST)
   {
-    DMA.BaseAddress->LSTSRC |= (ch_en_mask | ch_mask);
+    DMA.BaseAddress->LSTSRC = (ch_en_mask | ch_mask);
   }
 
   /* Config the destination last transaction request */
   if(SoftwareRequest == DMA_SW_REQUEST_DST_LST)
   {
-    DMA.BaseAddress->LSTDST |= (ch_en_mask | ch_mask);
+    DMA.BaseAddress->LSTDST = (ch_en_mask | ch_mask);
   }
 }
 
