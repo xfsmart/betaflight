@@ -43,7 +43,9 @@ void USB_OTG_BSP_Init(void)
   */
 void USB_OTG_BSP_EnableInterrupt(void)
 {
-    NVIC_SetPriority(OTG_IRQ, NVIC_PRIO_USB);
+    /* Betaflight priorities are already left-aligned for BASEPRI, while the
+     * CMSIS setter expects the unshifted implemented priority bits. */
+    NVIC_SetPriority(OTG_IRQ, NVIC_PRIORITY_TO_CMSIS(NVIC_PRIO_USB));
     NVIC_EnableIRQ(OTG_IRQ);
 }
 

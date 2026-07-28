@@ -439,7 +439,8 @@ static void TIM_Config(void)
   TIM_TimeBaseInit(TIMusb, &TIM_TimeBaseStructure);
 
   /* Configure the NVIC for TIMx */
-  NVIC_SetPriority(TIMx_IRQn, NVIC_BUILD_PRIORITY(6, 0));
+  NVIC_SetPriority(TIMx_IRQn,
+                   NVIC_PRIORITY_TO_CMSIS(NVIC_BUILD_PRIORITY(6, 0)));
 
   /* Enable the TIMx global Interrupt */
   NVIC_EnableIRQ(TIMx_IRQn);

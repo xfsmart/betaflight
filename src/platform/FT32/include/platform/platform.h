@@ -161,6 +161,7 @@ typedef struct i2cHalHandle_s i2cHalHandle_t;
 #define NVIC_BUILD_PRIORITY(base,sub) (((((base)<<(4-(7-(NVIC_PRIORITY_GROUPING))))|((sub)&(0x0f>>(7-(NVIC_PRIORITY_GROUPING)))))<<4)&0xf0)
 #define NVIC_PRIORITY_BASE(prio) (((prio)>>(4-(7-(NVIC_PRIORITY_GROUPING))))>>4)
 #define NVIC_PRIORITY_SUB(prio) (((prio)>>(4-(7-(NVIC_PRIORITY_GROUPING))))&0x0f)
+#define NVIC_PRIORITY_TO_CMSIS(prio) ((uint32_t)(prio) >> (8U - __NVIC_PRIO_BITS))
 
 /* ADC configuration for FT32F4 */
 #define ADC_INSTANCE            ADC1
