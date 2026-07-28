@@ -117,21 +117,8 @@ SECTIONS
     PROVIDE_HIDDEN (__pg_resetdata_end = .);
   } >FLASH1
 
-  /* used by the startup to initialize data */
-  _sidata = LOADADDR(.data);
-
-  /* Initialized data sections goes into RAM, load LMA copy after code */
-  .data :
-  {
-    . = ALIGN(4);
-    _sdata = .;        /* create a global symbol at data start */
-    *(.data)           /* .data sections */
-    *(.data*)          /* .data* sections */
-
-    . = ALIGN(4);
-    _edata = .;        /* define a global symbol at data end */
-  } >RAM AT> MOVABLE_FLASH
-
+  /* Keep executable SRAM code ahead of page-aligned writable data so the
+   * linker emits distinct RX and RW LOAD segments. */
   ram_code = LOADADDR(.ram_code);
   .ram_code :
   {
@@ -141,6 +128,21 @@ SECTIONS
     *(.ram_code*)
     . = ALIGN(4);
     ram_code_end = .;
+  } >RAM AT> MOVABLE_FLASH
+
+  /* used by the startup to initialize data */
+  _sidata = LOADADDR(.data);
+
+  /* Initialized data sections goes into RAM, load LMA copy after code */
+  .data ALIGN(CONSTANT (MAXPAGESIZE)) :
+  {
+    . = ALIGN(4);
+    _sdata = .;        /* create a global symbol at data start */
+    *(.data)           /* .data sections */
+    *(.data*)          /* .data* sections */
+
+    . = ALIGN(4);
+    _edata = .;        /* define a global symbol at data end */
   } >RAM AT> MOVABLE_FLASH
 
   /* Uninitialized data section */
