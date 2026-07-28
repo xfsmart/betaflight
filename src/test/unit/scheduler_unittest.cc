@@ -42,6 +42,8 @@ const int TEST_DISPATCH_TIME = 200;
 const int TEST_UPDATE_OSD_CHECK_TIME = 5;
 const int TEST_UPDATE_OSD_TIME = 30;
 
+int testUpdateRxCheckTime = TEST_UPDATE_RX_CHECK_TIME;
+
 #define TASK_COUNT_UNITTEST (TASK_BATTERY_VOLTAGE + 1)
 #define TASK_PERIOD_HZ(hz) (1000000 / (hz))
 
@@ -84,7 +86,7 @@ extern "C" {
     void taskUpdateAccelerometer(timeUs_t) { simulatedTime += TEST_UPDATE_ACCEL_TIME; }
     void taskHandleSerial(timeUs_t) { simulatedTime += TEST_HANDLE_SERIAL_TIME; }
     void taskUpdateBatteryVoltage(timeUs_t) { simulatedTime += TEST_UPDATE_BATTERY_TIME; }
-    bool rxUpdateCheck(timeUs_t, timeDelta_t) { simulatedTime += TEST_UPDATE_RX_CHECK_TIME; return false; }
+    bool rxUpdateCheck(timeUs_t, timeDelta_t) { simulatedTime += testUpdateRxCheckTime; return false; }
     void taskUpdateRxMain(timeUs_t) { simulatedTime += TEST_UPDATE_RX_MAIN_TIME; }
     void imuUpdateAttitude(timeUs_t) { simulatedTime += TEST_IMU_UPDATE_TIME; }
     void dispatchProcess(timeUs_t) { simulatedTime += TEST_DISPATCH_TIME; }
@@ -552,3 +554,35 @@ TEST(SchedulerUnittest, TestGyroTask)
     EXPECT_EQ(static_cast<task_t*>(0), unittest_scheduler_selectedTask);
 }
 
+TEST(SchedulerUnittest, TestSerialTaskRunsWhenCheckersUseRemainingGyroBudget)
+{
+    simulatedTime = 20000;
+    schedulerInit();
+
+    for (int taskId = 0; taskId < TASK_COUNT; ++taskId) {
+        setTaskEnabled(static_cast<taskId_e>(taskId), false);
+    }
+    setTaskEnabled(TASK_RX, true);
+    setTaskEnabled(TASK_SERIAL, true);
+    schedulerEnableGyro();
+
+    tasks[TASK_RX].dynamicPriority = 0;
+    tasks[TASK_RX].taskAgePeriods = 0;
+    tasks[TASK_SERIAL].dynamicPriority = 0;
+    tasks[TASK_SERIAL].taskAgePeriods = 0;
+    tasks[TASK_SERIAL].lastExecutedAtUs = 0;
+    tasks[TASK_SERIAL].lastDesiredAt = 0;
+    tasks[TASK_SERIAL].anticipatedExecutionTime = 0;
+    tasks[TASK_SERIAL].totalExecutionTimeUs = 0;
+
+    // Enter task selection with enough time for the checker guard, then leave
+    // less than the task guard by the time the selected task is rechecked.
+    testUpdateRxCheckTime = TASK_PERIOD_HZ(TEST_GYRO_SAMPLE_HZ) - 1;
+    scheduler();
+    testUpdateRxCheckTime = TEST_UPDATE_RX_CHECK_TIME;
+
+    EXPECT_EQ(&tasks[TASK_SERIAL], unittest_scheduler_selectedTask);
+    EXPECT_EQ(20000, tasks[TASK_SERIAL].lastExecutedAtUs);
+    EXPECT_EQ(TEST_HANDLE_SERIAL_TIME, tasks[TASK_SERIAL].totalExecutionTimeUs);
+    EXPECT_EQ(20000 + TASK_PERIOD_HZ(TEST_GYRO_SAMPLE_HZ) - 1 + TEST_HANDLE_SERIAL_TIME, simulatedTime);
+}

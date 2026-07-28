@@ -781,7 +781,9 @@ FAST_CODE void scheduler(void)
             // Allow a little extra time
             taskRequiredTimeCycles += taskGuardCycles;
 
-            if (!gyroEnabled || firstSchedulingOpportunity || (taskRequiredTimeCycles < schedLoopRemainingCycles)) {
+            if (!gyroEnabled || firstSchedulingOpportunity ||
+                (taskRequiredTimeCycles < schedLoopRemainingCycles) ||
+                ((selectedTask - tasks) == TASK_SERIAL)) {
                 uint32_t antipatedEndCycles = nowCycles + taskRequiredTimeCycles;
                 taskExecutionTimeUs += schedulerExecuteTask(selectedTask, currentTimeUs);
                 nowCycles = getCycleCounter();
