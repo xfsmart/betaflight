@@ -27,6 +27,8 @@ VPATH := $(VPATH):$(USER_DIR):$(TEST_DIR)
 #   <test_name>_SRC
 #   <test_name>_DEFINES
 #   <test_name>_INCLUDE_DIRS
+#   <test_name>_FLAGS
+#   <test_name>_LDFLAGS
 #   <test_name>_EXPAND (run for each target, call the above with target as $1)
 #   <test_name>_BLACKLIST (targets to exclude from an expanded test's run)
 
@@ -65,6 +67,36 @@ arming_prevention_unittest_DEFINES := \
 atomic_unittest_SRC := \
 		$(USER_DIR)/build/atomic.c \
 		$(TEST_DIR)/atomic_unittest_c.c
+
+ft32_usb_ep0_unittest_SRC := \
+		$(TEST_DIR)/ft32_usb_ep0_test_support.c \
+		$(TEST_DIR)/ft32_usb_ep0_usb_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_pcd_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_core_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_ctlreq_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_ioreq_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_cdc_source.c
+
+ft32_usb_ep0_unittest_DEFINES := \
+		USB_OTG_FS_CORE=1 \
+		USB_OTG_FS=1 \
+		PCD_FS_MODULE_ENABLED=1 \
+		USE_USBD_COMPOSITE=1 \
+		USBD_MAX_NUM_INTERFACES=3
+
+ft32_usb_ep0_unittest_INCLUDE_DIRS := \
+		$(ROOT)/lib/main/FT32F4/CMSIS/cm4/device_support \
+		$(ROOT)/lib/main/CMSIS/Core/Include \
+		$(ROOT)/lib/main/FT32F4/Drivers/FT32F4xx_Driver/Inc \
+		$(ROOT)/lib/main/FT32F4/middlewares/usb_drivers/inc \
+		$(ROOT)/lib/main/FT32F4/middlewares/usbd_class/CompositeBuilder/inc \
+		$(ROOT)/lib/main/FT32F4/middlewares/usbd_class/CDC/inc
+
+ft32_usb_ep0_unittest_FLAGS := \
+		-ffunction-sections -fdata-sections \
+		-Wno-unused-function -Wno-unused-parameter -Wno-unused-variable
+
+ft32_usb_ep0_unittest_LDFLAGS := -Wl,--gc-sections
 
 baro_bmp085_unittest_SRC := \
 		$(USER_DIR)/drivers/barometer/barometer_bmp085.c
@@ -769,6 +801,7 @@ $(OBJECT_DIR)/$1/%.c.o: $(USER_DIR)/%.c
 	@echo "compiling $$<" "$(STDOUT)"
 	$(V1) mkdir -p $$(dir $$@)
 	$(V1) $(CC) $(C_FLAGS) $$(call test_cflags,$$($1_INCLUDE_DIRS)) \
+		$$($1_FLAGS) \
                 $$(foreach def,$$($1_DEFINES),-D $$(def)) \
                 -c $$< -o $$@
 
@@ -776,6 +809,7 @@ $(OBJECT_DIR)/$1/%.c.o: $(TEST_DIR)/%.c
 	@echo "compiling test c file: $$<" "$(STDOUT)"
 	$(V1) mkdir -p $$(dir $$@)
 	$(V1) $(CC) $(C_FLAGS) $$(call test_cflags,$$($1_INCLUDE_DIRS)) \
+		$$($1_FLAGS) \
                 $$(foreach def,$$($1_DEFINES),-D $$(def)) \
                 -c $$< -o $$@
 
@@ -785,6 +819,7 @@ $(OBJECT_DIR)/$1/%.c.o: $(TARGET_DIR)/$(TARGET)/%.c
 	@echo "compiling target c file: $$<" "$(STDOUT)"
 	$(V1) mkdir -p $$(dir $$@)
 	$(V1) $(CC) $(C_FLAGS) $$(call test_cflags,$$($1_INCLUDE_DIRS)) \
+		$$($1_FLAGS) \
                 $$(foreach def,$$($1_DEFINES),-D $$(def)) \
                 -c $$< -o $$@
 endif
@@ -793,6 +828,7 @@ $(OBJECT_DIR)/$1/$(basename $1).o: $(TEST_DIR)/$(basename $1).cc
 	@echo "compiling $$<" "$(STDOUT)"
 	$(V1) mkdir -p $$(dir $$@)
 	$(V1) $(CXX) $(CXX_FLAGS) $$(call test_cflags,$$($1_INCLUDE_DIRS)) \
+		$$($1_FLAGS) \
                 $$(foreach def,$$($1_DEFINES),-D $$(def)) \
                 -c $$< -o $$@
 
@@ -802,7 +838,7 @@ $(OBJECT_DIR)/$1/$(basename $1): $$($1_OBJS) \
 
 	@echo "linking $$@" "$(STDOUT)"
 	$(V1) mkdir -p $(dir $$@)
-	$(V1) $(CXX) $(CXX_FLAGS) $(LDFLAGS) $$^ -o $$@
+	$(V1) $(CXX) $(CXX_FLAGS) $(LDFLAGS) $$($1_LDFLAGS) $$^ -o $$@
 
 test_$1: $(OBJECT_DIR)/$1/$(basename $1)
 	$(V1) $$< $$(EXEC_OPTS) "$(STDOUT)" && echo "running $$@: PASS"

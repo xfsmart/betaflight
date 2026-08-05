@@ -41,6 +41,7 @@
 #ifndef USBD_MAX_STR_DESC_SIZ
 #define USBD_MAX_STR_DESC_SIZ         64U
 #endif  /* USBD_MAX_STR_DESC_SIZ */
+#define USB_CONFIG_ATTR_REMOTE_WAKEUP  0x20U
 
 /**
  * @}
@@ -89,7 +90,17 @@ USBD_StatusTypeDef  USBD_StdDevReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDe
   {
     case USB_REQ_TYPE_CLASS:
     case USB_REQ_TYPE_VENDOR:
-      ret = (USBD_StatusTypeDef)pdev->pClass[pdev->classId]->Setup(pdev, req);
+      if ((pdev->classId >= USBD_MAX_SUPPORTED_CLASS) ||
+          (pdev->pClass[pdev->classId] == NULL) ||
+          (pdev->pClass[pdev->classId]->Setup == NULL))
+      {
+        USBD_CtlError(pdev, req);
+        ret = USBD_FAIL;
+      }
+      else
+      {
+        ret = (USBD_StatusTypeDef)pdev->pClass[pdev->classId]->Setup(pdev, req);
+      }
       break;
 
     case USB_REQ_TYPE_STANDARD:
@@ -158,14 +169,16 @@ USBD_StatusTypeDef  USBD_StdItfReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDe
         case USBD_STATE_DEFAULT:
         case USBD_STATE_ADDRESSED:
         case USBD_STATE_CONFIGURED:
-          if (LOBYTE(req->wIndex) <= USBD_MAX_NUM_INTERFACES)
+          if ((LOBYTE(req->wIndex) <= USBD_MAX_NUM_INTERFACES) &&
+              (((req->bmRequest & USB_REQ_TYPE_MASK) != USB_REQ_TYPE_STANDARD) ||
+               (HIBYTE(req->wIndex) == 0U)))
           {
             /* Get the class index relative to this interface */
             idx = USBD_CoreFindIF(pdev, LOBYTE(req->wIndex));
             if (((uint8_t)idx != 0xFFU) && (idx < USBD_MAX_SUPPORTED_CLASS))
             {
               /* call the class data out function to manage the request */
-              if (pdev->pClass[idx]->Setup != NULL)
+              if ((pdev->pClass[idx] != NULL) && (pdev->pClass[idx]->Setup != NULL))
               {
                 pdev->classId = idx;
                 ret = (USBD_StatusTypeDef)(pdev->pClass[idx]->Setup(pdev, req));
@@ -173,12 +186,14 @@ USBD_StatusTypeDef  USBD_StdItfReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDe
               else
               {
                 /* should never reach this condition */
+                USBD_CtlError(pdev, req);
                 ret = USBD_FAIL;
               }
             }
             else
             {
               /* No relative interface found */
+              USBD_CtlError(pdev, req);
               ret = USBD_FAIL;
             }
           #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
@@ -191,17 +206,20 @@ USBD_StatusTypeDef  USBD_StdItfReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDe
           else
           {
             USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
           }
           break;
 
         default:
           USBD_CtlError(pdev, req);
+          ret = USBD_FAIL;
           break;
       }
       break;
 
     default:
       USBD_CtlError(pdev, req);
+      ret = USBD_FAIL;
       break;
 
   }
@@ -230,14 +248,16 @@ USBD_StatusTypeDef  USBD_StdEPReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef
     case USB_REQ_TYPE_VENDOR:
       /* Get the class index relative to this endpoint */
       idx = USBD_CoreFindEP(pdev, ep_addr);
-      if (((uint8_t)idx != 0xFFU) && (idx < USBD_MAX_SUPPORTED_CLASS))
+      if (((uint8_t)idx != 0xFFU) && (idx < USBD_MAX_SUPPORTED_CLASS) &&
+          (pdev->pClass[idx] != NULL) && (pdev->pClass[idx]->Setup != NULL))
       {
         pdev->classId = idx;
-        /* call the class data out function to manage the request */
-        if (pdev->pClass[idx]->Setup != NULL)
-        {
-          ret = (USBD_StatusTypeDef)pdev->pClass[idx]->Setup(pdev, req);
-        }
+        ret = (USBD_StatusTypeDef)pdev->pClass[idx]->Setup(pdev, req);
+      }
+      else
+      {
+        USBD_CtlError(pdev, req);
+        ret = USBD_FAIL;
       }
       break;
 
@@ -245,27 +265,101 @@ USBD_StatusTypeDef  USBD_StdEPReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef
       switch (req->bRequest)
       {
         case USB_REQ_SET_FEATURE:
+          if ((req->bmRequest != (USB_REQ_DIR_HTD | USB_REQ_TYPE_STANDARD |
+                                  USB_REQ_RECIPIENT_ENDPOINT)) ||
+              (req->wValue != USB_FEATURE_EP_HALT) || (req->wLength != 0U) ||
+              ((req->wIndex & 0xFF70U) != 0U) ||
+              ((ep_addr & 0x7FU) == 0U))
+          {
+            USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
+            break;
+          }
+
           switch (pdev->dev_state)
           {
             case USBD_STATE_ADDRESSED:
-              if ((ep_addr != 0x00U) && (ep_addr != 0x80U))
-              {
-                (void)USBD_LL_StallEP(pdev, ep_addr);
-                (void)USBD_LL_StallEP(pdev, 0x80U);
-              }
-              else
-              {
-                USBD_CtlError(pdev, req);
-              }
+              USBD_CtlError(pdev, req);
+              ret = USBD_FAIL;
               break;
 
             case USBD_STATE_CONFIGURED:
-              if (req->wValue == USB_FEATURE_EP_HALT)
+              if ((((ep_addr & 0x80U) != 0U) &&
+                   (pdev->ep_in[ep_addr & 0x0FU].is_used == 0U)) ||
+                  (((ep_addr & 0x80U) == 0U) &&
+                   (pdev->ep_out[ep_addr & 0x0FU].is_used == 0U)))
               {
-                if ((ep_addr != 0x00U) && (ep_addr != 0x80U) && (req->wLength == 0x00U))
-                {
-                  (void)USBD_LL_StallEP(pdev, ep_addr);
-                }
+                USBD_CtlError(pdev, req);
+                ret = USBD_FAIL;
+                break;
+              }
+
+              (void)USBD_LL_StallEP(pdev, ep_addr);
+            #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
+              (void)USBD_CtlSendStatus(pdev);
+            #endif /* USB_OTG_HS_CORE */
+              break;
+
+            default:
+              USBD_CtlError(pdev, req);
+              ret = USBD_FAIL;
+              break;
+          }
+          break;
+
+        case USB_REQ_CLEAR_FEATURE:
+          if ((req->bmRequest != (USB_REQ_DIR_HTD | USB_REQ_TYPE_STANDARD |
+                                  USB_REQ_RECIPIENT_ENDPOINT)) ||
+              (req->wValue != USB_FEATURE_EP_HALT) || (req->wLength != 0U) ||
+              ((req->wIndex & 0xFF70U) != 0U) ||
+              ((ep_addr & 0x7FU) == 0U))
+          {
+            USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
+            break;
+          }
+
+          switch (pdev->dev_state)
+          {
+            case USBD_STATE_ADDRESSED:
+              USBD_CtlError(pdev, req);
+              ret = USBD_FAIL;
+              break;
+
+            case USBD_STATE_CONFIGURED:
+              if ((((ep_addr & 0x80U) != 0U) &&
+                   (pdev->ep_in[ep_addr & 0x0FU].is_used == 0U)) ||
+                  (((ep_addr & 0x80U) == 0U) &&
+                   (pdev->ep_out[ep_addr & 0x0FU].is_used == 0U)))
+              {
+                USBD_CtlError(pdev, req);
+                ret = USBD_FAIL;
+                break;
+              }
+
+              /* Resolve the owner before mutating the endpoint halt state. */
+              idx = USBD_CoreFindEP(pdev, ep_addr);
+              if (((uint8_t)idx == 0xFFU) || (idx >= USBD_MAX_SUPPORTED_CLASS) ||
+                  (pdev->pClass[idx] == NULL))
+              {
+                USBD_CtlError(pdev, req);
+                ret = USBD_FAIL;
+                break;
+              }
+
+              (void)USBD_LL_ClearStallEP(pdev, ep_addr);
+              /* Notify the owning class after the halt condition is clear. */
+              pdev->classId = idx;
+              if (pdev->pClass[idx]->Setup != NULL)
+              {
+                ret = (USBD_StatusTypeDef)(pdev->pClass[idx]->Setup(pdev, req));
+              }
+
+              if (ret != USBD_OK)
+              {
+                (void)USBD_LL_StallEP(pdev, ep_addr);
+                USBD_CtlError(pdev, req);
+                break;
               }
             #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
               (void)USBD_CtlSendStatus(pdev);
@@ -274,63 +368,29 @@ USBD_StatusTypeDef  USBD_StdEPReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef
 
             default:
               USBD_CtlError(pdev, req);
-              break;
-          }
-          break;
-
-        case USB_REQ_CLEAR_FEATURE:
-          switch (pdev->dev_state)
-          {
-            case USBD_STATE_ADDRESSED:
-              if ((ep_addr != 0x00U) && (ep_addr != 0x80U))
-              {
-                (void)USBD_LL_StallEP(pdev, ep_addr);
-                (void)USBD_LL_StallEP(pdev, 0x80U);
-              }
-              else
-              {
-                USBD_CtlError(pdev, req);
-              }
-              break;
-
-            case USBD_STATE_CONFIGURED:
-              if (req->wValue == USB_FEATURE_EP_HALT)
-              {
-                if ((ep_addr & 0x7FU) != 0x00U)
-                {
-                  (void)USBD_LL_ClearStallEP(pdev, ep_addr);
-                }
-              #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
-                (void)USBD_CtlSendStatus(pdev);
-              #endif /* USB_OTG_HS_CORE */
-
-                /* get the class index relative ro this interface */
-                idx = USBD_CoreFindEP(pdev, ep_addr);
-                if (((uint8_t)idx != 0xFFU) && (idx < USBD_MAX_SUPPORTED_CLASS))
-                {
-                  pdev->classId = idx;
-                  /* call the class data out function to manage the request */
-                  if (pdev->pClass[idx]->Setup != NULL)
-                  {
-                    ret = (USBD_StatusTypeDef)(pdev->pClass[idx]->Setup(pdev, req));
-                  }
-                }
-              }
-              break;
-
-            default:
-              USBD_CtlError(pdev, req);
+              ret = USBD_FAIL;
               break;
           }
           break;
 
         case USB_REQ_GET_STATUS:
+          if ((req->bmRequest != (USB_REQ_DIR_DTH | USB_REQ_TYPE_STANDARD |
+                                  USB_REQ_RECIPIENT_ENDPOINT)) ||
+              (req->wValue != 0U) || (req->wLength != 2U) ||
+              ((req->wIndex & 0xFF70U) != 0U))
+          {
+            USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
+            break;
+          }
+
           switch (pdev->dev_state)
           {
             case USBD_STATE_ADDRESSED:
               if ((ep_addr != 0x00U) && (ep_addr != 0x80U))
               {
                 USBD_CtlError(pdev, req);
+                ret = USBD_FAIL;
                 break;
               }
               pep = ((ep_addr & 0x80U) == 0x80U) ? &pdev->ep_in[ep_addr & 0x7FU] : &pdev->ep_out[ep_addr & 0x7FU];
@@ -346,6 +406,7 @@ USBD_StatusTypeDef  USBD_StdEPReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef
                 if (pdev->ep_in[ep_addr & 0xFU].is_used == 0U)
                 {
                   USBD_CtlError(pdev, req);
+                  ret = USBD_FAIL;
                   break;
                 }
               }
@@ -354,6 +415,7 @@ USBD_StatusTypeDef  USBD_StdEPReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef
                 if (pdev->ep_out[ep_addr & 0xFU].is_used == 0U)
                 {
                   USBD_CtlError(pdev, req);
+                  ret = USBD_FAIL;
                   break;
                 }
               }
@@ -377,18 +439,21 @@ USBD_StatusTypeDef  USBD_StdEPReq(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef
 
             default:
               USBD_CtlError(pdev, req);
+              ret = USBD_FAIL;
               break;
           }
           break;
 
         default:
           USBD_CtlError(pdev, req);
+          ret = USBD_FAIL;
           break;
       }
       break;
 
     default:
       USBD_CtlError(pdev, req);
+      ret = USBD_FAIL;
       break;
   }
   return ret;
@@ -407,11 +472,23 @@ static void USBD_GetDescriptor(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *r
   uint8_t *pbuf = NULL;
   uint8_t err = 0U;
 
+  if (req->bmRequest != (USB_REQ_DIR_DTH | USB_REQ_TYPE_STANDARD |
+                         USB_REQ_RECIPIENT_DEVICE))
+  {
+    USBD_CtlError(pdev, req);
+    return;
+  }
+
   switch (req->wValue >> 8)
   {
 #if (USBD_CLASS_BOS_ENABLED == 1U)
     case USB_DESC_TYPE_BOS:
-      if (pdev->pDesc->GetBOSDescriptor != NULL)
+      if ((LOBYTE(req->wValue) != 0U) || (req->wIndex != 0U))
+      {
+        USBD_CtlError(pdev, req);
+        err++;
+      }
+      else if (pdev->pDesc->GetBOSDescriptor != NULL)
       {
         pbuf = pdev->pDesc->GetBOSDescriptor(pdev->dev_speed, &len);
       }
@@ -424,11 +501,25 @@ static void USBD_GetDescriptor(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *r
 #endif  /* USBD_CLASS_BOS_ENABLED */
 
     case USB_DESC_TYPE_DEVICE:
-      pbuf = pdev->pDesc->GetDeviceDescriptor(pdev->dev_speed, &len);
+      if ((LOBYTE(req->wValue) != 0U) || (req->wIndex != 0U))
+      {
+        USBD_CtlError(pdev, req);
+        err++;
+      }
+      else
+      {
+        pbuf = pdev->pDesc->GetDeviceDescriptor(pdev->dev_speed, &len);
+      }
       break;
 
     case USB_DESC_TYPE_CONFIGURATION:
-      if (pdev->dev_speed == USBD_SPEED_HIGH)
+      if ((LOBYTE(req->wValue) >= USBD_MAX_NUM_CONFIGURATION) ||
+          (req->wIndex != 0U))
+      {
+        USBD_CtlError(pdev, req);
+        err++;
+      }
+      else if (pdev->dev_speed == USBD_SPEED_HIGH)
       {
 #ifdef USE_USBD_COMPOSITE
         if ((uint8_t)(pdev->NumClasses) > 0U)
@@ -576,7 +667,12 @@ static void USBD_GetDescriptor(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *r
       break;
 
     case USB_DESC_TYPE_DEVICE_QUALIFIER:
-      if (pdev->dev_speed == USBD_SPEED_HIGH)
+      if ((LOBYTE(req->wValue) != 0U) || (req->wIndex != 0U))
+      {
+        USBD_CtlError(pdev, req);
+        err++;
+      }
+      else if (pdev->dev_speed == USBD_SPEED_HIGH)
       {
 #ifdef  USE_USBD_COMPOSITE
         if ((uint8_t)(pdev->NumClasses) > 0U)
@@ -597,7 +693,13 @@ static void USBD_GetDescriptor(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *r
       break;
 
     case USB_DESC_TYPE_OTHER_SPEED_CONFIGURATION:
-      if (pdev->dev_speed == USBD_SPEED_HIGH)
+      if ((LOBYTE(req->wValue) >= USBD_MAX_NUM_CONFIGURATION) ||
+          (req->wIndex != 0U))
+      {
+        USBD_CtlError(pdev, req);
+        err++;
+      }
+      else if (pdev->dev_speed == USBD_SPEED_HIGH)
       {
 #ifdef  USE_USBD_COMPOSITE
         if ((uint8_t)(pdev->NumClasses) > 0U)
@@ -658,7 +760,9 @@ static void USBD_GetDescriptor(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *r
 static void USBD_SetAddress(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
 {
   uint8_t dev_addr;
-  if ((req->wIndex == 0U) && (req->wLength == 0U) && (req->wValue < 128U))
+  if ((req->bmRequest == (USB_REQ_DIR_HTD | USB_REQ_TYPE_STANDARD |
+                          USB_REQ_RECIPIENT_DEVICE)) &&
+      (req->wIndex == 0U) && (req->wLength == 0U) && (req->wValue < 128U))
   {
     dev_addr = (uint8_t)(req->wValue) & 0x7FU;
 
@@ -668,11 +772,12 @@ static void USBD_SetAddress(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
     }
     else
     {
-      pdev->dev_address = dev_addr;
     #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
       (void)USBD_LL_SetUSBAddress(pdev, dev_addr);
       (void)USBD_CtlSendStatus(pdev);
 
+    #if !defined(USB_OTG_FS_CORE)
+      pdev->dev_address = dev_addr;
       if (dev_addr != 0U)
       {
         pdev->dev_state = USBD_STATE_ADDRESSED;
@@ -681,6 +786,7 @@ static void USBD_SetAddress(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
       {
         pdev->dev_state = USBD_STATE_DEFAULT;
       }
+    #endif /* !USB_OTG_FS_CORE */
     #endif /* USB_OTG_HS_CORE || USB_OTG_FS_CORE */
     }
   }
@@ -701,6 +807,15 @@ static USBD_StatusTypeDef USBD_SetConfig(USBD_HandleTypeDef *pdev, USBD_SetupReq
 {
   USBD_StatusTypeDef  ret = USBD_OK;
   static uint8_t  cfgidx;
+
+  if ((req->bmRequest != (USB_REQ_DIR_HTD | USB_REQ_TYPE_STANDARD |
+                          USB_REQ_RECIPIENT_DEVICE)) ||
+      (req->wIndex != 0U) || (req->wLength != 0U) ||
+      (HIBYTE(req->wValue) != 0U))
+  {
+    USBD_CtlError(pdev, req);
+    return USBD_FAIL;
+  }
 
   cfgidx = (uint8_t)(req->wValue);
 
@@ -796,7 +911,9 @@ static USBD_StatusTypeDef USBD_SetConfig(USBD_HandleTypeDef *pdev, USBD_SetupReq
  */
 static void USBD_GetConfig(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
 {
-  if (req->wLength != 1U)
+  if ((req->bmRequest != (USB_REQ_DIR_DTH | USB_REQ_TYPE_STANDARD |
+                          USB_REQ_RECIPIENT_DEVICE)) ||
+      (req->wValue != 0U) || (req->wIndex != 0U) || (req->wLength != 1U))
   {
     USBD_CtlError(pdev, req);
   }
@@ -804,7 +921,6 @@ static void USBD_GetConfig(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
   {
     switch (pdev->dev_state)
     {
-      case USBD_STATE_DEFAULT:
       case USBD_STATE_ADDRESSED:
         pdev->dev_default_config = 0U;
         (void)USBD_CtlSendData(pdev, (uint8_t *)&pdev->dev_default_config, 1U);
@@ -830,16 +946,19 @@ static void USBD_GetConfig(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
  */
 static void USBD_GetStatus(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
 {
+  if ((req->bmRequest != (USB_REQ_DIR_DTH | USB_REQ_TYPE_STANDARD |
+                          USB_REQ_RECIPIENT_DEVICE)) ||
+      (req->wValue != 0U) || (req->wIndex != 0U) || (req->wLength != 2U))
+  {
+    USBD_CtlError(pdev, req);
+    return;
+  }
+
   switch (pdev->dev_state)
   {
     case USBD_STATE_DEFAULT:
     case USBD_STATE_ADDRESSED:
     case USBD_STATE_CONFIGURED:
-      if (req->wLength != 0x2U)
-      {
-        USBD_CtlError(pdev, req);
-        break;
-      }
 #if (USBD_SELF_POWERED == 1U)
       pdev->dev_config_status = USB_CONFIG_SELF_POWERED;
 #else
@@ -867,14 +986,26 @@ static void USBD_GetStatus(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
  */
 static void USBD_SetFeature(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
 {
-  if (req->wValue == USB_FEATURE_REMOTE_WAKEUP)
+  if ((req->bmRequest != (USB_REQ_DIR_HTD | USB_REQ_TYPE_STANDARD |
+                          USB_REQ_RECIPIENT_DEVICE)) || (req->wLength != 0U))
+  {
+    USBD_CtlError(pdev, req);
+  }
+  else if ((req->wValue == USB_FEATURE_REMOTE_WAKEUP) && (req->wIndex == 0U) &&
+           (pdev->dev_state == USBD_STATE_CONFIGURED) &&
+           (pdev->pConfDesc != NULL) &&
+           ((((USBD_ConfigDescTypeDef *)pdev->pConfDesc)->bmAttributes &
+             USB_CONFIG_ATTR_REMOTE_WAKEUP) != 0U))
   {
     pdev->dev_remote_wakeup = 1U;
   #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
     (void)USBD_CtlSendStatus(pdev);
   #endif /* USB_OTG_HS_CORE */
   }
-  else if (req->wValue == USB_FEATURE_TEST_MODE)
+  else if ((req->wValue == USB_FEATURE_TEST_MODE) &&
+           (pdev->dev_speed == USBD_SPEED_HIGH) &&
+           (LOBYTE(req->wIndex) == 0U) &&
+           (HIBYTE(req->wIndex) >= 1U) && (HIBYTE(req->wIndex) <= 5U))
   {
     pdev->dev_test_mode = (uint8_t)(req->wIndex >> 8);
   #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
@@ -896,18 +1027,26 @@ static void USBD_SetFeature(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
  */
 static void USBD_ClrFeature(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *req)
 {
+  if ((req->bmRequest != (USB_REQ_DIR_HTD | USB_REQ_TYPE_STANDARD |
+                          USB_REQ_RECIPIENT_DEVICE)) ||
+      (req->wValue != USB_FEATURE_REMOTE_WAKEUP) ||
+      (req->wIndex != 0U) || (req->wLength != 0U) ||
+      (pdev->dev_state != USBD_STATE_CONFIGURED) ||
+      (pdev->pConfDesc == NULL) ||
+      ((((USBD_ConfigDescTypeDef *)pdev->pConfDesc)->bmAttributes &
+        USB_CONFIG_ATTR_REMOTE_WAKEUP) == 0U))
+  {
+    USBD_CtlError(pdev, req);
+    return;
+  }
+
   switch (pdev->dev_state)
   {
-    case USBD_STATE_DEFAULT:
-    case USBD_STATE_ADDRESSED:
     case USBD_STATE_CONFIGURED:
-      if (req->wValue == USB_FEATURE_REMOTE_WAKEUP)
-      {
-        pdev->dev_remote_wakeup = 0U;
-      #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
-        (void)USBD_CtlSendStatus(pdev);
-      #endif /* USB_OTG_HS_CORE */
-      }
+      pdev->dev_remote_wakeup = 0U;
+    #if defined(USB_OTG_HS_CORE) || defined(USB_OTG_FS_CORE)
+      (void)USBD_CtlSendStatus(pdev);
+    #endif /* USB_OTG_HS_CORE */
       break;
 
     default:

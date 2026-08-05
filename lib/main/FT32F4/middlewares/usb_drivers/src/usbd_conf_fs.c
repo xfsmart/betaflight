@@ -91,6 +91,21 @@ void PCD_FS_DataInStageCallback(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum)
 }
 
 /**
+ * @brief  PCD_FS_AddressCallback
+ *         Apply the device-core address only after the status IN completed.
+ * @param  hpcd: PCD Handle
+ * @param  address: committed USB device address
+ * @retval None
+ */
+void PCD_FS_AddressCallback(PCD_FS_HandleTypeDef *hpcd, uint8_t address)
+{
+  USBD_HandleTypeDef *pdev = (USBD_HandleTypeDef *)hpcd->pData;
+
+  pdev->dev_address = address;
+  pdev->dev_state = (address != 0U) ? USBD_STATE_ADDRESSED : USBD_STATE_DEFAULT;
+}
+
+/**
  * @brief  PCD_FS_SOFCallback
  *         SOF Callback
  * @param  hpcd: PCD Handle

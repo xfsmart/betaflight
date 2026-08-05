@@ -37,6 +37,12 @@
 /* Private typedef -----------------------------------------------------------*/
 /* Private define ------------------------------------------------------------*/
 /* Private macro -------------------------------------------------------------*/
+#ifndef USB_FS_FIFO_READ_BYTE
+#define USB_FS_FIFO_READ_BYTE(address) (*((volatile uint8_t *)(address)))
+#endif
+#ifndef USB_FS_FIFO_WRITE_BYTE
+#define USB_FS_FIFO_WRITE_BYTE(address, value) ((*((volatile uint8_t *)(address))) = (value))
+#endif
 /* Private variables ---------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
 /* Private functions ---------------------------------------------------------*/
@@ -422,35 +428,44 @@ void USB_FS_DEPStartXfer(USB_OTG_FS_DEPTypeDef *dep)
   * @param  ep pointer to endpoint structure
   * @retval none
   */
-void USB_FS_DEP0StartXfer(USB_OTG_FS_DEPTypeDef *dep)
+void USB_FS_DEP0StartXfer(USB_OTG_FS_DEPTypeDef *dep,
+                          USB_OTG_FS_CtlStateTypeDef ctrl_state,
+                          uint8_t data_end)
 {
-  USB_FS_IndexSel(0U);
   uint16_t pkt_len;
+
+  (void)USB_FS_IndexSel(0U);
+
   /* tx endpoint */
-  if (dep->is_in == 1U)
+  if ((dep->is_in == 1U) && (dep->is_stall == 0U))
   {
-    if (dep->is_stall == 0U)
+    pkt_len = (uint16_t)dep->xfer_len;
+    if (pkt_len > dep->maxpacket)
     {
-      pkt_len = (dep->xfer_len > dep->maxpacket) ? (uint16_t)dep->maxpacket : (uint16_t)dep->xfer_len;
+      return;
+    }
+
+    if (pkt_len != 0U)
+    {
       USB_FS_FIFOWrite(dep->xfer_buff, dep->num, pkt_len);
       dep->xfer_buff += pkt_len;
       dep->xfer_count = pkt_len;
-      if (dep->xfer_len == 0U)
-	      {
-	        /* FT32 FS EP0 zero-length status must use DATAEND only.
-	         * Adding TXPKTRDY here leaves EP0 busy (srx-tx-dataend SWD). */
-	        USB_FS->CSR0 = OTG_FS_CSR0_DATAEND;
-	      }
-	      else if (pkt_len < dep->maxpacket)
-	      {
-	        USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY | OTG_FS_CSR0_DATAEND;
-	      }
-	      else
-	      {
-	        USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY;
-	      }
-	    }
-	  }
+
+      USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY |
+                     ((data_end != 0U) ? OTG_FS_CSR0_DATAEND : 0U);
+    }
+    else if (ctrl_state == PCD_CTRL_STATUS_IN)
+    {
+      /* Board B established that a status-stage ZLP must be committed with
+       * DATAEND only. TXPKTRDY in this branch leaves FT32 EP0 busy. */
+      USB_FS->CSR0 = OTG_FS_CSR0_DATAEND;
+    }
+    else if (ctrl_state == PCD_CTRL_DATA_IN)
+    {
+      /* A data-stage ZLP terminates a max-packet-aligned short response. */
+      USB_FS->CSR0 = OTG_FS_CSR0_TXPKTRDY | OTG_FS_CSR0_DATAEND;
+    }
+  }
 }
 
 
@@ -495,7 +510,7 @@ void USB_FS_FIFORead(uint8_t *dst, uint8_t ep_num, uint16_t len)
 
   while (readcount != 0U)
   {
-    *dst++ = *((uint8_t *)fifo_addr);
+    *dst++ = USB_FS_FIFO_READ_BYTE(fifo_addr);
     readcount = readcount - 1U;
   }
 
@@ -543,7 +558,7 @@ void USB_FS_FIFOWrite(uint8_t *src, uint8_t ep_num, uint16_t len)
 
   while (writecount)
   {
-    *((uint8_t *)fifo_addr) = *src++;
+    USB_FS_FIFO_WRITE_BYTE(fifo_addr, *src++);
     writecount--;
   }
 }
@@ -1026,10 +1041,10 @@ uint32_t  USB_FS_ReadInterrupts(void)
   */
 USB_FS_StatusTypeDef USB_FS_SendStall(USB_OTG_FS_DEPTypeDef *dep)
 {
-  if (dep->num == 0) /* endpoint0 */
+  if (dep->num == 0U) /* endpoint0 */
   {
-    USB_FS_IndexSel(0U);
-    USB_FS->CSR0 |= OTG_FS_CSR0_SDSTALL;
+    (void)USB_FS_IndexSel(0U);
+    USB_FS->CSR0 = OTG_FS_CSR0_SDSTALL;
   }
   else
   {
@@ -1052,7 +1067,13 @@ USB_FS_StatusTypeDef USB_FS_SendStall(USB_OTG_FS_DEPTypeDef *dep)
   */
 USB_FS_StatusTypeDef USB_FS_ClrStall(USB_OTG_FS_DEPTypeDef *dep)
 {
-  USB_FS_IndexSel(dep->num);
+  (void)USB_FS_IndexSel(dep->num);
+  if (dep->num == 0U)
+  {
+    USB_FS->CSR0 = 0U;
+    return USB_FS_OK;
+  }
+
   if (dep->is_in) /* tx */
   {
     USB_FS->TXCSR1 &= (~(OTG_FS_TXCSR1_SDSTALL | OTG_FS_TXCSR1_STSTALL));

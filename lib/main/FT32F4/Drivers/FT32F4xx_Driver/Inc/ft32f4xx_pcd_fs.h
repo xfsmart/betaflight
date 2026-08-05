@@ -67,6 +67,12 @@ typedef struct
   PCD_FS_EPTypeDef             IN_ep[16];  /*!< IN endpoint parameters    */
   PCD_FS_EPTypeDef             OUT_ep[16]; /*!< OUT endpoint parameters   */
   PCD_FS_CtlStateTypeDef       ctrl_state;
+  uint32_t                     ep0_data_in_total;
+  uint32_t                     ep0_data_in_count;
+  uint8_t                      ep0_data_in_zlp;
+  uint8_t                      ep0_in_pending;
+  uint8_t                      ep0_out_pending;
+  uint8_t                      address_pending;
   PCD_FS_LockTypeDef           Lock;       /*!< PCD peripheral status     */
   __IO PCD_FS_StateTypeDef     State;      /*!< PCD communication state   */
   __IO  uint32_t               ErrorCode;  /*!< PCD Error code            */
@@ -138,6 +144,7 @@ void PCD_FS_DERRCallback(PCD_FS_HandleTypeDef *hpcd);
 
 void PCD_FS_DataOutStageCallback(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum);
 void PCD_FS_DataInStageCallback(PCD_FS_HandleTypeDef *hpcd, uint8_t epnum);
+void PCD_FS_AddressCallback(PCD_FS_HandleTypeDef *hpcd, uint8_t address);
 
 /* Peripheral Control functions  **********************************************/
 

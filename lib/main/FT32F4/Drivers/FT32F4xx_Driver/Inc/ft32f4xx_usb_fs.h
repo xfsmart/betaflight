@@ -91,9 +91,12 @@ typedef enum
   */
 typedef enum
 {
-  CTRL_SETUP_P = 0,
-  CTRL_DATA,
-  CTRL_STATUS,
+  PCD_CTRL_SETUP = 0,
+  PCD_CTRL_DATA_IN,
+  PCD_CTRL_DATA_OUT,
+  PCD_CTRL_STATUS_IN,
+  PCD_CTRL_STATUS_OUT,
+  PCD_CTRL_STALL,
 } USB_OTG_FS_CtlStateTypeDef;
 
 /**
@@ -423,7 +426,9 @@ uint32_t USB_FS_ReadInterrupts(void);
 
 void USB_FS_Enable_DEP(USB_OTG_FS_DEPTypeDef *dep);
 void USB_FS_DEPStartXfer(USB_OTG_FS_DEPTypeDef *dep);
-void USB_FS_DEP0StartXfer(USB_OTG_FS_DEPTypeDef *dep);
+void USB_FS_DEP0StartXfer(USB_OTG_FS_DEPTypeDef *dep,
+                          USB_OTG_FS_CtlStateTypeDef ctrl_state,
+                          uint8_t data_end);
 void USB_FS_FIFORead(uint8_t *dstP, uint8_t ep_num, uint16_t len);
 void USB_FS_FIFOWrite(uint8_t *srcP, uint8_t ep_num, uint16_t len);
 //void USB_FS_IntHandle(void);

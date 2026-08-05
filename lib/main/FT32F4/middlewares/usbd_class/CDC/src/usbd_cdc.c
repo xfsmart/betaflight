@@ -94,6 +94,12 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypeDef *re
 static uint8_t USBD_CDC_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum);
 static uint8_t USBD_CDC_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum);
 static uint8_t USBD_CDC_EP0_RxReady(USBD_HandleTypeDef *pdev);
+static uint8_t USBD_CDC_IsValidInterfaceIndex(const USBD_HandleTypeDef *pdev,
+                                              uint16_t index);
+static uint8_t USBD_CDC_IsValidCommunicationInterfaceIndex(
+    const USBD_HandleTypeDef *pdev, uint16_t index);
+static uint8_t USBD_CDC_IsValidClassRequest(const USBD_HandleTypeDef *pdev,
+                                            const USBD_SetupReqTypeDef *req);
 #ifndef USE_USBD_COMPOSITE
 static uint8_t *USBD_CDC_GetFSCfgDesc(uint16_t *length);
 static uint8_t *USBD_CDC_GetHSCfgDesc(uint16_t *length);
@@ -434,12 +440,28 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
 
   if (hcdc == NULL)
   {
+    USBD_CtlError(pdev, req);
     return (uint8_t)USBD_FAIL;
   }
+
+#ifdef USE_USBD_COMPOSITE
+  if (pdev->pUserData[pdev->classId] == NULL)
+  {
+    USBD_CtlError(pdev, req);
+    return (uint8_t)USBD_FAIL;
+  }
+#endif /* USE_USBD_COMPOSITE */
 
   switch (req->bmRequest & USB_REQ_TYPE_MASK)
   {
     case USB_REQ_TYPE_CLASS:
+      if (USBD_CDC_IsValidClassRequest(pdev, req) == 0U)
+      {
+        USBD_CtlError(pdev, req);
+        ret = USBD_FAIL;
+        break;
+      }
+
       if (req->wLength != 0U)
       {
         if ((req->bmRequest & 0x80U) != 0U)
@@ -482,7 +504,15 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
       switch (req->bRequest)
       {
         case USB_REQ_GET_STATUS:
-          if (pdev->dev_state == USBD_STATE_CONFIGURED)
+          if ((req->bmRequest != (USB_REQ_DIR_DTH | USB_REQ_TYPE_STANDARD |
+                                  USB_REQ_RECIPIENT_INTERFACE)) ||
+              (req->wValue != 0U) || (req->wLength != 2U) ||
+              (USBD_CDC_IsValidInterfaceIndex(pdev, req->wIndex) == 0U))
+          {
+            USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
+          }
+          else if (pdev->dev_state == USBD_STATE_CONFIGURED)
           {
             (void)USBD_CtlSendData(pdev, (uint8_t *)&status_info, 2U);
           }
@@ -494,7 +524,15 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
           break;
 
         case USB_REQ_GET_INTERFACE:
-          if (pdev->dev_state == USBD_STATE_CONFIGURED)
+          if ((req->bmRequest != (USB_REQ_DIR_DTH | USB_REQ_TYPE_STANDARD |
+                                  USB_REQ_RECIPIENT_INTERFACE)) ||
+              (req->wValue != 0U) || (req->wLength != 1U) ||
+              (USBD_CDC_IsValidInterfaceIndex(pdev, req->wIndex) == 0U))
+          {
+            USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
+          }
+          else if (pdev->dev_state == USBD_STATE_CONFIGURED)
           {
             (void)USBD_CtlSendData(pdev, &ifalt, 1U);
           }
@@ -506,7 +544,11 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
           break;
 
         case USB_REQ_SET_INTERFACE:
-          if (pdev->dev_state != USBD_STATE_CONFIGURED)
+          if ((req->bmRequest != (USB_REQ_DIR_HTD | USB_REQ_TYPE_STANDARD |
+                                  USB_REQ_RECIPIENT_INTERFACE)) ||
+              (req->wValue != 0U) || (req->wLength != 0U) ||
+              (USBD_CDC_IsValidInterfaceIndex(pdev, req->wIndex) == 0U) ||
+              (pdev->dev_state != USBD_STATE_CONFIGURED))
           {
             USBD_CtlError(pdev, req);
             ret = USBD_FAIL;
@@ -514,6 +556,15 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
           break;
 
         case USB_REQ_CLEAR_FEATURE:
+          if ((req->bmRequest != (USB_REQ_DIR_HTD | USB_REQ_TYPE_STANDARD |
+                                  USB_REQ_RECIPIENT_ENDPOINT)) ||
+              (req->wValue != USB_FEATURE_EP_HALT) || (req->wLength != 0U) ||
+              ((req->wIndex & 0xFF70U) != 0U) ||
+              ((LOBYTE(req->wIndex) & 0x7FU) == 0U))
+          {
+            USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
+          }
           break;
 
         default:
@@ -530,6 +581,110 @@ static uint8_t USBD_CDC_Setup(USBD_HandleTypeDef *pdev,
   }
 
   return (uint8_t)ret;
+}
+
+static uint8_t USBD_CDC_IsValidInterfaceIndex(const USBD_HandleTypeDef *pdev,
+                                              uint16_t index)
+{
+#ifdef USE_USBD_COMPOSITE
+  uint32_t interface_index;
+
+  if ((pdev->classId >= USBD_MAX_SUPPORTED_CLASS) ||
+      (pdev->tclasslist[pdev->classId].Active == 0U) ||
+      (pdev->tclasslist[pdev->classId].NumIf == 0U) ||
+      (pdev->tclasslist[pdev->classId].NumIf > USBD_MAX_CLASS_INTERFACES))
+  {
+    return 0U;
+  }
+
+  for (interface_index = 0U;
+       interface_index < pdev->tclasslist[pdev->classId].NumIf;
+       interface_index++)
+  {
+    if (index == pdev->tclasslist[pdev->classId].Ifs[interface_index])
+    {
+      return 1U;
+    }
+  }
+  return 0U;
+#else
+  UNUSED(pdev);
+  return (index <= 1U) ? 1U : 0U;
+#endif /* USE_USBD_COMPOSITE */
+}
+
+static uint8_t USBD_CDC_IsValidCommunicationInterfaceIndex(
+    const USBD_HandleTypeDef *pdev, uint16_t index)
+{
+#ifdef USE_USBD_COMPOSITE
+  if ((pdev->classId >= USBD_MAX_SUPPORTED_CLASS) ||
+      (pdev->tclasslist[pdev->classId].Active == 0U) ||
+      (pdev->tclasslist[pdev->classId].NumIf == 0U))
+  {
+    return 0U;
+  }
+  return (index == pdev->tclasslist[pdev->classId].Ifs[0]) ? 1U : 0U;
+#else
+  UNUSED(pdev);
+  return (index == 0U) ? 1U : 0U;
+#endif /* USE_USBD_COMPOSITE */
+}
+
+static uint8_t USBD_CDC_IsValidClassRequest(const USBD_HandleTypeDef *pdev,
+                                            const USBD_SetupReqTypeDef *req)
+{
+  if (((req->bmRequest & USB_REQ_RECIPIENT_MASK) != USB_REQ_RECIPIENT_INTERFACE) ||
+      (USBD_CDC_IsValidCommunicationInterfaceIndex(pdev, req->wIndex) == 0U))
+  {
+    return 0U;
+  }
+
+  switch (req->bRequest)
+  {
+    case CDC_SEND_ENCAPSULATED_COMMAND:
+      return (((req->bmRequest & USB_REQ_DIR_DTH) == USB_REQ_DIR_HTD) &&
+              (req->wValue == 0U) && (req->wLength != 0U) &&
+              (req->wLength <= USB_MAX_EP0_SIZE)) ? 1U : 0U;
+
+    case CDC_GET_ENCAPSULATED_RESPONSE:
+      return (((req->bmRequest & USB_REQ_DIR_DTH) == USB_REQ_DIR_DTH) &&
+              (req->wValue == 0U) && (req->wLength != 0U) &&
+              (req->wLength <= USB_MAX_EP0_SIZE)) ? 1U : 0U;
+
+    case CDC_SET_COMM_FEATURE:
+      return (((req->bmRequest & USB_REQ_DIR_DTH) == USB_REQ_DIR_HTD) &&
+              ((req->wValue == 1U) || (req->wValue == 2U)) &&
+              (req->wLength == 2U)) ? 1U : 0U;
+
+    case CDC_GET_COMM_FEATURE:
+      return (((req->bmRequest & USB_REQ_DIR_DTH) == USB_REQ_DIR_DTH) &&
+              ((req->wValue == 1U) || (req->wValue == 2U)) &&
+              (req->wLength == 2U)) ? 1U : 0U;
+
+    case CDC_CLEAR_COMM_FEATURE:
+      return (((req->bmRequest & USB_REQ_DIR_DTH) == USB_REQ_DIR_HTD) &&
+              ((req->wValue == 1U) || (req->wValue == 2U)) &&
+              (req->wLength == 0U)) ? 1U : 0U;
+
+    case CDC_SET_LINE_CODING:
+      return (((req->bmRequest & USB_REQ_DIR_DTH) == USB_REQ_DIR_HTD) &&
+              (req->wValue == 0U) && (req->wLength == CDC_REQ_MAX_DATA_SIZE)) ? 1U : 0U;
+
+    case CDC_GET_LINE_CODING:
+      return (((req->bmRequest & USB_REQ_DIR_DTH) == USB_REQ_DIR_DTH) &&
+              (req->wValue == 0U) && (req->wLength == CDC_REQ_MAX_DATA_SIZE)) ? 1U : 0U;
+
+    case CDC_SET_CONTROL_LINE_STATE:
+      return (((req->bmRequest & USB_REQ_DIR_DTH) == USB_REQ_DIR_HTD) &&
+              ((req->wValue & 0xFFFCU) == 0U) && (req->wLength == 0U)) ? 1U : 0U;
+
+    case CDC_SEND_BREAK:
+      return (((req->bmRequest & USB_REQ_DIR_DTH) == USB_REQ_DIR_HTD) &&
+              (req->wLength == 0U)) ? 1U : 0U;
+
+    default:
+      return 0U;
+  }
 }
 
 /**
@@ -1004,4 +1159,3 @@ uint8_t USBD_CDC_ReceivePacket(USBD_HandleTypeDef *pdev)
 /**
   * @}
   */
-

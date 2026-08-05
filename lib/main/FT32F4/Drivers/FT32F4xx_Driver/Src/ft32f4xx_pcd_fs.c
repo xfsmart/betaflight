@@ -56,6 +56,12 @@ static __IO uint8_t report;
 /* Private macro -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
+static void PCD_FS_EP0ResetTransferState(PCD_FS_HandleTypeDef *hpcd);
+static void PCD_FS_EP0AbortTransfer(PCD_FS_HandleTypeDef *hpcd);
+static void PCD_FS_EP0Stall(PCD_FS_HandleTypeDef *hpcd);
+static void PCD_FS_EP0CompleteStatusIn(PCD_FS_HandleTypeDef *hpcd);
+static uint16_t PCD_FS_EP0GetSetupLength(const PCD_FS_HandleTypeDef *hpcd);
+
 /** @defgroup PCD_FS_Private_Macros PCD Private Functions
   * @{
   */
@@ -68,6 +74,70 @@ static __IO uint8_t report;
 /** @defgroup PCD_FS_Private_Functions PCD Private Functions
   * @{
   */
+
+static void PCD_FS_EP0ResetTransferState(PCD_FS_HandleTypeDef *hpcd)
+{
+  PCD_FS_EPTypeDef *in_ep = &hpcd->IN_ep[0U];
+  PCD_FS_EPTypeDef *out_ep = &hpcd->OUT_ep[0U];
+
+  in_ep->xfer_buff = NULL;
+  in_ep->xfer_len = 0U;
+  in_ep->xfer_count = 0U;
+  in_ep->is_stall = 0U;
+
+  out_ep->xfer_buff = NULL;
+  out_ep->xfer_len = 0U;
+  out_ep->xfer_count = 0U;
+  out_ep->is_stall = 0U;
+
+  hpcd->ctrl_state = PCD_CTRL_SETUP;
+  hpcd->ep0_data_in_total = 0U;
+  hpcd->ep0_data_in_count = 0U;
+  hpcd->ep0_data_in_zlp = 0U;
+  hpcd->ep0_in_pending = 0U;
+  hpcd->ep0_out_pending = 0U;
+}
+
+static void PCD_FS_EP0AbortTransfer(PCD_FS_HandleTypeDef *hpcd)
+{
+  if (hpcd->address_pending != 0U)
+  {
+    hpcd->USB_Address = USB_FS_GetAddress();
+    hpcd->address_pending = 0U;
+  }
+
+  PCD_FS_EP0ResetTransferState(hpcd);
+}
+
+static void PCD_FS_EP0Stall(PCD_FS_HandleTypeDef *hpcd)
+{
+  PCD_FS_EP0AbortTransfer(hpcd);
+  hpcd->ctrl_state = PCD_CTRL_STALL;
+  hpcd->IN_ep[0U].is_stall = 1U;
+  hpcd->OUT_ep[0U].is_stall = 1U;
+  (void)USB_FS_SendStall(&hpcd->IN_ep[0U]);
+}
+
+static void PCD_FS_EP0CompleteStatusIn(PCD_FS_HandleTypeDef *hpcd)
+{
+  hpcd->ep0_in_pending = 0U;
+  if (hpcd->address_pending != 0U)
+  {
+    USB_FS_SetAddress(hpcd->USB_Address);
+    hpcd->address_pending = 0U;
+    PCD_FS_AddressCallback(hpcd, hpcd->USB_Address);
+  }
+
+  PCD_FS_EP0ResetTransferState(hpcd);
+  PCD_FS_DataInStageCallback(hpcd, 0U);
+}
+
+static uint16_t PCD_FS_EP0GetSetupLength(const PCD_FS_HandleTypeDef *hpcd)
+{
+  const uint8_t *setup = (const uint8_t *)hpcd->Setup;
+
+  return (uint16_t)setup[6] | ((uint16_t)setup[7] << 8U);
+}
 
 /**
   * @{
@@ -141,6 +211,8 @@ USB_FS_StatusTypeDef PCD_FS_Init(PCD_FS_HandleTypeDef *hpcd)
     hpcd->IN_ep[i].maxpacket = 0U;
     hpcd->IN_ep[i].xfer_buff = 0U;
     hpcd->IN_ep[i].xfer_len = 0U;
+    hpcd->IN_ep[i].xfer_count = 0U;
+    hpcd->IN_ep[i].is_stall = 0U;
   }
 
   for (i = 0U; i < hpcd->Init.endpoints; i++)
@@ -152,6 +224,8 @@ USB_FS_StatusTypeDef PCD_FS_Init(PCD_FS_HandleTypeDef *hpcd)
     hpcd->OUT_ep[i].maxpacket = 0U;
     hpcd->OUT_ep[i].xfer_buff = 0U;
     hpcd->OUT_ep[i].xfer_len = 0U;
+    hpcd->OUT_ep[i].xfer_count = 0U;
+    hpcd->OUT_ep[i].is_stall = 0U;
   }
 
   /* Init Device */
@@ -162,8 +236,9 @@ USB_FS_StatusTypeDef PCD_FS_Init(PCD_FS_HandleTypeDef *hpcd)
   }
 
   hpcd->USB_Address = 0U;
+  hpcd->address_pending = 0U;
   hpcd->State = PCD_FS_STATE_READY;
-  hpcd->ctrl_state = CTRL_SETUP_P;
+  PCD_FS_EP0ResetTransferState(hpcd);
   USB_FS_DrvSess(1U);
 
   return USB_FS_OK;
@@ -416,7 +491,7 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
 	      /* Handle Host reset Interrupt */
 	      if ((reg_int & OTG_FS_INTRUSB_RSTINT) == OTG_FS_INTRUSB_RSTINT)
 	      {
-	        USB_FS->CSR0 |= (OTG_FS_CSR0_SSETUPEND | OTG_FS_CSR0_SRXPKTRDY);
+	        USB_FS->CSR0 = OTG_FS_CSR0_SSETUPEND | OTG_FS_CSR0_SRXPKTRDY;
 	        USB_FS_RstEP0Regs();
 	        for (i = 1U; i < hpcd->Init.endpoints; i++)
         {
@@ -430,7 +505,9 @@ void PCD_FS_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
         USB_FS_SetEPInt(0x0FU);
 
         hpcd->USB_Address = 0U;
+	        hpcd->address_pending = 0U;
 	        USB_FS_SetAddress(0U);
+	        PCD_FS_EP0ResetTransferState(hpcd);
 
 	        PCD_FS_ResetCallback(hpcd);
 	      }
@@ -655,6 +732,7 @@ USB_FS_StatusTypeDef PCD_FS_SetAddress(PCD_FS_HandleTypeDef *hpcd, uint8_t addre
 {
   __USB_FS_LOCK(hpcd);
   hpcd->USB_Address = address;
+  hpcd->address_pending = 1U;
   __USB_FS_UNLOCK(hpcd);
 
   return USB_FS_OK;
@@ -752,19 +830,58 @@ USB_FS_StatusTypeDef PCD_FS_EP_Close(PCD_FS_HandleTypeDef *hpcd, uint8_t ep_addr
 void PCD_FS_EP_Receive(PCD_FS_HandleTypeDef *hpcd, uint8_t ep_addr, uint8_t *pBuf, uint32_t len)
 {
   PCD_FS_EPTypeDef *ep;
+  uint32_t pkt_len;
 
   ep = &hpcd->OUT_ep[ep_addr & EP_ADDR_MSK];
 
   /*setup and start the Xfer */
+  ep->is_in = 0U;
+  ep->num = ep_addr & EP_ADDR_MSK;
+
+  if (ep->num == 0U)
+  {
+    if (((len != 0U) && ((pBuf == NULL) || (ep->maxpacket == 0U))) ||
+        ((len == 0U) && (pBuf != NULL)))
+    {
+      PCD_FS_EP0Stall(hpcd);
+      return;
+    }
+
+    if ((len != 0U) && (hpcd->ep0_out_pending != 0U))
+    {
+      PCD_FS_EP0Stall(hpcd);
+      return;
+    }
+
+    if ((len != 0U) && (hpcd->ctrl_state == PCD_CTRL_DATA_OUT) &&
+        (hpcd->ep0_out_pending == 0U) && (ep->xfer_buff != pBuf))
+    {
+      PCD_FS_EP0Stall(hpcd);
+      return;
+    }
+
+    pkt_len = (len > ep->maxpacket) ? ep->maxpacket : len;
+    ep->xfer_buff = pBuf;
+    ep->xfer_len = pkt_len;
+    ep->xfer_count = 0U;
+    hpcd->ep0_out_pending = 1U;
+
+    if (len != 0U)
+    {
+      hpcd->ctrl_state = PCD_CTRL_DATA_OUT;
+    }
+    else if (!((hpcd->ctrl_state == PCD_CTRL_DATA_IN) &&
+               (hpcd->ep0_in_pending != 0U)))
+    {
+      hpcd->ctrl_state = PCD_CTRL_STATUS_OUT;
+    }
+    return;
+  }
+
   ep->xfer_buff = pBuf;
   ep->xfer_len = len;
   ep->xfer_count = 0U;
-  ep->is_in = 0U;
-  ep->num = ep_addr & EP_ADDR_MSK;
-  if (ep->num != 0U)
-  {
-    USB_FS_DEPStartXfer(ep);
-  }
+  USB_FS_DEPStartXfer(ep);
 }
 
 /**
@@ -788,27 +905,96 @@ uint32_t PCD_FS_EP_GetRxCount(const PCD_FS_HandleTypeDef *hpcd, uint8_t ep_addr)
 void PCD_FS_EP_Transmit(PCD_FS_HandleTypeDef *hpcd, uint8_t ep_addr, uint8_t *pBuf, uint32_t len)
 {
   PCD_FS_EPTypeDef *ep;
+  uint32_t pkt_len;
+  uint32_t remaining;
+  uint8_t data_end;
 
   ep = &hpcd->IN_ep[ep_addr & EP_ADDR_MSK];
 
   /*setup and start the Xfer */
-  ep->xfer_buff = pBuf;
-  ep->xfer_len = len;
-  ep->xfer_count = 0U;
   ep->is_in = 1U;
   ep->num = ep_addr & EP_ADDR_MSK;
-  ep->is_stall = 0U;
 
   if (ep->num != 0U)
   {
+    ep->xfer_buff = pBuf;
+    ep->xfer_len = len;
+    ep->xfer_count = 0U;
+    ep->is_stall = 0U;
     (void)USB_FS_IndexSel(ep->num);
     USB_FS->TXCSR1 &= (~OTG_FS_TXCSR1_STSTALL);
     USB_FS_DEPStartXfer(ep);
+    return;
+  }
+
+  if (((len != 0U) && ((pBuf == NULL) || (ep->maxpacket == 0U))) ||
+      ((len == 0U) && (pBuf != NULL)))
+  {
+    PCD_FS_EP0Stall(hpcd);
+    return;
+  }
+
+  /* The middleware may submit the next EP0 IN packet only from the previous
+   * packet's completion callback. Re-arming an outstanding packet would lose
+   * both the FIFO ownership token and the transfer accounting. */
+  if (hpcd->ep0_in_pending != 0U)
+  {
+    PCD_FS_EP0Stall(hpcd);
+    return;
+  }
+
+  data_end = 1U;
+  if ((hpcd->ctrl_state == PCD_CTRL_DATA_IN) &&
+      (hpcd->ep0_data_in_count <= hpcd->ep0_data_in_total))
+  {
+    remaining = hpcd->ep0_data_in_total - hpcd->ep0_data_in_count;
+    if ((len != remaining) || ((len != 0U) && (pBuf != ep->xfer_buff)))
+    {
+      PCD_FS_EP0Stall(hpcd);
+      return;
+    }
+  }
+  else if (hpcd->ctrl_state == PCD_CTRL_DATA_IN)
+  {
+    PCD_FS_EP0Stall(hpcd);
+    return;
   }
   else
   {
-    USB_FS_DEP0StartXfer(ep);
+    if (len == 0U)
+    {
+      hpcd->ctrl_state = PCD_CTRL_STATUS_IN;
+      hpcd->ep0_data_in_total = 0U;
+      hpcd->ep0_data_in_count = 0U;
+      hpcd->ep0_data_in_zlp = 0U;
+    }
+    else
+    {
+      hpcd->ctrl_state = PCD_CTRL_DATA_IN;
+      hpcd->ep0_data_in_total = len;
+      hpcd->ep0_data_in_count = 0U;
+      hpcd->ep0_data_in_zlp = (((len % ep->maxpacket) == 0U) &&
+                               (len < PCD_FS_EP0GetSetupLength(hpcd))) ? 1U : 0U;
+    }
   }
+
+  pkt_len = (len > ep->maxpacket) ? ep->maxpacket : len;
+  if ((hpcd->ctrl_state == PCD_CTRL_DATA_IN) && (len > ep->maxpacket))
+  {
+    data_end = 0U;
+  }
+  else if ((hpcd->ctrl_state == PCD_CTRL_DATA_IN) && (len != 0U) &&
+           (hpcd->ep0_data_in_zlp != 0U))
+  {
+    data_end = 0U;
+  }
+
+  ep->xfer_buff = pBuf;
+  ep->xfer_len = pkt_len;
+  ep->xfer_count = 0U;
+  ep->is_stall = 0U;
+  hpcd->ep0_in_pending = 1U;
+  USB_FS_DEP0StartXfer(ep, hpcd->ctrl_state, data_end);
 }
 
 /**
@@ -821,7 +1007,7 @@ USB_FS_StatusTypeDef PCD_FS_EP_SetStall(PCD_FS_HandleTypeDef *hpcd, uint8_t ep_a
 {
   PCD_FS_EPTypeDef *ep;
 
-  if (((uint32_t)ep_addr & EP_ADDR_MSK) > hpcd->Init.endpoints)
+  if (((uint32_t)ep_addr & EP_ADDR_MSK) >= hpcd->Init.endpoints)
   {
     return USB_FS_ERROR;
   }
@@ -842,11 +1028,13 @@ USB_FS_StatusTypeDef PCD_FS_EP_SetStall(PCD_FS_HandleTypeDef *hpcd, uint8_t ep_a
 
   __USB_FS_LOCK(hpcd);
 
-  USB_FS_SendStall(ep);
-
   if ((ep_addr & EP_ADDR_MSK) == 0U)
   {
-    (void)USB_FS_DEP0StartXfer(ep);
+    PCD_FS_EP0Stall(hpcd);
+  }
+  else
+  {
+    (void)USB_FS_SendStall(ep);
   }
 
   __USB_FS_UNLOCK(hpcd);
@@ -864,7 +1052,7 @@ USB_FS_StatusTypeDef PCD_FS_EP_ClrStall(PCD_FS_HandleTypeDef *hpcd, uint8_t ep_a
 {
   PCD_FS_EPTypeDef *ep;
 
-  if (((uint32_t)ep_addr & 0x0FU) > hpcd->Init.endpoints)
+  if (((uint32_t)ep_addr & 0x0FU) >= hpcd->Init.endpoints)
   {
     return USB_FS_ERROR;
   }
@@ -884,7 +1072,11 @@ USB_FS_StatusTypeDef PCD_FS_EP_ClrStall(PCD_FS_HandleTypeDef *hpcd, uint8_t ep_a
   ep->num = ep_addr & EP_ADDR_MSK;
 
   __USB_FS_LOCK(hpcd);
-  USB_FS_ClrStall(ep);
+  if (ep->num == 0U)
+  {
+    PCD_FS_EP0AbortTransfer(hpcd);
+  }
+  (void)USB_FS_ClrStall(ep);
   __USB_FS_UNLOCK(hpcd);
 
   return USB_FS_OK;
@@ -915,6 +1107,7 @@ USB_FS_StatusTypeDef PCD_FS_EP_Abort(PCD_FS_HandleTypeDef *hpcd, uint8_t ep_addr
   if (ep->num == 0U)
   {
     ret = USB_FS_RstEP0Regs();
+    PCD_FS_EP0AbortTransfer(hpcd);
   }
   else
   {
@@ -1024,74 +1217,166 @@ void PCD_FS_EP0_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
   USB_OTG_FS_DEPTypeDef *ep;
   uint8_t tmpreg;
   uint8_t bytecount;
-	  uint32_t remaining;
-	  uint16_t pkt_len;
-	  uint8_t csr_cmd;
-	  tmpreg = USB_FS->CSR0;
 
-	  if ((tmpreg & OTG_FS_CSR0_RXPKTRDY) == OTG_FS_CSR0_RXPKTRDY)
-	  {
+  tmpreg = USB_FS->CSR0;
+
+  /* SETUPEND terminates the old control transfer. A new SETUP can already
+   * be waiting in FIFO0, so acknowledge the old transfer before re-reading
+   * CSR0 and never flush FIFO0 on this path. */
+  if ((tmpreg & OTG_FS_CSR0_SETUPEND) != 0U)
+  {
+    USB_FS->CSR0 = OTG_FS_CSR0_SSETUPEND;
+    PCD_FS_EP0AbortTransfer(hpcd);
+    tmpreg = USB_FS->CSR0;
+  }
+
+  if ((tmpreg & OTG_FS_CSR0_STSTALL) != 0U)
+  {
+    /* STSTALL is RC_W0. A direct zero avoids replaying CSR0 command bits. */
+    USB_FS->CSR0 = 0U;
+    PCD_FS_EP0AbortTransfer(hpcd);
+    tmpreg = USB_FS->CSR0;
+  }
+
+  /* The ACK for the last IN packet and its zero-length STATUS OUT can be
+   * reported by one endpoint interrupt. Complete a genuinely final data
+   * packet first so the device core can arm STATUS OUT before it is consumed.
+   * For an early host termination, leave the data callback suppressed and let
+   * the STATUS OUT path below abort the outstanding IN transfer. */
+  if (((tmpreg & OTG_FS_CSR0_RXPKTRDY) != 0U) &&
+      ((tmpreg & (OTG_FS_CSR0_TXPKTRDY | OTG_FS_CSR0_DATAEND)) == 0U) &&
+      (hpcd->ep0_in_pending != 0U) &&
+      (hpcd->ctrl_state == PCD_CTRL_DATA_IN))
+  {
+    uint32_t completed_count;
+
+    ep = &hpcd->IN_ep[0U];
+    if ((hpcd->ep0_data_in_count > hpcd->ep0_data_in_total) ||
+        (ep->xfer_count > ep->xfer_len) ||
+        (ep->xfer_count > (hpcd->ep0_data_in_total - hpcd->ep0_data_in_count)))
+    {
+      PCD_FS_EP0Stall(hpcd);
+      return;
+    }
+
+    completed_count = hpcd->ep0_data_in_count + ep->xfer_count;
+    if ((completed_count == hpcd->ep0_data_in_total) &&
+        ((hpcd->ep0_data_in_zlp == 0U) || (ep->xfer_len == 0U)))
+    {
+      hpcd->ep0_in_pending = 0U;
+      hpcd->ep0_data_in_count = completed_count;
+      PCD_FS_DataInStageCallback(hpcd, 0U);
+      tmpreg = USB_FS->CSR0;
+    }
+  }
+
+  /* A new SETUP can share the interrupt that reports completion of the
+   * previous STATUS IN. Commit deferred side effects before parsing the new
+   * request; reset here is software-only and intentionally preserves FIFO0. */
+  if (((tmpreg & OTG_FS_CSR0_RXPKTRDY) != 0U) &&
+      ((tmpreg & (OTG_FS_CSR0_TXPKTRDY | OTG_FS_CSR0_DATAEND)) == 0U) &&
+      (hpcd->ep0_in_pending != 0U) &&
+      (hpcd->ctrl_state == PCD_CTRL_STATUS_IN))
+  {
+    PCD_FS_EP0CompleteStatusIn(hpcd);
+    tmpreg = USB_FS->CSR0;
+  }
+
+  if ((tmpreg & OTG_FS_CSR0_RXPKTRDY) != 0U)
+  {
     bytecount = USB_FS_Read_Count0();
     ep = &hpcd->OUT_ep[0U];
 
-    if (hpcd->ctrl_state == CTRL_SETUP_P)
-	    {
-	      hpcd->ctrl_state = CTRL_DATA;
-	      USB_FS_FIFORead((uint8_t *)hpcd->Setup, 0U, bytecount);
-	      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
-	      PCD_FS_SetupStageCallback(hpcd);
-	    }
-	    else
-	    {
-	      hpcd->ctrl_state = CTRL_SETUP_P;
-	      USB_FS_FIFORead(ep->xfer_buff, 0U, bytecount);
-	      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
-	    }
-	  }
-	  else if (tmpreg != 0U)
-	  {
-	    if ((tmpreg & OTG_FS_CSR0_SETUPEND) == OTG_FS_CSR0_SETUPEND)
-	    {
-	      USB_FS->CSR0 = OTG_FS_CSR0_SSETUPEND;
-	      USB_FS_FlushEp0Fifo();
-	    }
-	    if ((tmpreg & OTG_FS_CSR0_STSTALL) == OTG_FS_CSR0_STSTALL)
-	    {
-	      hpcd->ctrl_state = CTRL_SETUP_P;
-	      USB_FS_FlushEp0Fifo();   /* flush fifo to halt transcation*/
-	      USB_FS->CSR0 &= (~(OTG_FS_CSR0_STSTALL | OTG_FS_CSR0_SDSTALL));
-	    }
-	  }
-	  else
-  {
-    ep = &hpcd->IN_ep[0U];
-    if ((ep->is_in == 1U) && (ep->xfer_count < ep->xfer_len))
+    if ((hpcd->ctrl_state == PCD_CTRL_SETUP) ||
+        (hpcd->ctrl_state == PCD_CTRL_STALL))
     {
-      remaining = ep->xfer_len - ep->xfer_count;
-      pkt_len = (remaining > ep->maxpacket) ? (uint16_t)ep->maxpacket : (uint16_t)remaining;
-      USB_FS_FIFOWrite(ep->xfer_buff, 0U, pkt_len);
-      ep->xfer_buff += pkt_len;
-      ep->xfer_count += pkt_len;
-      csr_cmd = OTG_FS_CSR0_TXPKTRDY;
-	      if (pkt_len < ep->maxpacket)
-	      {
-	        csr_cmd |= OTG_FS_CSR0_DATAEND;
-	      }
-	      USB_FS->CSR0 = csr_cmd;
-	      return;
-	    }
-	    if ((ep->is_in == 1U) && (ep->xfer_len != 0U))
-	    {
-	      ep->xfer_len = 0U;
-	      PCD_FS_DataInStageCallback(hpcd, 0U);
-	    }
-	    if (hpcd->USB_Address != USB_FS_GetAddress())
-	    {
-	      USB_FS_SetAddress(hpcd->USB_Address);
-	    }
-    hpcd->ctrl_state = CTRL_SETUP_P;/*...*/
+      if (bytecount != 8U)
+      {
+        (void)USB_FS_FlushEp0Fifo();
+        PCD_FS_EP0Stall(hpcd);
+        return;
+      }
+
+      PCD_FS_EP0AbortTransfer(hpcd);
+      USB_FS_FIFORead((uint8_t *)hpcd->Setup, 0U, bytecount);
+      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
+      PCD_FS_SetupStageCallback(hpcd);
+      return;
+    }
+
+    if (hpcd->ctrl_state == PCD_CTRL_DATA_OUT)
+    {
+      if ((hpcd->ep0_out_pending == 0U) || (ep->xfer_buff == NULL) ||
+          (ep->xfer_count != 0U) || (bytecount != ep->xfer_len))
+      {
+        (void)USB_FS_FlushEp0Fifo();
+        PCD_FS_EP0Stall(hpcd);
+        return;
+      }
+
+      USB_FS_FIFORead(ep->xfer_buff, 0U, bytecount);
+      ep->xfer_buff += bytecount;
+      ep->xfer_count = bytecount;
+      hpcd->ep0_out_pending = 0U;
+      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY;
+      PCD_FS_DataOutStageCallback(hpcd, 0U);
+      return;
+    }
+
+    if ((((hpcd->ctrl_state == PCD_CTRL_STATUS_OUT) &&
+          (hpcd->ep0_out_pending != 0U) && (ep->xfer_len == 0U)) ||
+         (hpcd->ctrl_state == PCD_CTRL_DATA_IN)) &&
+        (bytecount == 0U))
+    {
+      uint8_t early_status_out =
+          (hpcd->ctrl_state == PCD_CTRL_DATA_IN) ? 1U : 0U;
+
+      USB_FS->CSR0 = OTG_FS_CSR0_SRXPKTRDY | OTG_FS_CSR0_DATAEND;
+      if (early_status_out != 0U)
+      {
+        /* The middleware can already have queued the next IN packet while
+         * STATUS OUT was armed for early host termination. DATAEND completes
+         * the received status handshake; FFIFO then cancels stale TX/RX ready
+         * state before software returns to SETUP ownership. */
+        (void)USB_FS_FlushEp0Fifo();
+      }
+      PCD_FS_EP0ResetTransferState(hpcd);
+      PCD_FS_DataOutStageCallback(hpcd, 0U);
+      return;
+    }
+
+    (void)USB_FS_FlushEp0Fifo();
+    PCD_FS_EP0Stall(hpcd);
+    return;
   }
 
+  if ((tmpreg != 0U) || (hpcd->ep0_in_pending == 0U))
+  {
+    return;
+  }
+
+  ep = &hpcd->IN_ep[0U];
+  hpcd->ep0_in_pending = 0U;
+
+  if (hpcd->ctrl_state == PCD_CTRL_DATA_IN)
+  {
+    if ((hpcd->ep0_data_in_count > hpcd->ep0_data_in_total) ||
+        (ep->xfer_count > ep->xfer_len) ||
+        (ep->xfer_count > (hpcd->ep0_data_in_total - hpcd->ep0_data_in_count)))
+    {
+      PCD_FS_EP0Stall(hpcd);
+      return;
+    }
+
+    hpcd->ep0_data_in_count += ep->xfer_count;
+    PCD_FS_DataInStageCallback(hpcd, 0U);
+    return;
+  }
+
+  if (hpcd->ctrl_state == PCD_CTRL_STATUS_IN)
+  {
+    PCD_FS_EP0CompleteStatusIn(hpcd);
+  }
 }
 
 /**

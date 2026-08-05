@@ -623,10 +623,14 @@ USBD_StatusTypeDef USBD_LL_DataOutStage(USBD_HandleTypeDef *pdev, uint8_t epnum,
             }
           }
         }
-      #ifdef USB_OTG_HS_CORE
         (void)USBD_CtlSendStatus(pdev);
-      #endif /* USB_OTG_HS_CORE */
       }
+    }
+    else if ((pdev->ep0_state == USBD_EP0_STATUS_OUT) ||
+             (pdev->ep0_state == USBD_EP0_DATA_IN))
+    {
+      /* DATA_IN here is a legal early host termination of a control read. */
+      pdev->ep0_state = USBD_EP0_IDLE;
     }
   }
   else
@@ -709,6 +713,10 @@ USBD_StatusTypeDef USBD_LL_DataInStage(USBD_HandleTypeDef *pdev, uint8_t epnum, 
           (void)USBD_CtlReceiveStatus(pdev);
         }
       }
+    }
+    else if (pdev->ep0_state == USBD_EP0_STATUS_IN)
+    {
+      pdev->ep0_state = USBD_EP0_IDLE;
     }
     if (pdev->dev_test_mode != 0U)
     {
@@ -1012,16 +1020,19 @@ uint8_t USBD_CoreFindIF(USBD_HandleTypeDef *pdev, uint8_t index)
     /* check if current class is in use */
     if ((pdev->tclasslist[i].Active) == 1U)
     {
+      if ((pdev->pClass[i] == NULL) ||
+          (pdev->tclasslist[i].NumIf > USBD_MAX_CLASS_INTERFACES))
+      {
+        return 0xFFU;
+      }
+
       /* parse all interfaces listed in the current class */
       for (uint32_t j = 0U; j < pdev->tclasslist[i].NumIf; j++)
       {
         /* check if requested interface matches the current class interface */
         if (pdev->tclasslist[i].Ifs[j] == index)
         {
-          if (pdev->pClass[i]->Setup != NULL)
-          {
-            return (uint8_t)i;
-          }
+          return (uint8_t)i;
         }
       }
     }
@@ -1051,16 +1062,19 @@ uint8_t USBD_CoreFindEP(USBD_HandleTypeDef *pdev, uint8_t index)
     /* check if current class is in use */
     if ((pdev->tclasslist[i].Active) == 1U)
     {
+      if ((pdev->pClass[i] == NULL) ||
+          (pdev->tclasslist[i].NumEps > USBD_MAX_CLASS_ENDPOINTS))
+      {
+        return 0xFFU;
+      }
+
       /* parse all endpoints listed in the current class */
       for (uint32_t j = 0U; j < pdev->tclasslist[i].NumEps; j++)
       {
         /* check if requested endpoint matches the current class endpoint */
         if (pdev->tclasslist[i].Eps[j].add == index)
         {
-          if (pdev->pClass[i]->Setup != NULL)
-          {
-            return (uint8_t)i;
-          }
+          return (uint8_t)i;
         }
       }
     }
