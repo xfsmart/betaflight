@@ -98,6 +98,36 @@ ft32_usb_ep0_unittest_FLAGS := \
 
 ft32_usb_ep0_unittest_LDFLAGS := -Wl,--gc-sections
 
+ft32_usb_ep0_adjacent_unittest_SRC := \
+		$(TEST_DIR)/ft32_usb_ep0_test_support.c \
+		$(TEST_DIR)/ft32_usb_ep0_usb_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_pcd_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_core_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_ctlreq_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_ioreq_source.c \
+		$(TEST_DIR)/ft32_usb_ep0_cdc_source.c
+
+ft32_usb_ep0_adjacent_unittest_DEFINES := \
+		USB_OTG_FS_CORE=1 \
+		USB_OTG_FS=1 \
+		PCD_FS_MODULE_ENABLED=1 \
+		USE_USBD_COMPOSITE=1 \
+		USBD_MAX_NUM_INTERFACES=3
+
+ft32_usb_ep0_adjacent_unittest_INCLUDE_DIRS := \
+		$(ROOT)/lib/main/FT32F4/CMSIS/cm4/device_support \
+		$(ROOT)/lib/main/CMSIS/Core/Include \
+		$(ROOT)/lib/main/FT32F4/Drivers/FT32F4xx_Driver/Inc \
+		$(ROOT)/lib/main/FT32F4/middlewares/usb_drivers/inc \
+		$(ROOT)/lib/main/FT32F4/middlewares/usbd_class/CompositeBuilder/inc \
+		$(ROOT)/lib/main/FT32F4/middlewares/usbd_class/CDC/inc
+
+ft32_usb_ep0_adjacent_unittest_FLAGS := \
+		-ffunction-sections -fdata-sections \
+		-Wno-unused-function -Wno-unused-parameter -Wno-unused-variable
+
+ft32_usb_ep0_adjacent_unittest_LDFLAGS := -Wl,--gc-sections
+
 baro_bmp085_unittest_SRC := \
 		$(USER_DIR)/drivers/barometer/barometer_bmp085.c
 

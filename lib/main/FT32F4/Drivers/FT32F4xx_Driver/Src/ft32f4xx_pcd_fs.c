@@ -1287,6 +1287,17 @@ void PCD_FS_EP0_IRQHandler(PCD_FS_HandleTypeDef *hpcd)
     bytecount = USB_FS_Read_Count0();
     ep = &hpcd->OUT_ep[0U];
 
+    /* Hardware can complete the zero-length status handshake and replace
+     * FIFO0 with the next SETUP before software retires STATUS OUT. Complete
+     * only the old software state; the normal SETUP path below owns FIFO0. */
+    if ((hpcd->ctrl_state == PCD_CTRL_STATUS_OUT) &&
+        (hpcd->ep0_out_pending != 0U) && (ep->xfer_len == 0U) &&
+        (bytecount == 8U))
+    {
+      PCD_FS_EP0ResetTransferState(hpcd);
+      PCD_FS_DataOutStageCallback(hpcd, 0U);
+    }
+
     if ((hpcd->ctrl_state == PCD_CTRL_SETUP) ||
         (hpcd->ctrl_state == PCD_CTRL_STALL))
     {
@@ -1449,7 +1460,7 @@ void PCD_FS_RXEP_IRQHandler(PCD_FS_HandleTypeDef *hpcd, uint32_t epnum)
     return;
   }
 
-  /* bind the endpoint before any dereference */
+  /* Select the endpoint before accessing its fields. */
   ep = &hpcd->OUT_ep[epnum];
   tmpreg = USB_FS->RXCSR1;
 
