@@ -44,6 +44,8 @@ extern "C" {
     uint8_t armingFlags = 0;
 
     bool isPulseValid(uint16_t pulseDuration);
+    void pgResetFn_rxChannelRangeConfigs(rxChannelRangeConfig_t *rxChannelRangeConfigs);
+    void pgResetFn_rxFailsafeChannelConfigs(rxFailsafeChannelConfig_t *rxFailsafeChannelConfigs);
 
     PG_RESET_TEMPLATE(featureConfig_t, featureConfig,
         .enabledFeatures = 0
@@ -61,6 +63,7 @@ extern "C" {
 typedef struct testData_s {
     bool isPPMDataBeingReceived;
     bool isPWMDataBeingReceived;
+    bool taskUpdateRxMainInProgress;
 } testData_t;
 
 static testData_t testData;
@@ -206,6 +209,93 @@ TEST(RxTest, TestInvalidFlightChannels)
 }
 #endif
 
+TEST(RxPulseValidityTest, UsesConfiguredInclusiveBounds)
+{
+    rxConfigMutable()->rx_min_usec = 1000;
+    rxConfigMutable()->rx_max_usec = 2000;
+
+    EXPECT_FALSE(isPulseValid(999));
+    EXPECT_TRUE(isPulseValid(1000));
+    EXPECT_TRUE(isPulseValid(2000));
+    EXPECT_FALSE(isPulseValid(2001));
+}
+
+TEST(RxConfigurationDefaultsTest, ResetsRangesAndFailsafeChannels)
+{
+    rxChannelRangeConfig_t ranges[NON_AUX_CHANNEL_COUNT];
+    rxFailsafeChannelConfig_t failsafeChannels[MAX_SUPPORTED_RC_CHANNEL_COUNT];
+    memset(ranges, 0, sizeof(ranges));
+    memset(failsafeChannels, 0, sizeof(failsafeChannels));
+
+    pgResetFn_rxChannelRangeConfigs(ranges);
+    for (const rxChannelRangeConfig_t &range : ranges) {
+        EXPECT_EQ(PWM_RANGE_MIN, range.min);
+        EXPECT_EQ(PWM_RANGE_MAX, range.max);
+    }
+
+    pgResetFn_rxFailsafeChannelConfigs(failsafeChannels);
+    for (int channel = 0; channel < MAX_SUPPORTED_RC_CHANNEL_COUNT; channel++) {
+        const int expectedMode = channel < NON_AUX_CHANNEL_COUNT ? RX_FAILSAFE_MODE_AUTO : RX_FAILSAFE_MODE_HOLD;
+        EXPECT_EQ(expectedMode, failsafeChannels[channel].mode);
+        const int expectedValue = channel == THROTTLE ? RX_MIN_USEC : RX_MID_USEC;
+        EXPECT_EQ(CHANNEL_VALUE_TO_RXFAIL_STEP(expectedValue), failsafeChannels[channel].step);
+    }
+}
+
+TEST(RxConfigurationDefaultsTest, ResetsAllChannelRangesThroughPublicHelper)
+{
+    rxChannelRangeConfig_t ranges[NON_AUX_CHANNEL_COUNT];
+    memset(ranges, 0, sizeof(ranges));
+
+    resetAllRxChannelRangeConfigurations(ranges);
+
+    for (const rxChannelRangeConfig_t &range : ranges) {
+        EXPECT_EQ(PWM_RANGE_MIN, range.min);
+        EXPECT_EQ(PWM_RANGE_MAX, range.max);
+    }
+}
+
+TEST(RxChannelMapTest, ParsesKnownChannelsAndIgnoresUnknownCharacters)
+{
+    rxConfig_t config;
+    memset(&config, 0xff, sizeof(config));
+
+    parseRcChannels("?TAER1234!", &config);
+
+    const uint8_t expectedMap[RX_MAPPABLE_CHANNEL_COUNT] = { 2, 3, 4, 1, 5, 6, 7, 8 };
+    for (int channel = 0; channel < RX_MAPPABLE_CHANNEL_COUNT; channel++) {
+        EXPECT_EQ(expectedMap[channel], config.rcmap[channel]);
+    }
+}
+
+TEST(RxInitializationTest, SelectsNullProviderAndInitializesChannels)
+{
+    memset(&testData, 0, sizeof(testData));
+    rxConfigMutable()->midrc = 1500;
+    rxConfigMutable()->rx_min_usec = 1000;
+    rxConfigMutable()->rx_max_usec = 2000;
+    rxConfigMutable()->rssi_channel = 0;
+    rxConfigMutable()->rssi_smoothing = 125;
+    rxConfigMutable()->max_aux_channel = DEFAULT_AUX_CHANNEL_COUNT;
+    rxRuntimeState.channelCount = MAX_SUPPORTED_RC_CHANNEL_COUNT;
+
+    rxInit();
+
+    EXPECT_EQ(RX_PROVIDER_NONE, rxRuntimeState.rxProvider);
+    EXPECT_NE(nullptr, rxRuntimeState.rcReadRawFn);
+    EXPECT_NE(nullptr, rxRuntimeState.rcFrameStatusFn);
+    EXPECT_NE(nullptr, rxRuntimeState.rcProcessFrameFn);
+    EXPECT_EQ(1000, rcData[THROTTLE]);
+    EXPECT_EQ(1500, rcData[ROLL]);
+    EXPECT_EQ(1500, rcData[PITCH]);
+    EXPECT_EQ(1500, rcData[YAW]);
+
+    testData.taskUpdateRxMainInProgress = false;
+    EXPECT_FALSE(rxUpdateCheck(1000, 100));
+    testData.taskUpdateRxMainInProgress = true;
+    EXPECT_TRUE(rxUpdateCheck(1000, 100));
+}
+
 // STUBS
 
 extern "C" {
@@ -245,7 +335,7 @@ extern "C" {
     void rxPwmInit(const rxConfig_t *, rxRuntimeState_t *) {}
     void setArmingDisabled(armingDisableFlags_e flag) { UNUSED(flag); }
     void unsetArmingDisabled(armingDisableFlags_e flag) { UNUSED(flag); }
-    bool taskUpdateRxMainInProgress(void) { return true; }
+    bool taskUpdateRxMainInProgress(void) { return testData.taskUpdateRxMainInProgress; }
     float pt1FilterGain(float f_cut, float dT)
     {
         UNUSED(f_cut);
