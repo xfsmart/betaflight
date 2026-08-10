@@ -1697,6 +1697,7 @@ static uint32_t grab_fields(char *src, uint8_t mult)
 typedef struct gpsDataNmea_s {
     int32_t latitude;
     int32_t longitude;
+    bool fix;
     uint8_t numSat;
     int32_t altitudeCm;
     uint16_t speed;
@@ -1717,6 +1718,9 @@ static void parseFieldNmea(gpsDataNmea_t *data, char *str, uint8_t gpsFrame, uin
 
     case FRAME_GGA:        //************* GPGGA FRAME parsing
         switch (idx) {
+        case 0:
+            data->fix = false;
+            break;
         case 1:
             data->time = ((uint8_t)(str[5] - '0') * 10 + (uint8_t)(str[7] - '0')) * 100;
             break;
@@ -1733,7 +1737,7 @@ static void parseFieldNmea(gpsDataNmea_t *data, char *str, uint8_t gpsFrame, uin
             if (str[0] == 'W') data->longitude *= -1;
             break;
         case 6:
-            gpsSetFixState(str[0] > '0');
+            data->fix = str[0] > '0';
             break;
         case 7:
             data->numSat = grab_fields(str, 0);
@@ -1835,6 +1839,7 @@ static bool writeGpsSolutionNmea(gpsSolutionData_t *sol, const gpsDataNmea_t *da
 #ifdef USE_DASHBOARD
         *dashboardGpsPacketLogCurrentChar = DASHBOARD_LOG_NMEA_GGA;
 #endif
+        gpsSetFixState(data->fix);
         if (STATE(GPS_FIX)) {
             sol->llh.lat = data->latitude;
             sol->llh.lon = data->longitude;

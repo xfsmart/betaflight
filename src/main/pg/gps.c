@@ -29,16 +29,24 @@
 
 #include "gps.h"
 
+#ifndef DEFAULT_GPS_PROVIDER
+#if defined(USE_VIRTUAL_GPS)
+#define DEFAULT_GPS_PROVIDER GPS_VIRTUAL
+#else
+#define DEFAULT_GPS_PROVIDER GPS_UBLOX
+#endif
+#endif
+
+#ifndef DEFAULT_GPS_AUTOCONFIG
+#define DEFAULT_GPS_AUTOCONFIG GPS_AUTOCONFIG_ON
+#endif
+
 PG_REGISTER_WITH_RESET_TEMPLATE(gpsConfig_t, gpsConfig, PG_GPS_CONFIG, 4);
 
 PG_RESET_TEMPLATE(gpsConfig_t, gpsConfig,
-#if defined(USE_VIRTUAL_GPS)
-    .provider = GPS_VIRTUAL,
-#else
-    .provider = GPS_UBLOX,
-#endif
+    .provider = DEFAULT_GPS_PROVIDER,
     .sbasMode = SBAS_NONE,
-    .autoConfig = GPS_AUTOCONFIG_ON,
+    .autoConfig = DEFAULT_GPS_AUTOCONFIG,
     .autoBaud = GPS_AUTOBAUD_OFF,
     .gps_ublox_acquire_model = UBLOX_MODEL_STATIONARY,
     .gps_ublox_flight_model = UBLOX_MODEL_AIRBORNE_4G,

@@ -257,9 +257,66 @@ gps_conversion_unittest_SRC := \
 		$(USER_DIR)/common/gps_conversion.c
 
 
+board_c_gps_defaults_unittest_EXPAND := generic board_c
+
+board_c_gps_defaults_unittest_SRC = \
+		$(USER_DIR)/config/feature.c \
+		$(USER_DIR)/io/serial.c \
+		$(USER_DIR)/io/serial_resource.c \
+		$(USER_DIR)/pg/gps.c \
+		$(USER_DIR)/pg/rx.c
+
+board_c_gps_defaults_unittest_DEFINES = \
+		$(if $(filter board_c,$1), \
+			BOARD_C_DEFAULTS_VARIANT=1 \
+			USE_GPS= \
+			ESC_SENSOR_UART=SERIAL_PORT_USART3 \
+			GPS_UART=SERIAL_PORT_UART5 \
+			SERIALRX_UART=SERIAL_PORT_USART2 \
+			SERIALRX_PROVIDER=SERIALRX_SBUS \
+			SERIALRX_HALFDUPLEX=0 \
+			DEFAULT_FEATURES=FEATURE_GPS \
+			DEFAULT_GPS_BAUDRATE_INDEX=BAUD_38400 \
+			DEFAULT_GPS_PROVIDER=GPS_NMEA \
+			DEFAULT_GPS_AUTOCONFIG=GPS_AUTOCONFIG_OFF)
+
+
+gps_nmea_unittest_SRC := \
+		$(USER_DIR)/common/gps_conversion.c \
+		$(USER_DIR)/drivers/serial.c \
+		$(USER_DIR)/io/gps.c \
+		$(USER_DIR)/pg/gps.c
+
+gps_nmea_unittest_FLAGS := -ffunction-sections -fdata-sections
+gps_nmea_unittest_LDFLAGS := -Wl,--gc-sections
+
+
+gps_nmea_checksum_unittest_SRC := \
+		$(USER_DIR)/common/gps_conversion.c \
+		$(USER_DIR)/io/gps.c \
+		$(USER_DIR)/pg/gps.c
+
+gps_nmea_checksum_unittest_FLAGS := -ffunction-sections -fdata-sections
+gps_nmea_checksum_unittest_LDFLAGS := -Wl,--gc-sections
+
+
 io_serial_unittest_SRC := \
 		$(USER_DIR)/io/serial.c \
 		$(USER_DIR)/io/serial_resource.c
+
+
+serial_4way_unittest_EXPAND := dual bl sk
+
+serial_4way_unittest_SRC = \
+		$(USER_DIR)/io/serial_4way.c
+
+serial_4way_unittest_DEFINES = \
+		USE_SERIAL_4WAY_BLHELI_INTERFACE= \
+		$(if $(filter dual bl,$1),USE_SERIAL_4WAY_BLHELI_BOOTLOADER=) \
+		$(if $(filter dual sk,$1),USE_SERIAL_4WAY_SK_BOOTLOADER=) \
+		USE_TIMEOUT_4WAYIF= \
+		USE_VIRTUAL_LED= \
+		GPIO_PIN_RESET=0
 
 
 ledstrip_unittest_SRC := \
@@ -687,7 +744,10 @@ TEST_BASENAMES = $(TEST_SRCS:$(TEST_DIR)/%.cc=%)
 TESTS_TARGET_SPECIFIC = $(foreach test,$(TEST_BASENAMES),$(if $($(test)_EXPAND),$(test)))
 
 TESTS = $(foreach test,$(TEST_BASENAMES),$(if $($(test)_EXPAND),,$(test)))
-TESTS_ALL = $(TESTS)
+TESTS_EXPANDED = $(foreach test,$(TESTS_TARGET_SPECIFIC),$(foreach target,$($(test)_EXPAND),$(test).$(target)))
+TESTS_ALL = $(TESTS) $(TESTS_EXPANDED)
+TESTS_REPRESENTATIVE = $(TESTS) $(foreach test,$(TESTS_TARGET_SPECIFIC),$(test).$(firstword $($(test)_EXPAND)))
+TESTS_REQUESTED_EXPANDED = $(filter $(TESTS_EXPANDED),$(patsubst test_%,%,$(filter test_%,$(MAKECMDGOALS))))
 
 # All Google Test headers.  Usually you shouldn't change this
 # definition.
@@ -816,6 +876,8 @@ $1_OBJS = $$(patsubst \
 	$(TARGET_DIR)/$(TARGET)/%,$(OBJECT_DIR)/$1/%,$$($1_SRC))))
 $1_DEFINES = $(call $(basename $1)_DEFINES,$(call target,$1))
 $1_INCLUDE_DIRS = $(call $(basename $1)_INCLUDE_DIRS,$(call target,$1))
+$1_FLAGS = $(call $(basename $1)_FLAGS,$(call target,$1))
+$1_LDFLAGS = $(call $(basename $1)_LDFLAGS,$(call target,$1))
 endif
 
 # $$(info $1 -v-v-------)
@@ -876,13 +938,13 @@ test_$1: $(OBJECT_DIR)/$1/$(basename $1)
 endef
 
 
-ifeq ($(MAKECMDGOALS),test-all)
+ifneq ($(filter test-all,$(MAKECMDGOALS)),)
     $(eval $(foreach test,$(TESTS_ALL),$(call test-specific-stuff,$(test))))
 else
-    ifeq ($(MAKECMDGOALS),test-representative)
+    ifneq ($(filter test-representative,$(MAKECMDGOALS)),)
         $(eval $(foreach test,$(TESTS_REPRESENTATIVE),$(call test-specific-stuff,$(test))))
     else
-        $(eval $(foreach test,$(TESTS),$(call test-specific-stuff,$(test))))
+        $(eval $(foreach test,$(TESTS) $(TESTS_REQUESTED_EXPANDED),$(call test-specific-stuff,$(test))))
     endif
 endif
 

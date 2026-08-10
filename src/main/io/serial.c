@@ -255,6 +255,10 @@ const serialPortConfig_t* serialFindPortConfiguration(serialPortIdentifier_e ide
 
 PG_REGISTER_WITH_RESET_FN(serialConfig_t, serialConfig, PG_SERIAL_CONFIG, 1);
 
+#ifndef DEFAULT_GPS_BAUDRATE_INDEX
+#define DEFAULT_GPS_BAUDRATE_INDEX BAUD_57600
+#endif
+
 void pgResetFn_serialConfig(serialConfig_t *serialConfig)
 {
     memset(serialConfig, 0, sizeof(serialConfig_t));
@@ -264,6 +268,11 @@ void pgResetFn_serialConfig(serialConfig_t *serialConfig)
         pCfg->identifier = serialPortIdentifiers[i];
         pCfg->msp_baudrateIndex = BAUD_115200;
         pCfg->gps_baudrateIndex = BAUD_57600;
+#ifdef GPS_UART
+        if (pCfg->identifier == GPS_UART) {
+            pCfg->gps_baudrateIndex = DEFAULT_GPS_BAUDRATE_INDEX;
+        }
+#endif
         pCfg->telemetry_baudrateIndex = BAUD_AUTO;
         pCfg->blackbox_baudrateIndex = BAUD_115200;
     }

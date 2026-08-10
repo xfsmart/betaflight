@@ -95,11 +95,32 @@ static uint8_t escCount;
 
 escHardware_t escHardware[MAX_SUPPORTED_MOTORS];
 
-uint8_t selected_esc;
+#define ESC_CHANNEL_NONE UINT8_MAX
+
+uint8_t selected_esc = ESC_CHANNEL_NONE;
 
 uint8_32_u DeviceInfo;
 
 #define DeviceInfoSize 4
+
+static uint8_t CurrentInterfaceMode = imC2;
+
+static void clearDeviceInfo(uint8_32_u *deviceInfo)
+{
+    memset(deviceInfo, 0, sizeof(*deviceInfo));
+}
+
+static void setDisconnected(void)
+{
+    clearDeviceInfo(&DeviceInfo);
+}
+
+static void reset4waySessionState(void)
+{
+    setDisconnected();
+    CurrentInterfaceMode = imC2;
+    selected_esc = ESC_CHANNEL_NONE;
+}
 
 inline bool isMcuConnected(void)
 {
@@ -138,6 +159,7 @@ inline void setEscOutput(uint8_t selEsc)
 uint8_t esc4wayInit(void)
 {
     uint8_t escIndex = 0;
+    reset4waySessionState();
     motorDisable();
     memset(&escHardware, 0, sizeof(escHardware));
     for (volatile uint8_t i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
@@ -162,10 +184,9 @@ void esc4wayRelease(void)
         IOConfigGPIO(escHardware[escCount].io, IOCFG_AF_PP);
         setEscLo(escCount);
     }
+    reset4waySessionState();
     motorEnable();
 }
-
-#define SET_DISCONNECTED DeviceInfo.words[0] = 0
 
 #define INTF_MODE_IDX 3  // index for DeviceInfostate
 
@@ -278,6 +299,26 @@ void esc4wayRelease(void)
 #define ACK_I_INVALID_PARAM     0x09
 #define ACK_D_GENERAL_ERROR     0x0F
 
+static bool commandRequiresConnectedDevice(uint8_t command)
+{
+    switch (command) {
+#ifdef USE_SERIAL_4WAY_SK_BOOTLOADER
+        case cmd_DeviceEraseAll:
+#endif
+#ifdef USE_SERIAL_4WAY_BLHELI_BOOTLOADER
+        case cmd_DevicePageErase:
+        case cmd_DeviceVerify:
+#endif
+        case cmd_DeviceRead:
+        case cmd_DeviceWrite:
+        case cmd_DeviceReadEEprom:
+        case cmd_DeviceWriteEEprom:
+            return true;
+        default:
+            return false;
+    }
+}
+
 /* Copyright (c) 2002, 2003, 2004  Marek Michalkiewicz
    Copyright (c) 2005, 2007 Joerg Wunsch
    Copyright (c) 2013 Dave Hylands
@@ -333,49 +374,67 @@ static uint16_t _crc_xmodem_update (uint16_t crc, uint8_t data)
 // BLHeli_32 MCU ID hi > 0x00 and < 0x90 / lo always = 0x06
 #define ARM_DEVICE_MATCH ((pDeviceInfo->bytes[1] > 0x00) && (pDeviceInfo->bytes[1] < 0x90) && (pDeviceInfo->bytes[0] == 0x06))
 
-static uint8_t CurrentInterfaceMode;
+#ifdef USE_SERIAL_4WAY_SK_BOOTLOADER
+static bool tryStkConnect(uint8_32_u *pDeviceInfo)
+{
+    clearDeviceInfo(pDeviceInfo);
+    if (Stk_ConnectEx(pDeviceInfo) && ATMEL_DEVICE_MATCH) {
+        CurrentInterfaceMode = imSK;
+        return true;
+    }
+
+    clearDeviceInfo(pDeviceInfo);
+    return false;
+}
+#endif
+
+#ifdef USE_SERIAL_4WAY_BLHELI_BOOTLOADER
+static bool tryBlConnect(uint8_32_u *pDeviceInfo)
+{
+    clearDeviceInfo(pDeviceInfo);
+    if (BL_ConnectEx(pDeviceInfo)) {
+        if SILABS_DEVICE_MATCH {
+            CurrentInterfaceMode = imSIL_BLB;
+            return true;
+        } else if ATMEL_DEVICE_MATCH {
+            CurrentInterfaceMode = imATM_BLB;
+            return true;
+        } else if ARM_DEVICE_MATCH {
+            CurrentInterfaceMode = imARM_BLB;
+            return true;
+        }
+    }
+
+    clearDeviceInfo(pDeviceInfo);
+    return false;
+}
+#endif
 
 static uint8_t Connect(uint8_32_u *pDeviceInfo)
 {
     for (uint8_t I = 0; I < 3; ++I) {
 #if (defined(USE_SERIAL_4WAY_BLHELI_BOOTLOADER) && defined(USE_SERIAL_4WAY_SK_BOOTLOADER))
-        if ((CurrentInterfaceMode != imARM_BLB) && Stk_ConnectEx(pDeviceInfo) && ATMEL_DEVICE_MATCH) {
-            CurrentInterfaceMode = imSK;
-            return 1;
+        if (CurrentInterfaceMode == imARM_BLB) {
+            if (tryBlConnect(pDeviceInfo) || tryStkConnect(pDeviceInfo)) {
+                return 1;
+            }
         } else {
-            if (BL_ConnectEx(pDeviceInfo)) {
-                if  SILABS_DEVICE_MATCH {
-                    CurrentInterfaceMode = imSIL_BLB;
-                    return 1;
-                } else if ATMEL_DEVICE_MATCH {
-                    CurrentInterfaceMode = imATM_BLB;
-                    return 1;
-                } else if ARM_DEVICE_MATCH {
-                    CurrentInterfaceMode = imARM_BLB;
-                    return 1;
-                }
+            if (tryStkConnect(pDeviceInfo) || tryBlConnect(pDeviceInfo)) {
+                return 1;
             }
         }
 #elif defined(USE_SERIAL_4WAY_BLHELI_BOOTLOADER)
-        if (BL_ConnectEx(pDeviceInfo)) {
-            if SILABS_DEVICE_MATCH {
-                CurrentInterfaceMode = imSIL_BLB;
-                return 1;
-            } else if ATMEL_DEVICE_MATCH {
-                CurrentInterfaceMode = imATM_BLB;
-                return 1;
-            }  else if ARM_DEVICE_MATCH {
-                CurrentInterfaceMode = imARM_BLB;
-                return 1;
-            }
+        if (tryBlConnect(pDeviceInfo)) {
+            return 1;
         }
 #elif defined(USE_SERIAL_4WAY_SK_BOOTLOADER)
-        if (Stk_ConnectEx(pDeviceInfo)) {
-            CurrentInterfaceMode = imSK;
-            if ATMEL_DEVICE_MATCH return 1;
+        if (tryStkConnect(pDeviceInfo)) {
+            return 1;
         }
 #endif
     }
+
+    clearDeviceInfo(pDeviceInfo);
     return 0;
 }
 
@@ -452,6 +511,10 @@ void esc4wayProcess(serialPort_t *mspPort)
 
     while (1) {
         bool timedOut = false;
+        CMD = 0;
+        CRC_check.word = 0;
+        ioMem.D_FLASH_ADDR_H = 0;
+        ioMem.D_FLASH_ADDR_L = 0;
 
         // restart looking for new sequence from host
         do {
@@ -484,13 +547,17 @@ void esc4wayProcess(serialPort_t *mspPort)
             }
         }
 
-        if ((CRC_check.word == CRC_in.word) && !timedOut) {
+        if (!timedOut && (CRC_check.word == CRC_in.word)) {
             ACK_OUT = ACK_OK;
         } else {
             ACK_OUT = ACK_I_INVALID_CRC;
         }
 
         TX_LED_ON;
+
+        if ((ACK_OUT == ACK_OK) && commandRequiresConnectedDevice(CMD) && !isMcuConnected()) {
+            ACK_OUT = ACK_D_GENERAL_ERROR;
+        }
 
         if (ACK_OUT == ACK_OK)
         {
@@ -502,7 +569,9 @@ void esc4wayProcess(serialPort_t *mspPort)
                 // ******* Interface related stuff *******
                 case cmd_InterfaceTestAlive:
                 {
-                    if (isMcuConnected()) {
+                    if (!isMcuConnected()) {
+                        ACK_OUT = ACK_D_GENERAL_ERROR;
+                    } else {
                         switch (CurrentInterfaceMode)
                         {
 #ifdef USE_SERIAL_4WAY_BLHELI_BOOTLOADER
@@ -528,7 +597,9 @@ void esc4wayProcess(serialPort_t *mspPort)
                             default:
                                 ACK_OUT = ACK_D_GENERAL_ERROR;
                         }
-                        if ( ACK_OUT != ACK_OK) SET_DISCONNECTED;
+                    }
+                    if (ACK_OUT != ACK_OK) {
+                        setDisconnected();
                     }
                     break;
                 }
@@ -581,13 +652,17 @@ void esc4wayProcess(serialPort_t *mspPort)
 
                 case cmd_DeviceReset:
                 {
+#ifdef USE_SERIAL_4WAY_BLHELI_BOOTLOADER
                     bool rebootEsc = false;
+#endif
                     if (ParamBuf[0] < escCount) {
                         // Channel may change here
                         selected_esc = ParamBuf[0];
+#ifdef USE_SERIAL_4WAY_BLHELI_BOOTLOADER
                         if (ioMem.D_FLASH_ADDR_L == 1) {
                             rebootEsc = true;
                         }
+#endif
                     }
                     else {
                         ACK_OUT = ACK_I_INVALID_CHANNEL;
@@ -618,13 +693,15 @@ void esc4wayProcess(serialPort_t *mspPort)
                             break;
                         }
 #endif
+                        default:
+                            ACK_OUT = ACK_I_INVALID_CMD;
                     }
-                    SET_DISCONNECTED;
+                    setDisconnected();
                     break;
                 }
                 case cmd_DeviceInitFlash:
                 {
-                    SET_DISCONNECTED;
+                    setDisconnected();
                     if (ParamBuf[0] < escCount) {
                         //Channel may change here
                         //ESC_LO or ESC_HI; Halt state for prev channel
@@ -638,7 +715,7 @@ void esc4wayProcess(serialPort_t *mspPort)
                     if (Connect(&DeviceInfo)) {
                         DeviceInfo.bytes[INTF_MODE_IDX] = CurrentInterfaceMode;
                     } else {
-                        SET_DISCONNECTED;
+                        setDisconnected();
                         ACK_OUT = ACK_D_GENERAL_ERROR;
                     }
                     break;
@@ -805,6 +882,8 @@ void esc4wayProcess(serialPort_t *mspPort)
                             break;
                         }
 #endif
+                        default:
+                            ACK_OUT = ACK_I_INVALID_CMD;
                     }
                     break;
                 }

@@ -40,6 +40,7 @@
 #define USE_BARO
 #define USE_BARO_BMP280
 #define USE_BARO_DPS310
+#define USE_GPS
 #define USE_OSD_SD
 #define USE_MAX7456
 
@@ -97,10 +98,18 @@
 #define ADC3_DMA_OPT                   1
 
 #define ESC_SENSOR_UART                SERIAL_PORT_USART3
+#define GPS_UART                       SERIAL_PORT_UART5
+#define SERIALRX_UART                  SERIAL_PORT_USART2
+#define SERIALRX_PROVIDER              SERIALRX_SBUS
+#define SERIALRX_HALFDUPLEX            0
 
 #define MAG_I2C_INSTANCE               I2CDEV_1
 #define BARO_I2C_INSTANCE              I2CDEV_1
 
+#define DEFAULT_FEATURES               FEATURE_GPS
+#define DEFAULT_GPS_BAUDRATE_INDEX     BAUD_38400
+#define DEFAULT_GPS_PROVIDER           GPS_NMEA
+#define DEFAULT_GPS_AUTOCONFIG         GPS_AUTOCONFIG_OFF
 #define DEFAULT_DSHOT_BITBANG          DSHOT_BITBANG_OFF
 #define DEFAULT_CURRENT_METER_SOURCE   CURRENT_METER_ADC
 #define DEFAULT_VOLTAGE_METER_SOURCE   VOLTAGE_METER_ADC
