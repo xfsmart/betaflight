@@ -174,7 +174,7 @@ void compassPreInit(void)
 }
 
 #if !ENABLE_SIMULATOR
-static bool compassDetect(magDev_t *magDev, uint8_t *alignment)
+static bool compassDetect(magDev_t *magDev, sensor_align_e *alignment)
 {
     *alignment = MAG_ALIGN;
 
@@ -391,8 +391,12 @@ bool compassInit(void)
     }
 
     LED1_ON;
-    magDev.init(&magDev);
+    const bool initialized = magDev.init(&magDev);
     LED1_OFF;
+
+    if (!initialized) {
+        return false;
+    }
 
     magDev.magAlignment = alignment;
 
@@ -453,8 +457,11 @@ uint32_t compassUpdate(timeUs_t currentTimeUs)
     previousTaskTimeUs = currentTimeUs;
     DEBUG_SET(DEBUG_MAG_TASK_RATE, 6, dTaskTimeUs);
 
-    bool checkBusBusy = busBusy(&magDev.dev, NULL);
+    bool busError = false;
+    bool checkBusBusy = busBusy(&magDev.dev, &busError);
+    magDev.busError |= busError;
     DEBUG_SET(DEBUG_MAG_TASK_RATE, 4, checkBusBusy);
+    DEBUG_SET(DEBUG_MAG_TASK_RATE, 7, magDev.busError);
     if (checkBusBusy) {
         // No action is taken, as the bus was busy.
         schedulerIgnoreTaskExecRate();
@@ -462,6 +469,7 @@ uint32_t compassUpdate(timeUs_t currentTimeUs)
     }
 
     bool checkReadState = !magDev.read(&magDev, magADCRaw);
+    magDev.busError = false;
     DEBUG_SET(DEBUG_MAG_TASK_RATE, 5, checkReadState);
     if (checkReadState) {
         // The compass reported no data available to be retrieved; it may use a state engine that has more than one read state

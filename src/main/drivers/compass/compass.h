@@ -36,6 +36,7 @@ typedef struct magDev_s {
     sensor_align_e magAlignment;
     matrix33_t rotationMatrix;
     ioTag_t magIntExtiTag;
+    bool busError;
     int16_t magGain[3];
     uint16_t magOdrHz;
 } magDev_t;

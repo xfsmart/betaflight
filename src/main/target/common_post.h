@@ -159,6 +159,25 @@
 #ifndef USE_MAG_DATA_READY_SIGNAL
 #define USE_MAG_DATA_READY_SIGNAL
 #endif
+
+#if defined(USE_MAG_EXPLICIT_DRIVERS)
+
+#if !defined(USE_MAG_HMC5883) \
+    && !defined(USE_MAG_SPI_HMC5883) \
+    && !defined(USE_MAG_QMC5883) \
+    && !defined(USE_MAG_LIS2MDL) \
+    && !defined(USE_MAG_LIS3MDL) \
+    && !defined(USE_MAG_AK8963) \
+    && !defined(USE_MAG_MPU925X_AK8963) \
+    && !defined(USE_MAG_SPI_AK8963) \
+    && !defined(USE_MAG_AK8975) \
+    && !defined(USE_MAG_IST8310) \
+    && !defined(USE_MAG_MMC560X)
+#error At least one USE_MAG device definition required when USE_MAG_EXPLICIT_DRIVERS is enabled
+#endif
+
+#else
+
 #ifndef USE_MAG_HMC5883
 #define USE_MAG_HMC5883
 #endif
@@ -192,6 +211,8 @@
 #ifndef USE_MAG_MMC560X
 #define USE_MAG_MMC560X
 #endif
+
+#endif // USE_MAG_EXPLICIT_DRIVERS
 
 #endif // END MAG HW defines
 

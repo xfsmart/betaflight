@@ -157,6 +157,34 @@ baro_ms5611_unittest_DEFINES := \
                 USE_BARO_MS5611= \
                 USE_BARO_SPI_MS5611=
 
+board_c_ist8310_config_unittest_SRC := \
+		$(USER_DIR)/common/bitarray.c \
+		$(USER_DIR)/pg/bus_i2c.c
+board_c_ist8310_config_unittest_DEFINES := \
+		USE_VIRTUAL_ACC= \
+		USE_I2C= \
+		USE_I2C_DEVICE_1= \
+		I2C1_CLOCKSPEED=400 \
+		I2C1_PULLUP=false
+
+compass_init_unittest_SRC := \
+		$(USER_DIR)/sensors/compass.c \
+		$(USER_DIR)/sensors/initialisation.c
+compass_init_unittest_DEFINES := \
+		USE_I2C= \
+		USE_MAG_EXPLICIT_DRIVERS= \
+		USE_MAG_IST8310= \
+		USE_VIRTUAL_LED= \
+		MAG_I2C_INSTANCE=I2CDEV_1
+compass_init_unittest_FLAGS := -ffunction-sections -fdata-sections
+compass_init_unittest_LDFLAGS := -Wl,--gc-sections
+
+compass_ist8310_unittest_SRC := \
+		$(USER_DIR)/drivers/compass/compass_ist8310.c
+compass_ist8310_unittest_DEFINES := \
+		USE_MAG_EXPLICIT_DRIVERS= \
+		USE_MAG_IST8310=
+
 # This test is disabled due to build errors.
 # Its source code is archived in unit/battery_unittest.cc.txt
 #

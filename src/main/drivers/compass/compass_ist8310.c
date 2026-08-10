@@ -22,16 +22,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <math.h>
-
 #include "platform.h"
 
 #ifdef USE_MAG_IST8310
 
-#include "build/debug.h"
-
 #include "common/axis.h"
-#include "common/maths.h"
 
 #include "drivers/bus.h"
 #include "drivers/bus_i2c.h"
@@ -42,55 +37,13 @@
 #include "compass.h"
 #include "compass_ist8310.h"
 
-//#define DEBUG_MAG_DATA_READY_INTERRUPT
-
 #define IST8310_MAG_I2C_ADDRESS 0x0E
-
-/* ist8310 Slave Address Select : default address 0x0C
- *        CAD1  |  CAD0   |  Address
- *    ------------------------------
- *         VSS   |   VSS  |  0CH
- *         VSS   |   VDD  |  0DH
- *         VDD   |   VSS  |  0EH
- *         VDD   |   VDD  |  0FH
- * if CAD1 and CAD0 are floating, I2C address will be 0EH
- *
- *
- * CTRL_REGA: Control Register 1
- * Read Write
- * Default value: 0x0A
- * 7:4  0   Reserved.
- * 3:0  DO2-DO0: Operating mode setting
- *        DO3  |  DO2 |  DO1 |  DO0 |   mode
- *    ------------------------------------------------------
- *         0   |   0  |  0   |  0   |   Stand-By mode
- *         0   |   0  |  0   |  1   |   Single measurement mode
- *                                       Others: Reserved
- *
- * CTRL_REGB: Control Register 2
- * Read Write
- * Default value: 0x0B
- * 7:4  0   Reserved.
- * 3    DREN : Data ready enable control:
- *      0: disable
- *      1: enable
- * 2    DRP: DRDY pin polarity control
- *      0: active low
- *      1: active high
- * 1    0   Reserved.
- * 0    SRST: Soft reset, perform Power On Reset (POR) routine
- *      0: no action
- *      1: start immediately POR routine
- *      This bit will be set to zero after POR routine
- */
 
 #define IST8310_REG_DATA 0x03
 #define IST8310_REG_WAI 0x00
 #define IST8310_REG_WAI_VALID 0x10
 
 #define IST8310_REG_STAT1 0x02
-#define IST8310_REG_STAT2 0x09
-
 #define IST8310_DRDY_MASK 0x01
 
 // I2C Control Register
@@ -102,22 +55,157 @@
 // Parameter
 // ODR = Output Data Rate, we use single measure mode for getting more data.
 #define IST8310_ODR_SINGLE 0x01
-#define IST8310_ODR_10_HZ 0x03
-#define IST8310_ODR_20_HZ 0x05
-#define IST8310_ODR_50_HZ 0x07
-#define IST8310_ODR_100_HZ 0x06
-
 #define IST8310_AVG_16  0x24
 #define IST8310_PULSE_DURATION_NORMAL 0xC0
 
-#define IST8310_CNTRL2_RESET 0x01
-#define IST8310_CNTRL2_DRPOL 0x04
-#define IST8310_CNTRL2_DRENA 0x08
+#define IST8310_DRDY_MAX_RETRIES 15
+#define IST8310_LSB_TO_MGAUSS 3
+#define IST8310_RAW_XY_MAX 5334
+#define IST8310_RAW_Z_MAX 8334
+#define IST8310_DATA_SENTINEL 0x7FFF
+
+typedef enum {
+    IST8310_STATE_STATUS,
+    IST8310_STATE_DATA,
+    IST8310_STATE_TRIGGER,
+} ist8310ReadState_e;
+
+typedef enum {
+    IST8310_PENDING_NONE,
+    IST8310_PENDING_STATUS,
+    IST8310_PENDING_DATA,
+    IST8310_PENDING_TRIGGER,
+} ist8310Pending_e;
+
+typedef struct {
+    uint8_t data[6];
+    uint8_t status;
+    uint8_t retries;
+    ist8310ReadState_e state;
+    ist8310Pending_e pending;
+} ist8310ReadContext_t;
+
+static ist8310ReadContext_t ist8310ReadContext;
+
+static void ist8310PrepareDataBuffer(void)
+{
+    for (unsigned axis = 0; axis < 3; axis++) {
+        ist8310ReadContext.data[2 * axis] = IST8310_DATA_SENTINEL & 0xFF;
+        ist8310ReadContext.data[2 * axis + 1] = IST8310_DATA_SENTINEL >> 8;
+    }
+}
+
+static void ist8310ResetReadContext(magDev_t *magDev)
+{
+    ist8310ReadContext = (ist8310ReadContext_t) {
+        .state = IST8310_STATE_STATUS,
+    };
+    ist8310PrepareDataBuffer();
+    magDev->busError = false;
+}
+
+static int16_t ist8310RawAxis(unsigned axis)
+{
+    const unsigned offset = 2 * axis;
+    return (int16_t)((uint16_t)ist8310ReadContext.data[offset + 1] << 8 | ist8310ReadContext.data[offset]);
+}
+
+static bool ist8310DecodeSample(int16_t *magData)
+{
+    const int16_t rawX = ist8310RawAxis(X);
+    const int16_t rawY = ist8310RawAxis(Y);
+    const int16_t rawZ = ist8310RawAxis(Z);
+
+    if (rawX < -IST8310_RAW_XY_MAX || rawX > IST8310_RAW_XY_MAX ||
+        rawY < -IST8310_RAW_XY_MAX || rawY > IST8310_RAW_XY_MAX ||
+        rawZ < -IST8310_RAW_Z_MAX || rawZ > IST8310_RAW_Z_MAX) {
+        return false;
+    }
+
+    magData[X] = rawX * IST8310_LSB_TO_MGAUSS;
+    magData[Y] = -rawY * IST8310_LSB_TO_MGAUSS;
+    magData[Z] = rawZ * IST8310_LSB_TO_MGAUSS;
+    return true;
+}
+
+static bool ist8310StartCurrentOperation(extDevice_t *dev)
+{
+    switch (ist8310ReadContext.state) {
+    case IST8310_STATE_STATUS:
+        ist8310ReadContext.status = 0;
+        if (busReadRegisterBufferStart(dev, IST8310_REG_STAT1, &ist8310ReadContext.status, sizeof(ist8310ReadContext.status))) {
+            ist8310ReadContext.pending = IST8310_PENDING_STATUS;
+            return true;
+        }
+        break;
+
+    case IST8310_STATE_DATA:
+        ist8310PrepareDataBuffer();
+        if (busReadRegisterBufferStart(dev, IST8310_REG_DATA, ist8310ReadContext.data, sizeof(ist8310ReadContext.data))) {
+            ist8310ReadContext.pending = IST8310_PENDING_DATA;
+            return true;
+        }
+        break;
+
+    case IST8310_STATE_TRIGGER:
+        if (busWriteRegisterStart(dev, IST8310_REG_CNTRL1, IST8310_ODR_SINGLE)) {
+            ist8310ReadContext.pending = IST8310_PENDING_TRIGGER;
+            return true;
+        }
+        break;
+    }
+
+    return false;
+}
+
+static bool ist8310CompletePending(magDev_t *magDev, int16_t *magData)
+{
+    bool sampleReady = false;
+
+    switch (ist8310ReadContext.pending) {
+    case IST8310_PENDING_NONE:
+        break;
+
+    case IST8310_PENDING_STATUS:
+        ist8310ReadContext.pending = IST8310_PENDING_NONE;
+        if (magDev->busError) {
+            ist8310ReadContext.status = 0;
+            ist8310ReadContext.state = IST8310_STATE_STATUS;
+        } else if (ist8310ReadContext.status & IST8310_DRDY_MASK) {
+            ist8310ReadContext.retries = 0;
+            ist8310ReadContext.state = IST8310_STATE_DATA;
+        } else if (++ist8310ReadContext.retries >= IST8310_DRDY_MAX_RETRIES) {
+            ist8310ReadContext.retries = 0;
+            ist8310ReadContext.state = IST8310_STATE_TRIGGER;
+        } else {
+            ist8310ReadContext.state = IST8310_STATE_STATUS;
+        }
+        break;
+
+    case IST8310_PENDING_DATA:
+        ist8310ReadContext.pending = IST8310_PENDING_NONE;
+        ist8310ReadContext.retries = 0;
+        ist8310ReadContext.state = IST8310_STATE_TRIGGER;
+        if (!magDev->busError) {
+            sampleReady = ist8310DecodeSample(magData);
+        }
+        break;
+
+    case IST8310_PENDING_TRIGGER:
+        ist8310ReadContext.pending = IST8310_PENDING_NONE;
+        ist8310ReadContext.state = magDev->busError ? IST8310_STATE_TRIGGER : IST8310_STATE_STATUS;
+        break;
+    }
+
+    return sampleReady;
+}
 
 static bool ist8310Init(magDev_t *magDev)
 {
     extDevice_t *dev = &magDev->dev;
 
+    ist8310ResetReadContext(magDev);
+    magDev->magOdrHz = 0;
     busDeviceRegister(dev);
 
     // Init setting
@@ -127,8 +215,10 @@ static bool ist8310Init(magDev_t *magDev)
     delay(6);
     ack = ack && busWriteRegister(dev, IST8310_REG_CNTRL1, IST8310_ODR_SINGLE);
 
-    magDev->magOdrHz = 100;
-    // need to check what ODR is actually returned, may be a bit faster than 100Hz
+    if (ack) {
+        magDev->magOdrHz = 100;
+    }
+
     return ack;
 }
 
@@ -136,41 +226,12 @@ static bool ist8310Read(magDev_t * magDev, int16_t *magData)
 {
     extDevice_t *dev = &magDev->dev;
 
-    static uint8_t buf[6];
-    const int LSB2FSV = 3; // 3mG - 14 bit
-
-    static enum {
-        STATE_REQUEST_DATA,
-        STATE_FETCH_DATA,
-    } state = STATE_REQUEST_DATA;
-
-    switch (state) {
-        default:
-        case STATE_REQUEST_DATA:
-            if (busReadRegisterBufferStart(dev, IST8310_REG_DATA, buf, sizeof(buf))) {
-                state = STATE_FETCH_DATA;
-            }
-
-            return false;
-        case STATE_FETCH_DATA:
-            // Looks like datasheet is incorrect and we need to invert Y axis to conform to right hand rule
-            magData[X] =  (int16_t)(buf[1] << 8 | buf[0]) * LSB2FSV;
-            magData[Y] = -(int16_t)(buf[3] << 8 | buf[2]) * LSB2FSV;
-            magData[Z] =  (int16_t)(buf[5] << 8 | buf[4]) * LSB2FSV;
-
-            // Force single measurement mode for next read
-            if (busWriteRegisterStart(dev, IST8310_REG_CNTRL1, IST8310_ODR_SINGLE)) {
-                state = STATE_REQUEST_DATA;
-
-                return true;
-            }
-
-            return false;
+    const bool sampleReady = ist8310CompletePending(magDev, magData);
+    if (ist8310ReadContext.pending == IST8310_PENDING_NONE) {
+        ist8310StartCurrentOperation(dev);
     }
 
-    // TODO: do cross axis compensation
-
-    return false;
+    return sampleReady;
 }
 
 static bool deviceDetect(magDev_t * magDev)

@@ -83,7 +83,10 @@ bool sensorsAutodetect(void)
 #endif
 
 #ifdef USE_MAG
-    compassInit();
+    if (!compassInit()) {
+        detectedSensors[SENSOR_INDEX_MAG] = MAG_NONE;
+        sensorsClear(SENSOR_MAG);
+    }
 #endif
 
 #ifdef USE_RANGEFINDER
