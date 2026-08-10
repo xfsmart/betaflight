@@ -48,6 +48,23 @@
 
 #include "pg/motor.h"
 
+static void bbCommitDMADescriptor(DMA_ARCH_TYPE *dmaRef, DMA_InitTypeDef *descriptor)
+{
+#ifdef UNIT_TEST
+    __asm__ volatile ("" ::: "memory");
+    ft32DmaClearActiveRequestSlots(dmaRef, descriptor);
+    DMA_Init(dmaRef, descriptor);
+    __asm__ volatile ("" ::: "memory");
+#else
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    ft32DmaClearActiveRequestSlots(dmaRef, descriptor);
+    DMA_Init(dmaRef, descriptor);
+    __DMB();
+    __set_PRIMASK(primask);
+#endif
+}
+
 void bbGpioSetup(bbMotor_t *bbMotor)
 {
     bbPort_t *bbPort = bbMotor->bbPort;
@@ -108,26 +125,26 @@ void bbTimerChannelInit(bbPort_t *bbPort)
 
 #ifdef USE_DMA_REGISTER_CACHE
 
-static void bbLoadDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache)
+static bool bbLoadDMARegs(dmaResource_t *dmaResource, const dmaRegCache_t *dmaRegCache, uint16_t count)
 {
     DMA_Channel_TypeDef *ch = (DMA_Channel_TypeDef *)dmaResource;
-    xDMA_Cmd(ch, DISABLE);
-    if (ft32DmaIsChannelEnabled(ch)) {
-        return;
+    if (dmaRegCache->CTL == 0U || !ft32DmaTrySetCurrDataCounter(ch, count)) {
+        return false;
     }
     ch->SAR = dmaRegCache->SAR;
     ch->DAR = dmaRegCache->DAR;
     ch->CTL = dmaRegCache->CTL;
     ch->CFG = dmaRegCache->CFG;
-    xDMA_ITConfig(ch, DMA_IT_TFR, ENABLE);
+    xDMA_ITConfig(ch, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR, DISABLE);
+    xDMA_ITConfig(ch, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
+    return true;
 }
 
-static void bbSaveDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache)
+static bool bbSaveDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache)
 {
     DMA_Channel_TypeDef *ch = (DMA_Channel_TypeDef *)dmaResource;
-    xDMA_Cmd(ch, DISABLE);
     if (ft32DmaIsChannelEnabled(ch)) {
-        return;
+        return false;
     }
     const dmaRegCache_t snapshot = {
         .SAR = ch->SAR,
@@ -136,44 +153,36 @@ static void bbSaveDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache
         .CFG = ch->CFG,
     };
     *dmaRegCache = snapshot;
+    return snapshot.CTL != 0U;
 }
 #endif
 
-void bbSwitchToOutput(bbPort_t * bbPort)
+void bbSwitchToOutput(bbPort_t *bbPort)
 {
     dbgPinHi(1);
 
-    // Output idle level before switching to output
-    // Use BSRR register for this
-    // Normal: Use BR (higher half)
-    // Inverted: Use BS (lower half)
+    dmaResource_t *dmaResource = bbPort->dmaResource;
+#ifdef USE_DMA_REGISTER_CACHE
+    if (!bbLoadDMARegs(dmaResource, &bbPort->dmaRegOutput, bbPort->portOutputCount)) {
+        dbgPinLo(1);
+        return;
+    }
+#else
+    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)dmaResource;
+    if (!ft32DmaTrySetCurrDataCounter(dmaRef, bbPort->outputDmaInit.BlockTransSize)) {
+        dbgPinLo(1);
+        return;
+    }
+    bbCommitDMADescriptor(dmaRef, &bbPort->outputDmaInit);
+    xDMA_ITConfig(dmaRef, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR, DISABLE);
+    xDMA_ITConfig(dmaRef, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
+#endif
 
     bbPort->gpio->BSRR = bbPort->gpioIdleBSRR;
-
-    // Set GPIO to output
     ATOMIC_BLOCK(NVIC_PRIO_TIMER) {
         MODIFY_REG(bbPort->gpio->MODER, bbPort->gpioModeMask, bbPort->gpioModeOutput);
     }
-
-    // Reinitialize port group DMA for output
-
-    dmaResource_t *dmaResource = bbPort->dmaResource;
-    xDMA_Cmd(dmaResource, DISABLE);
-    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaResource)) {
-        return;
-    }
-#ifdef USE_DMA_REGISTER_CACHE
-    bbLoadDMARegs(dmaResource, &bbPort->dmaRegOutput);
-#else
-    xDMA_DeInit(dmaResource);
-    xDMA_Init(dmaResource, &bbPort->outputDmaInit);
-    xDMA_ITConfig(dmaResource, DMA_IT_TFR, ENABLE);
-#endif
-
-    // Reinitialize pacer timer for output
-
     ((TIM_TypeDef *)bbPort->timhw->tim)->ARR = bbPort->outputARR;
-
     bbPort->direction = DSHOT_BITBANG_DIRECTION_OUTPUT;
 
     dbgPinLo(1);
@@ -184,55 +193,52 @@ void bbSwitchToInput(bbPort_t *bbPort)
 {
     dbgPinHi(1);
 
-    // Set GPIO to input
-
-    ATOMIC_BLOCK(NVIC_PRIO_TIMER) {
-        MODIFY_REG(bbPort->gpio->MODER, bbPort->gpioModeMask, bbPort->gpioModeInput);
-    }
-
-    // Reinitialize port group DMA for input
-
     dmaResource_t *dmaResource = bbPort->dmaResource;
-    xDMA_Cmd(dmaResource, DISABLE);
-    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaResource)) {
+#ifdef USE_DMA_REGISTER_CACHE
+    if (!bbLoadDMARegs(dmaResource, &bbPort->dmaRegInput, bbPort->portInputCount)) {
+        dbgPinLo(1);
         return;
     }
-#ifdef USE_DMA_REGISTER_CACHE
-    bbLoadDMARegs(dmaResource, &bbPort->dmaRegInput);
 #else
-    xDMA_DeInit(dmaResource);
-    xDMA_Init(dmaResource, &bbPort->inputDmaInit);
-    xDMA_ITConfig(dmaResource, DMA_IT_TFR, ENABLE);
+    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)dmaResource;
+    if (!ft32DmaTrySetCurrDataCounter(dmaRef, bbPort->inputDmaInit.BlockTransSize)) {
+        dbgPinLo(1);
+        return;
+    }
+    bbCommitDMADescriptor(dmaRef, &bbPort->inputDmaInit);
+    xDMA_ITConfig(dmaRef, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR, DISABLE);
+    xDMA_ITConfig(dmaRef, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
 #endif
-
-    // Reinitialize pacer timer for input
 
     ((TIM_TypeDef *)bbPort->timhw->tim)->CNT = 0;
     ((TIM_TypeDef *)bbPort->timhw->tim)->ARR = bbPort->inputARR;
 
     bbDMA_Cmd(bbPort, ENABLE);
+    if (!ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaResource)) {
+        ft32DmaRequestDisable((DMA_ARCH_TYPE *)dmaResource);
+        dbgPinLo(1);
+        return;
+    }
 
+    ATOMIC_BLOCK(NVIC_PRIO_TIMER) {
+        MODIFY_REG(bbPort->gpio->MODER, bbPort->gpioModeMask, bbPort->gpioModeInput);
+    }
     bbPort->direction = DSHOT_BITBANG_DIRECTION_INPUT;
-
     dbgPinLo(1);
 }
 #endif
 
-void bbDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
+static bool bbTryDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
 {
     DMA_InitTypeDef *dmainit = (direction == DSHOT_BITBANG_DIRECTION_OUTPUT) ? &bbPort->outputDmaInit : &bbPort->inputDmaInit;
-
-    xDMA_Cmd(bbPort->dmaResource, DISABLE);
-    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
-        return;
-    }
     DMA_StructInit(dmainit);
-
-    dmainit->SrcAddrMode = DMA_SRC_ADDRMODE_INC;
-    dmainit->DstAddrMode = DMA_DST_ADDRMODE_HOLD;
     dmainit->FIFOMode = ENABLE;
     dmainit->ReloadDst = DISABLE;
     dmainit->ReloadSrc = DISABLE;
+
+    const uint32_t hardwareInterface = ft32DmaGetHardwareInterface(bbPort->dmaResource);
+    dmainit->SrcHardwareInterface = hardwareInterface;
+    dmainit->DstHardwareInterface = hardwareInterface;
 
     if (direction == DSHOT_BITBANG_DIRECTION_OUTPUT) {
         dmainit->Priority = DMA_CH_PRIORITY_6;
@@ -241,31 +247,65 @@ void bbDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
         dmainit->BlockTransSize = bbPort->portOutputCount;
         dmainit->SrcDstMasterSel = DMA_SRCMASTER1_DSTMASTER2;
         dmainit->TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_M2P_DMA;
+        dmainit->SrcAddrMode = DMA_SRC_ADDRMODE_INC;
+        dmainit->DstAddrMode = DMA_DST_ADDRMODE_HOLD;
         dmainit->SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_32BITS;
         dmainit->DstTransferWidth = DMA_DST_TRANSFERWIDTH_32BITS;
-        ft32DmaSetDstRequest(dmainit, bbPort->dmaResource, bbPort->dmaChannel);
-
-#ifdef USE_DMA_REGISTER_CACHE
-        xDMA_Init(bbPort->dmaResource, dmainit);
-        bbSaveDMARegs(bbPort->dmaResource, &bbPort->dmaRegOutput);
-#endif
+        dmainit->SrcHsSel = DMA_SRCHSSEL_SOFTWARE;
+        dmainit->DstHsSel = DMA_DSTHSSEL_HARDWARE;
+        dmainit->SrcHsIfPeriphSel = 0U;
+        dmainit->DstHsIfPeriphSel = bbPort->dmaChannel;
     } else {
         dmainit->Priority = DMA_CH_PRIORITY_7;
         dmainit->SrcAddress = (uint32_t)&bbPort->gpio->IDR;
         dmainit->DstAddress = (uint32_t)bbPort->portInputBuffer;
         dmainit->BlockTransSize = bbPort->portInputCount;
-        dmainit->SrcDstMasterSel = DMA_SRCMASTER1_DSTMASTER2;
+        dmainit->SrcDstMasterSel = DMA_SRCMASTER2_DSTMASTER1;
         dmainit->TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_P2M_DMA;
+        dmainit->SrcAddrMode = DMA_SRC_ADDRMODE_HOLD;
+        dmainit->DstAddrMode = DMA_DST_ADDRMODE_INC;
         dmainit->SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_16BITS;
         dmainit->DstTransferWidth = DMA_DST_TRANSFERWIDTH_16BITS;
-        ft32DmaSetSrcRequest(dmainit, bbPort->dmaResource, bbPort->dmaChannel);
+        dmainit->SrcHsSel = DMA_SRCHSSEL_HARDWARE;
+        dmainit->DstHsSel = DMA_DSTHSSEL_SOFTWARE;
+        dmainit->SrcHsIfPeriphSel = bbPort->dmaChannel;
+        dmainit->DstHsIfPeriphSel = 0U;
+    }
+
+    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)bbPort->dmaResource;
+    if (!ft32DmaTrySetCurrDataCounter(dmaRef, dmainit->BlockTransSize)) {
+        return false;
+    }
+
+    bbCommitDMADescriptor(dmaRef, dmainit);
+    xDMA_ITConfig(dmaRef, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR, DISABLE);
+    xDMA_ITConfig(dmaRef, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
 
 #ifdef USE_DMA_REGISTER_CACHE
-        xDMA_Init(bbPort->dmaResource, dmainit);
-        bbSaveDMARegs(bbPort->dmaResource, &bbPort->dmaRegInput);
-#endif
+    dmaRegCache_t *dmaRegCache = (direction == DSHOT_BITBANG_DIRECTION_OUTPUT) ? &bbPort->dmaRegOutput : &bbPort->dmaRegInput;
+    if (!bbSaveDMARegs(bbPort->dmaResource, dmaRegCache)) {
+        memset(dmaRegCache, 0, sizeof(*dmaRegCache));
+        return false;
     }
+#endif
+    return true;
 }
+
+void bbDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
+{
+#ifdef USE_DMA_REGISTER_CACHE
+    dmaRegCache_t *dmaRegCache = (direction == DSHOT_BITBANG_DIRECTION_OUTPUT) ? &bbPort->dmaRegOutput : &bbPort->dmaRegInput;
+    memset(dmaRegCache, 0, sizeof(*dmaRegCache));
+#endif
+    (void)bbTryDMAPreconfigure(bbPort, direction);
+}
+
+#ifdef UNIT_TEST
+bool ft32DshotTestBitbangTryPreconfigure(bbPort_t *bbPort, uint8_t direction)
+{
+    return bbTryDMAPreconfigure(bbPort, direction);
+}
+#endif
 
 void bbTIM_TimeBaseInit(bbPort_t *bbPort, uint16_t period)
 {
@@ -286,11 +326,11 @@ void bbTIM_DMACmd(void *TIMx, uint16_t TIM_DMASource, FunctionalState NewState)
 
 void bbDMA_ITConfig(bbPort_t *bbPort)
 {
-    xDMA_Cmd(bbPort->dmaResource, DISABLE);
     if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
         return;
     }
-    xDMA_ITConfig(bbPort->dmaResource, DMA_IT_TFR, ENABLE);
+    xDMA_ITConfig(bbPort->dmaResource, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR, DISABLE);
+    xDMA_ITConfig(bbPort->dmaResource, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
 }
 
 void bbDMA_Cmd(bbPort_t *bbPort, FunctionalState NewState)

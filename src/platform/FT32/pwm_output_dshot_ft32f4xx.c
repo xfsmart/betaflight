@@ -46,9 +46,41 @@
 
 #ifdef USE_DSHOT_TELEMETRY
 
+#define FT32_DSHOT_DIRECTION_RECOVERY_PENDING UINT8_MAX
+
+static void pwmDshotDirectionRecoveryBarrier(void)
+{
+#ifdef UNIT_TEST
+    __asm__ volatile ("" ::: "memory");
+#else
+    __DMB();
+#endif
+}
+
+static bool pwmDshotDirectionRecoveryIsPending(const motorDmaOutput_t *motor)
+{
+    return *(const volatile uint8_t *)&motor->dmaInputLen == FT32_DSHOT_DIRECTION_RECOVERY_PENDING;
+}
+
+static void pwmDshotDirectionRecoveryMarkPending(motorDmaOutput_t *motor)
+{
+    *(volatile uint8_t *)&motor->dmaInputLen = FT32_DSHOT_DIRECTION_RECOVERY_PENDING;
+    pwmDshotDirectionRecoveryBarrier();
+    motor->isInput = false;
+}
+
+static void pwmDshotDirectionRecoveryClear(motorDmaOutput_t *motor)
+{
+    pwmDshotDirectionRecoveryBarrier();
+    *(volatile uint8_t *)&motor->dmaInputLen = 0U;
+}
+
 void dshotEnableChannels(unsigned motorCount)
 {
     for (unsigned i = 0; i < motorCount; i++) {
+        if (dmaMotors[i].isInput || pwmDshotDirectionRecoveryIsPending(&dmaMotors[i])) {
+            continue;
+        }
         if (dmaMotors[i].output & TIMER_OUTPUT_N_CHANNEL) {
             TIM_CCxNCmd((TIM_TypeDef *)dmaMotors[i].timerHardware->tim, dmaMotors[i].timerHardware->channel, TIM_CCxN_Enable);
         } else {
@@ -59,6 +91,92 @@ void dshotEnableChannels(unsigned motorCount)
 
 #endif
 
+static void pwmDshotCommitDmaDescriptor(DMA_ARCH_TYPE *dmaRef, DMA_InitTypeDef *descriptor)
+{
+#ifdef UNIT_TEST
+    __asm__ volatile ("" ::: "memory");
+    ft32DmaClearActiveRequestSlots(dmaRef, descriptor);
+    DMA_Init(dmaRef, descriptor);
+    __asm__ volatile ("" ::: "memory");
+#else
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    ft32DmaClearActiveRequestSlots(dmaRef, descriptor);
+    DMA_Init(dmaRef, descriptor);
+    __DMB();
+    __set_PRIMASK(primask);
+#endif
+}
+
+static DMA_InitTypeDef pwmDshotOutputDmaDescriptor(const motorDmaOutput_t *motor, const DMA_InitTypeDef *canonical)
+{
+    DMA_InitTypeDef descriptor = *canonical;
+    const uint32_t hardwareInterface = ft32DmaGetHardwareInterface(motor->dmaRef);
+
+    descriptor.SrcDstMasterSel = DMA_SRCMASTER1_DSTMASTER2;
+    descriptor.TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_M2P_DMA;
+    descriptor.SrcAddrMode = DMA_SRC_ADDRMODE_INC;
+    descriptor.DstAddrMode = DMA_DST_ADDRMODE_HOLD;
+    descriptor.SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_32BITS;
+    descriptor.DstTransferWidth = DMA_DST_TRANSFERWIDTH_32BITS;
+    descriptor.SrcHardwareInterface = hardwareInterface;
+    descriptor.DstHardwareInterface = hardwareInterface;
+    descriptor.SrcHsSel = DMA_SRCHSSEL_SOFTWARE;
+    descriptor.DstHsSel = DMA_DSTHSSEL_HARDWARE;
+    descriptor.SrcHsIfPeriphSel = 0U;
+    descriptor.DstHsIfPeriphSel = canonical->DstHsIfPeriphSel;
+
+    return descriptor;
+}
+
+static bool pwmDshotTryLoadDmaDescriptor(motorDmaOutput_t *motor, DMA_InitTypeDef *descriptor)
+{
+    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)motor->dmaRef;
+
+    if (!ft32DmaTrySetCurrDataCounter(dmaRef, descriptor->BlockTransSize)) {
+        return false;
+    }
+
+    pwmDshotCommitDmaDescriptor(dmaRef, descriptor);
+    xDMA_ITConfig(dmaRef, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR, DISABLE);
+    xDMA_ITConfig(dmaRef, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
+    return true;
+}
+
+static bool pwmDshotTrySetDirectionOutputInternal(
+    motorDmaOutput_t * const motor,
+    TIM_OCInitTypeDef *pOcInit,
+    const DMA_InitTypeDef *pDmaInit)
+{
+    const timerHardware_t * const timerHardware = motor->timerHardware;
+    TIM_TypeDef *timer = (TIM_TypeDef *)timerHardware->tim;
+
+#ifdef USE_DSHOT_DMAR
+    if (useBurstDshot) {
+        TIM_DMACmd(timer, TIM_DMA_Update, DISABLE);
+    } else
+#endif
+    {
+        TIM_DMACmd(timer, motor->timerDmaSource, DISABLE);
+    }
+
+    DMA_InitTypeDef descriptor = pwmDshotOutputDmaDescriptor(motor, pDmaInit);
+    if (!pwmDshotTryLoadDmaDescriptor(motor, &descriptor)) {
+        xDMA_ClearFlag(motor->dmaRef, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
+        return false;
+    }
+
+    timerOCPreloadConfig(timer, timerHardware->channel, TIM_OCPreload_Disable);
+    timerOCInit(timer, timerHardware->channel, pOcInit);
+    timerOCPreloadConfig(timer, timerHardware->channel, TIM_OCPreload_Enable);
+
+#ifdef USE_DSHOT_TELEMETRY
+    motor->isInput = false;
+    pwmDshotDirectionRecoveryClear(motor);
+#endif
+    return true;
+}
+
 FAST_CODE void pwmDshotSetDirectionOutput(
     motorDmaOutput_t * const motor
 #ifndef USE_DSHOT_TELEMETRY
@@ -67,98 +185,86 @@ FAST_CODE void pwmDshotSetDirectionOutput(
 )
 {
 #ifdef USE_DSHOT_TELEMETRY
-    TIM_OCInitTypeDef* pOcInit = &motor->ocInitStruct;
-    DMA_InitTypeDef* pDmaInit = &motor->dmaInitStruct;
-#endif
-
-    const timerHardware_t * const timerHardware = motor->timerHardware;
-    TIM_TypeDef *timer = (TIM_TypeDef *)timerHardware->tim;
-
-    dmaResource_t *dmaRef = motor->dmaRef;
-
-    TIM_DMACmd(timer, motor->timerDmaSource, DISABLE);
-    xDMA_Cmd(dmaRef, DISABLE);
-    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaRef)) {
-        return;
+    const bool wasInput = motor->isInput;
+    if (!pwmDshotTrySetDirectionOutputInternal(motor, &motor->ocInitStruct, &motor->dmaInitStruct) && wasInput) {
+        pwmDshotDirectionRecoveryMarkPending(motor);
     }
-    xDMA_DeInit(dmaRef);
-
-#ifdef USE_DSHOT_TELEMETRY
-    motor->isInput = false;
+#else
+    (void)pwmDshotTrySetDirectionOutputInternal(motor, pOcInit, pDmaInit);
 #endif
-    timerOCPreloadConfig(timer, timerHardware->channel, TIM_OCPreload_Disable);
-    timerOCInit(timer, timerHardware->channel, pOcInit);
-    timerOCPreloadConfig(timer, timerHardware->channel, TIM_OCPreload_Enable);
-
-#ifdef USE_DSHOT_DMAR
-    if (useBurstDshot) {
-        pDmaInit->TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_M2P_DMA;
-    } else
-#endif
-    {
-#if defined(FT32F4)
-        pDmaInit->TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_M2P_DMA;
-#endif
-        ft32DmaSetDstRequest(pDmaInit, dmaRef, pDmaInit->DstHsIfPeriphSel);
-    }
-
-    xDMA_Init(dmaRef, pDmaInit);
-    xDMA_ITConfig(dmaRef, DMA_IT_TFR, ENABLE);
-    xDMA_ITConfig(dmaRef, DMA_IT_ERR, ENABLE);
 }
 
 #ifdef USE_DSHOT_TELEMETRY
-FAST_CODE
-static void pwmDshotSetDirectionInput(
-    motorDmaOutput_t * const motor
-)
+static DMA_InitTypeDef pwmDshotInputDmaDescriptor(const motorDmaOutput_t *motor)
 {
-    DMA_InitTypeDef* pDmaInit = &motor->dmaInitStruct;
+    const DMA_InitTypeDef *output = &motor->dmaInitStruct;
+    DMA_InitTypeDef descriptor = *output;
+    const uint32_t hardwareInterface = ft32DmaGetHardwareInterface(motor->dmaRef);
 
+    descriptor.SrcAddress = output->DstAddress;
+    descriptor.DstAddress = output->SrcAddress;
+    descriptor.BlockTransSize = GCR_TELEMETRY_INPUT_LEN;
+    descriptor.SrcDstMasterSel = DMA_SRCMASTER2_DSTMASTER1;
+    descriptor.TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_P2M_DMA;
+    descriptor.SrcAddrMode = DMA_SRC_ADDRMODE_HOLD;
+    descriptor.DstAddrMode = DMA_DST_ADDRMODE_INC;
+    descriptor.SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_32BITS;
+    descriptor.DstTransferWidth = DMA_DST_TRANSFERWIDTH_32BITS;
+    descriptor.SrcHardwareInterface = hardwareInterface;
+    descriptor.DstHardwareInterface = hardwareInterface;
+    descriptor.SrcHsSel = DMA_SRCHSSEL_HARDWARE;
+    descriptor.DstHsSel = DMA_DSTHSSEL_SOFTWARE;
+    descriptor.SrcHsIfPeriphSel = output->DstHsIfPeriphSel;
+    descriptor.DstHsIfPeriphSel = 0U;
+
+    return descriptor;
+}
+
+FAST_CODE
+static bool pwmDshotTrySetDirectionInputStopped(motorDmaOutput_t * const motor)
+{
     const timerHardware_t * const timerHardware = motor->timerHardware;
     TIM_TypeDef *timer = (TIM_TypeDef *)timerHardware->tim;
+    DMA_InitTypeDef descriptor = pwmDshotInputDmaDescriptor(motor);
 
-    dmaResource_t *dmaRef = motor->dmaRef;
-
-    TIM_DMACmd(timer, motor->timerDmaSource, DISABLE);
-    xDMA_Cmd(dmaRef, DISABLE);
-    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)dmaRef)) {
-        return;
+    if (!pwmDshotTryLoadDmaDescriptor(motor, &descriptor)) {
+        return false;
     }
-    xDMA_DeInit(dmaRef);
 
-    motor->isInput = true;
-    if (!inputStampUs) {
-        inputStampUs = micros();
-    }
     TIM_ARRPreloadConfig(timer, ENABLE);
     timer->ARR = 0xffffffff;
-
     TIM_ICInit(timer, &motor->icInitStruct);
-
-#if defined(FT32F4)
-    const uint32_t dmaRequest = pDmaInit->DstHsIfPeriphSel;
-    motor->dmaInitStruct.TransferTypeFlowCtl = DMA_TRANSFERTYPE_FLOWCTL_P2M_DMA;
-    ft32DmaSetSrcRequest(pDmaInit, dmaRef, dmaRequest);
-#endif
-
-    xDMA_Init(dmaRef, pDmaInit);
+    return true;
 }
 #endif
 
 static bool pwmDshotTryRearmBurst(DMA_ARCH_TYPE *dmaRef, uint16_t count, uint32_t srcAddress)
 {
-    xDMA_Cmd(dmaRef, DISABLE);
-    if (ft32DmaIsChannelEnabled(dmaRef)) {
-        return false;
-    }
     if (!ft32DmaTrySetCurrDataCounter(dmaRef, count)) {
         return false;
     }
     DMA_SetSrcAddress(dmaRef, srcAddress);
     xDMA_Cmd(dmaRef, ENABLE);
+    if (!ft32DmaIsChannelEnabled(dmaRef)) {
+        ft32DmaRequestDisable(dmaRef);
+        (void)ft32DmaIsChannelEnabled(dmaRef);
+        return false;
+    }
     return true;
 }
+
+#if defined(USE_DSHOT_DMAR) && defined(USE_DSHOT_TELEMETRY)
+static bool pwmDshotBurstTimerRecoveryIsPending(const motorDmaTimer_t *motorTimer)
+{
+    for (unsigned i = 0; i < dshotMotorCount; i++) {
+        if (dmaMotors[i].timer == motorTimer &&
+            (dmaMotors[i].isInput || pwmDshotDirectionRecoveryIsPending(&dmaMotors[i]))) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
 
 void pwmCompleteDshotMotorUpdate(void)
 {
@@ -173,10 +279,26 @@ void pwmCompleteDshotMotorUpdate(void)
 #ifdef USE_DSHOT_DMAR
         if (useBurstDshot) {
             TIM_TypeDef *tim = (TIM_TypeDef *)dmaMotorTimers[i].timer;
+            DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)dmaMotorTimers[i].dmaBurstRef;
             TIM_DMACmd(tim, TIM_DMA_Update, DISABLE);
-            if (!pwmDshotTryRearmBurst((DMA_ARCH_TYPE *)dmaMotorTimers[i].dmaBurstRef,
+            if (dmaMotorTimers[i].dmaBurstLength == UINT16_MAX) {
+                ft32DmaRequestDisable(dmaRef);
+                (void)ft32DmaIsChannelEnabled(dmaRef);
+                dmaMotorTimers[i].dmaBurstLength = 0U;
+                continue;
+            }
+#ifdef USE_DSHOT_TELEMETRY
+            if (pwmDshotBurstTimerRecoveryIsPending(&dmaMotorTimers[i])) {
+                ft32DmaRequestDisable(dmaRef);
+                (void)ft32DmaIsChannelEnabled(dmaRef);
+                dmaMotorTimers[i].dmaBurstLength = 0U;
+                continue;
+            }
+#endif
+            if (!pwmDshotTryRearmBurst(dmaRef,
                     dmaMotorTimers[i].dmaBurstLength,
                     (uint32_t)dmaMotorTimers[i].dmaBurstBuffer)) {
+                dmaMotorTimers[i].dmaBurstLength = 0U;
                 continue;
             }
             TIM_DMAConfig(tim, TIM_DMABase_CCR1, TIM_DMABurstLength_4Transfers);
@@ -200,48 +322,109 @@ FAST_CODE static void motor_DMA_IRQHandler(dmaChannelDescriptor_t *descriptor)
     const bool transferComplete = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TFR) != RESET;
     const bool transferError = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR) != RESET;
 
-    if (transferComplete || transferError) {
-        motorDmaOutput_t * const motor = &dmaMotors[descriptor->userParam];
+    if (!transferComplete && !transferError) {
+        return;
+    }
+
+    motorDmaOutput_t * const motor = &dmaMotors[descriptor->userParam];
 #ifdef USE_DSHOT_TELEMETRY
-        dshotDMAHandlerCycleCounters.irqAt = getCycleCounter();
+    const bool wasInput = motor->isInput;
+    dshotDMAHandlerCycleCounters.irqAt = getCycleCounter();
 #endif
 #ifdef USE_DSHOT_DMAR
-        if (useBurstDshot) {
-            TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, TIM_DMA_Update, DISABLE);
-        } else
+    if (useBurstDshot) {
+        TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, TIM_DMA_Update, DISABLE);
+    } else
 #endif
-        {
-            TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
-        }
+    {
+        TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
+    }
 
-        ft32DmaRequestDisable((DMA_ARCH_TYPE *)motor->dmaRef);
-        DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
-
+    bool inputReady = false;
 #ifdef USE_DSHOT_TELEMETRY
-        if (transferComplete && !transferError && useDshotTelemetry &&
-            !ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)motor->dmaRef)) {
-            pwmDshotSetDirectionInput(motor);
-            if (ft32DmaTrySetCurrDataCounter((DMA_ARCH_TYPE *)motor->dmaRef, GCR_TELEMETRY_INPUT_LEN)) {
-                xDMA_Cmd(motor->dmaRef, ENABLE);
-                TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, ENABLE);
-                dshotDMAHandlerCycleCounters.changeDirectionCompletedAt = getCycleCounter();
-            }
-        }
+    bool channelStopped = true;
+    if (!wasInput && !pwmDshotDirectionRecoveryIsPending(motor) && transferComplete && !transferError && useDshotTelemetry) {
+        inputReady = pwmDshotTrySetDirectionInputStopped(motor);
+    } else
+#endif
+    {
+        ft32DmaRequestDisable((DMA_ARCH_TYPE *)motor->dmaRef);
+#ifdef USE_DSHOT_TELEMETRY
+        channelStopped = !ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)motor->dmaRef);
+#else
+        (void)ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)motor->dmaRef);
 #endif
     }
+
+    DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
+
+#ifdef USE_DSHOT_TELEMETRY
+    if (wasInput && (transferError || !channelStopped)) {
+        pwmDshotDirectionRecoveryMarkPending(motor);
+    }
+
+    if (inputReady) {
+        xDMA_Cmd(motor->dmaRef, ENABLE);
+        if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)motor->dmaRef)) {
+            if (!inputStampUs) {
+                inputStampUs = micros();
+            }
+            motor->isInput = true;
+            TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, ENABLE);
+            dshotDMAHandlerCycleCounters.changeDirectionCompletedAt = getCycleCounter();
+        } else {
+            ft32DmaRequestDisable((DMA_ARCH_TYPE *)motor->dmaRef);
+            pwmDshotDirectionRecoveryMarkPending(motor);
+        }
+    }
+#else
+    UNUSED(inputReady);
+#endif
 }
+
+#ifdef UNIT_TEST
+DMA_InitTypeDef ft32DshotTestOutputDescriptor(const motorDmaOutput_t *motor, const DMA_InitTypeDef *canonical)
+{
+    return pwmDshotOutputDmaDescriptor(motor, canonical);
+}
+
+#ifdef USE_DSHOT_TELEMETRY
+DMA_InitTypeDef ft32DshotTestInputDescriptor(const motorDmaOutput_t *motor)
+{
+    return pwmDshotInputDmaDescriptor(motor);
+}
+#endif
+
+bool ft32DshotTestLoadDescriptor(motorDmaOutput_t *motor, DMA_InitTypeDef *descriptor)
+{
+    return pwmDshotTryLoadDmaDescriptor(motor, descriptor);
+}
+
+bool ft32DshotTestSetDirectionOutput(motorDmaOutput_t *motor, TIM_OCInitTypeDef *ocInit, const DMA_InitTypeDef *dmaInit)
+{
+    return pwmDshotTrySetDirectionOutputInternal(motor, ocInit, dmaInit);
+}
+
+bool ft32DshotTestRearmBurst(DMA_ARCH_TYPE *dmaRef, uint16_t count, uint32_t srcAddress)
+{
+    return pwmDshotTryRearmBurst(dmaRef, count, srcAddress);
+}
+
+void ft32DshotTestMotorIrq(dmaChannelDescriptor_t *descriptor)
+{
+    motor_DMA_IRQHandler(descriptor);
+}
+#endif
 
 bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t motorIndex, uint8_t reorderedMotorIndex, motorProtocolTypes_e pwmProtocolType, uint8_t output)
 {
 #ifdef USE_DSHOT_TELEMETRY
 #define OCINIT motor->ocInitStruct
-#define DMAINIT motor->dmaInitStruct
 #else
     TIM_OCInitTypeDef ocInitStruct;
-    DMA_InitTypeDef   dmaInitStruct;
 #define OCINIT ocInitStruct
-#define DMAINIT dmaInitStruct
 #endif
+#define DMAINIT motor->dmaInitStruct
 
     dmaResource_t *dmaRef = NULL;
 #if defined(FT32F4)
@@ -414,12 +597,17 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
     motor->dmaRef = dmaRef;
 
 #ifdef USE_DSHOT_TELEMETRY
+    pwmDshotDirectionRecoveryClear(motor);
     motor->dshotTelemetryDeadtimeUs = DSHOT_TELEMETRY_DEADTIME_US + 1000000 *
         (16 * MOTOR_BITLENGTH) / getDshotHz(pwmProtocolType);
     motor->timer->outputPeriod = (pwmProtocolType == MOTOR_PROTOCOL_PROSHOT1000 ? (MOTOR_NIBBLE_LENGTH_PROSHOT) : MOTOR_BITLENGTH) - 1;
-    pwmDshotSetDirectionOutput(motor);
+    if (!pwmDshotTrySetDirectionOutputInternal(motor, &OCINIT, &DMAINIT)) {
+        return false;
+    }
 #else
-    pwmDshotSetDirectionOutput(motor, &OCINIT, &DMAINIT);
+    if (!pwmDshotTrySetDirectionOutputInternal(motor, &OCINIT, &DMAINIT)) {
+        return false;
+    }
 #endif
 
 #ifdef USE_DSHOT_DMAR

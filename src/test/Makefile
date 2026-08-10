@@ -128,6 +128,45 @@ ft32_usb_ep0_adjacent_unittest_FLAGS := \
 
 ft32_usb_ep0_adjacent_unittest_LDFLAGS := -Wl,--gc-sections
 
+ft32_dshot_dma_unittest_EXPAND := telemetry no_telemetry
+
+ft32_dshot_dma_unittest_SRC = \
+		$(ROOT)/src/platform/FT32/pwm_output_dshot_ft32f4xx.c \
+		$(ROOT)/src/platform/common/stm32/pwm_output_dshot_shared.c \
+		$(if $(filter telemetry,$1), \
+			$(ROOT)/src/platform/common/stm32/dshot_dpwm.c \
+			$(ROOT)/src/platform/FT32/dshot_bitbang.c \
+			$(ROOT)/src/platform/FT32/dshot_bitbang_stdperiph.c \
+			$(ROOT)/src/platform/common/stm32/dshot_bitbang_shared.c)
+
+ft32_dshot_dma_unittest_DEFINES = \
+		FT32F405=1 \
+		$(if $(filter no_telemetry,$1),CLOUD_BUILD=1 FT32_DSHOT_NO_TELEMETRY_VARIANT=1)
+
+ft32_dshot_dma_unittest_INCLUDE_DIRS = \
+		$(USER_DIR) \
+		$(ROOT)/src/platform/FT32/include \
+		$(ROOT)/src/platform/FT32/target/FT32F405 \
+		$(ROOT)/src/platform/common/stm32 \
+		$(ROOT)/lib/main/FT32F4/CMSIS/cm4/device_support \
+		$(ROOT)/lib/main/CMSIS/Core/Include \
+		$(ROOT)/lib/main/FT32F4/Drivers/FT32F4xx_Driver/Inc \
+		$(ROOT)/lib/main/FT32F4/middlewares/i2c_application_library
+
+ft32_dshot_dma_unittest_FLAGS = \
+		-ffunction-sections -fdata-sections \
+		-Wno-unused-function -Wno-unused-parameter -Wno-unused-variable \
+		-Wno-pointer-to-int-cast -Wno-int-to-pointer-cast \
+		-Wno-typedef-redefinition
+
+ft32_dshot_dma_unittest_PLATFORM_C_FLAGS = \
+		-include $(ROOT)/src/platform/FT32/timer_def.h
+
+ft32_dshot_dma_unittest.telemetry_PLATFORM_C_FLAGS := $(call ft32_dshot_dma_unittest_PLATFORM_C_FLAGS,telemetry)
+ft32_dshot_dma_unittest.no_telemetry_PLATFORM_C_FLAGS := $(call ft32_dshot_dma_unittest_PLATFORM_C_FLAGS,no_telemetry)
+
+ft32_dshot_dma_unittest_LDFLAGS = -Wl,--gc-sections -no-pie
+
 baro_bmp085_unittest_SRC := \
 		$(USER_DIR)/drivers/barometer/barometer_bmp085.c
 
@@ -901,17 +940,20 @@ ifeq ($1,$(basename $1))
 # standard global test
 $1_OBJS = $(patsubst \
 	$(TEST_DIR)/%,$(OBJECT_DIR)/$1/%,$(patsubst \
-	$(USER_DIR)/%,$(OBJECT_DIR)/$1/%,$($1_SRC:=.o)))
+	$(USER_DIR)/%,$(OBJECT_DIR)/$1/%,$(patsubst \
+	$(ROOT)/src/platform/%,$(OBJECT_DIR)/$1/platform/%,$($1_SRC:=.o))))
 else
 # test executed for each target, $1 has the form of test.target
 $1_SRC = $(addsuffix .o,$(call $(basename $1)_SRC,$(call target,$1)))
 $1_OBJS = $$(patsubst \
 	$(TEST_DIR)/%,$(OBJECT_DIR)/$1/%,$$(patsubst \
 	$(USER_DIR)/%,$(OBJECT_DIR)/$1/%,$$(patsubst \
-	$(TARGET_DIR)/$(TARGET)/%,$(OBJECT_DIR)/$1/%,$$($1_SRC))))
+	$(ROOT)/src/platform/%,$(OBJECT_DIR)/$1/platform/%,$$(patsubst \
+	$(TARGET_DIR)/$(TARGET)/%,$(OBJECT_DIR)/$1/%,$$($1_SRC)))))
 $1_DEFINES = $(call $(basename $1)_DEFINES,$(call target,$1))
 $1_INCLUDE_DIRS = $(call $(basename $1)_INCLUDE_DIRS,$(call target,$1))
 $1_FLAGS = $(call $(basename $1)_FLAGS,$(call target,$1))
+$1_PLATFORM_C_FLAGS = $(call $(basename $1)_PLATFORM_C_FLAGS,$(call target,$1))
 $1_LDFLAGS = $(call $(basename $1)_LDFLAGS,$(call target,$1))
 endif
 
@@ -937,6 +979,14 @@ $(OBJECT_DIR)/$1/%.c.o: $(TEST_DIR)/%.c
 	$(V1) mkdir -p $$(dir $$@)
 	$(V1) $(CC) $(C_FLAGS) $$(call test_cflags,$$($1_INCLUDE_DIRS)) \
 		$$($1_FLAGS) \
+                $$(foreach def,$$($1_DEFINES),-D $$(def)) \
+                -c $$< -o $$@
+
+$(OBJECT_DIR)/$1/platform/%.c.o: $(ROOT)/src/platform/%.c
+	@echo "compiling platform c file: $$<" "$(STDOUT)"
+	$(V1) mkdir -p $$(dir $$@)
+	$(V1) $(CC) $(C_FLAGS) $$(call test_cflags,$$($1_INCLUDE_DIRS)) \
+		$$($1_FLAGS) $$($1_PLATFORM_C_FLAGS) \
                 $$(foreach def,$$($1_DEFINES),-D $$(def)) \
                 -c $$< -o $$@
 

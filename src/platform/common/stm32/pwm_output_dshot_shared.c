@@ -60,20 +60,66 @@ motorDmaTimer_t dmaMotorTimers[MAX_DMA_TIMERS];
 motorDmaOutput_t dmaMotors[MAX_SUPPORTED_MOTORS];
 #endif
 
+#if defined(FT32F4) && defined(USE_DSHOT_TELEMETRY)
+#define FT32_DSHOT_DIRECTION_RECOVERY_PENDING UINT8_MAX
+
+static bool pwmDshotDirectionRecoveryIsPending(const motorDmaOutput_t *motor)
+{
+    return *(const volatile uint8_t *)&motor->dmaInputLen == FT32_DSHOT_DIRECTION_RECOVERY_PENDING;
+}
+#endif
+
 #ifdef FT32F4
-static bool pwmDshotTryRearmMotor(motorDmaOutput_t *motor, uint16_t count)
+static bool pwmDshotTryStopMotor(motorDmaOutput_t *motor, uint16_t count)
 {
     DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)motor->dmaRef;
-    xDMA_Cmd(dmaRef, DISABLE);
-    if (ft32DmaIsChannelEnabled(dmaRef)) {
+#ifdef USE_DSHOT_TELEMETRY
+    if (motor->isInput || pwmDshotDirectionRecoveryIsPending(motor)) {
         return false;
     }
+#endif
     if (!ft32DmaTrySetCurrDataCounter(dmaRef, count)) {
         return false;
     }
-    DMA_SetSrcAddress(dmaRef, (uint32_t)motor->dmaBuffer);
     return true;
 }
+
+static bool pwmDshotTryEnableMotor(motorDmaOutput_t *motor)
+{
+    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)motor->dmaRef;
+    DMA_SetSrcAddress(dmaRef, (uint32_t)motor->dmaBuffer);
+    xDMA_Cmd(dmaRef, ENABLE);
+    if (!ft32DmaIsChannelEnabled(dmaRef)) {
+        ft32DmaRequestDisable(dmaRef);
+        return false;
+    }
+    return true;
+}
+
+#ifdef USE_DSHOT_DMAR
+static bool pwmDshotTryStopBurstMotor(const motorDmaOutput_t *motor)
+{
+    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)motor->timer->dmaBurstRef;
+    if (!dmaRef) {
+        return false;
+    }
+    ft32DmaRequestDisable(dmaRef);
+    return !ft32DmaIsChannelEnabled(dmaRef);
+}
+
+#ifdef USE_DSHOT_TELEMETRY
+static bool pwmDshotBurstTimerIsUnavailable(const motorDmaTimer_t *motorTimer)
+{
+    for (unsigned i = 0; i < dshotMotorCount; i++) {
+        if (dmaMotors[i].timer == motorTimer &&
+            (dmaMotors[i].isInput || pwmDshotDirectionRecoveryIsPending(&dmaMotors[i]))) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+#endif
 #endif
 
 #ifdef USE_DSHOT_TELEMETRY
@@ -133,6 +179,34 @@ FAST_CODE void pwmWriteDshotInt(uint8_t index, uint16_t value)
         return;
     }
 
+#ifdef FT32F4
+    motor->timer->timerDmaSources &= ~motor->timerDmaSource;
+#ifdef USE_DSHOT_DMAR
+    if (useBurstDshot) {
+        TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, TIM_DMA_Update, DISABLE);
+        if (motor->timer->dmaBurstLength == UINT16_MAX) {
+            return;
+        }
+#ifdef USE_DSHOT_TELEMETRY
+        if (pwmDshotBurstTimerIsUnavailable(motor->timer)) {
+            motor->timer->dmaBurstLength = UINT16_MAX;
+            return;
+        }
+#endif
+        if (!pwmDshotTryStopBurstMotor(motor)) {
+            motor->timer->dmaBurstLength = UINT16_MAX;
+            return;
+        }
+    } else
+#endif
+    {
+        TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
+        if (!pwmDshotTryStopMotor(motor, motor->dmaInitStruct.BlockTransSize)) {
+            return;
+        }
+    }
+#endif
+
     /*If there is a command ready to go overwrite the value and send that instead*/
     if (dshotCommandIsProcessing()) {
         value = dshotCommandGetCurrent(index);
@@ -161,12 +235,7 @@ FAST_CODE void pwmWriteDshotInt(uint8_t index, uint16_t value)
         xLL_EX_DMA_EnableResource(motor->dmaRef);
 #else
 #ifdef FT32F4
-        // A prior timer-paced transfer may still own CHEN if its terminal
-        // event was lost.  Stop the producer first and skip this motor frame
-        // unless the channel is already safe to reprogram.
-        motor->timer->timerDmaSources &= ~motor->timerDmaSource;
-        TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
-        if (!pwmDshotTryRearmMotor(motor, bufferSize)) {
+        if (bufferSize != motor->dmaInitStruct.BlockTransSize || !pwmDshotTryEnableMotor(motor)) {
             return;
         }
 #else
@@ -176,7 +245,9 @@ FAST_CODE void pwmWriteDshotInt(uint8_t index, uint16_t value)
         motor->timer->timerDmaSources |= motor->timerDmaSource;
 
 // XXX we can remove this ifdef if we add a new macro for the TRUE/ENABLE constants
-#ifdef AT32F435
+#if defined(FT32F4)
+        // The FT32 channel was enabled and checked before publishing timerDmaSources.
+#elif defined(AT32F435)
         xDMA_Cmd(motor->dmaRef, TRUE);
 #else
         xDMA_Cmd(motor->dmaRef, ENABLE);

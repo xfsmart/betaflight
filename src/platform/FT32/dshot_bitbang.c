@@ -93,7 +93,63 @@ static const bbTimerSpec_t bbTimerSpecs[] = {
 
 static FAST_DATA_ZERO_INIT timeUs_t lastSendUs;
 
+#ifdef UNIT_TEST
+static uint32_t bbTestDecodeCallCount;
+#endif
+
 static motorProtocolTypes_e motorProtocol;
+
+static bool bbInputIsActive(const bbPort_t *bbPort)
+{
+    return *(const volatile bool *)&bbPort->inputActive;
+}
+
+static void bbInputSetActive(bbPort_t *bbPort, bool active)
+{
+    *(volatile bool *)&bbPort->inputActive = active;
+}
+
+static uint8_t bbDirection(const bbPort_t *bbPort)
+{
+    return *(const volatile uint8_t *)&bbPort->direction;
+}
+
+static void bbSetDirection(bbPort_t *bbPort, uint8_t direction)
+{
+    *(volatile uint8_t *)&bbPort->direction = direction;
+}
+
+static bool bbFrameHasPreflightFailure(void)
+{
+    for (int i = 0; i < usedMotorPorts; i++) {
+        if (bbDirection(&bbPorts[i]) == UINT8_MAX) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool bbFrameCanWrite(void)
+{
+    if (bbFrameHasPreflightFailure()) {
+        return false;
+    }
+
+    for (int i = 0; i < usedMotorPorts; i++) {
+        bbPort_t *bbPort = &bbPorts[i];
+        const uint8_t direction = bbDirection(bbPort);
+        if (direction == DSHOT_BITBANG_DIRECTION_INPUT) {
+            continue;
+        }
+        if (direction != DSHOT_BITBANG_DIRECTION_OUTPUT ||
+            ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
+            bbSetDirection(bbPort, UINT8_MAX);
+            bbInputSetActive(bbPort, false);
+            return false;
+        }
+    }
+    return true;
+}
 
 // DMA GPIO output buffer formatting
 
@@ -268,38 +324,65 @@ static void bbSetupDma(bbPort_t *bbPort)
 
 FAST_IRQ_HANDLER void bbDMAIrqHandler(dmaChannelDescriptor_t *descriptor)
 {
-    dbgPinHi(0);
+    const bool transferComplete = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TFR) != RESET;
+    const bool transferError = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR) != RESET;
 
-    bbPort_t *bbPort = (bbPort_t *)descriptor->userParam;
-
-    bbDMA_Cmd(bbPort, DISABLE);
-
-    bbTIM_DMACmd(bbPort->timhw->tim, bbPort->dmaSource, DISABLE);
-
-    if (DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR)) {
-        DMA_CLEAR_FLAG(descriptor, DMA_IT_ERR);
-        dshotDmaErrorCount++;
-        // Continue execution instead of hanging - DMA error is logged for debugging
+    if (!transferComplete && !transferError) {
+        return;
     }
 
-    DMA_CLEAR_FLAG(descriptor, DMA_IT_TCIF);
+    dbgPinHi(0);
+    bbPort_t *bbPort = (bbPort_t *)descriptor->userParam;
+    const uint8_t direction = bbDirection(bbPort);
+    const bool wasOutput = direction == DSHOT_BITBANG_DIRECTION_OUTPUT;
+    const bool wasInput = direction == DSHOT_BITBANG_DIRECTION_INPUT;
+
+    if (wasOutput) {
+        bbInputSetActive(bbPort, false);
+    }
+
+    bbTIM_DMACmd(bbPort->timhw->tim, bbPort->dmaSource, DISABLE);
+    DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
+
+    bool transitionReady = false;
+#ifdef USE_DSHOT_TELEMETRY
+    if (wasOutput && transferComplete && !transferError && useDshotTelemetry) {
+        bbSwitchToInput(bbPort);
+        transitionReady = bbDirection(bbPort) == DSHOT_BITBANG_DIRECTION_INPUT;
+        bbInputSetActive(bbPort, false);
+    } else
+#endif
+    {
+        ft32DmaRequestDisable((DMA_ARCH_TYPE *)bbPort->dmaResource);
+        transitionReady = !ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource);
+    }
+
+    if (transferError || !transitionReady) {
+        dshotDmaErrorCount++;
+        bbInputSetActive(bbPort, false);
+#ifdef USE_DSHOT_TELEMETRY
+        bbPort->telemetryPending = false;
+#endif
+        dbgPinLo(0);
+        return;
+    }
 
 #ifdef USE_DSHOT_TELEMETRY
     if (useDshotTelemetry) {
-        if (bbPort->direction == DSHOT_BITBANG_DIRECTION_INPUT) {
+        if (wasInput) {
+            bbInputSetActive(bbPort, true);
             bbPort->telemetryPending = false;
 #ifdef DEBUG_COUNT_INTERRUPT
             bbPort->inputIrq++;
 #endif
-            bbDMA_Cmd(bbPort, DISABLE);
-        } else {
+        } else if (wasOutput) {
 #ifdef DEBUG_COUNT_INTERRUPT
             bbPort->outputIrq++;
 #endif
-            bbSwitchToInput(bbPort);
             bbPort->telemetryPending = true;
-
             bbTIM_DMACmd(bbPort->timhw->tim, bbPort->dmaSource, ENABLE);
+        } else {
+            bbInputSetActive(bbPort, false);
         }
     }
 #endif
@@ -415,6 +498,7 @@ static bool bbMotorConfig(IO_t io, uint8_t motorIndex, motorProtocolTypes_e pwmP
 
         bbPort->portInputCount = DSHOT_BB_PORT_IP_BUF_LENGTH;
         bbPort->portInputBuffer = &bbInputBuffer[(bbPort - bbPorts) * DSHOT_BB_PORT_IP_BUF_CACHE_ALIGN_LENGTH];
+        bbPort->direction = UINT8_MAX;
 
         bbTimebaseSetup(bbPort, pwmProtocolType);
         bbTIM_TimeBaseInit(bbPort, bbPort->outputARR);
@@ -422,7 +506,15 @@ static bool bbMotorConfig(IO_t io, uint8_t motorIndex, motorProtocolTypes_e pwmP
 
         bbSetupDma(bbPort);
         bbDMAPreconfigure(bbPort, DSHOT_BITBANG_DIRECTION_OUTPUT);
+        if (bbPort->dmaRegOutput.CTL == 0U) {
+            dshotDmaErrorCount++;
+            return false;
+        }
         bbDMAPreconfigure(bbPort, DSHOT_BITBANG_DIRECTION_INPUT);
+        if (bbPort->dmaRegInput.CTL == 0U) {
+            dshotDmaErrorCount++;
+            return false;
+        }
 
         bbDMA_ITConfig(bbPort);
     }
@@ -446,6 +538,11 @@ static bool bbMotorConfig(IO_t io, uint8_t motorIndex, motorProtocolTypes_e pwmP
     }
 
     bbSwitchToOutput(bbPort);
+    if (bbPort->direction != DSHOT_BITBANG_DIRECTION_OUTPUT ||
+        ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
+        dshotDmaErrorCount++;
+        return false;
+    }
 
     bbMotors[motorIndex].configured = true;
 
@@ -480,6 +577,27 @@ static bool bbTelemetryWait(void)
 
 static void bbUpdateInit(void)
 {
+    bool preflightReady = true;
+    for (int i = 0; i < usedMotorPorts; i++) {
+        bbPort_t *bbPort = &bbPorts[i];
+        if (bbDirection(bbPort) == DSHOT_BITBANG_DIRECTION_INPUT) {
+            continue;
+        }
+
+        bbTIM_DMACmd(bbPort->timhw->tim, bbPort->dmaSource, DISABLE);
+        bbSwitchToOutput(bbPort);
+        if (bbDirection(bbPort) != DSHOT_BITBANG_DIRECTION_OUTPUT ||
+            ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
+            bbSetDirection(bbPort, UINT8_MAX);
+            bbInputSetActive(bbPort, false);
+            preflightReady = false;
+        }
+    }
+
+    if (!preflightReady || !bbFrameCanWrite()) {
+        return;
+    }
+
     for (int i = 0; i < usedMotorPorts; i++) {
         bbOutputDataClear(bbPorts[i].portOutputBuffer);
     }
@@ -494,6 +612,12 @@ static bool bbDecodeTelemetry(void)
 #endif
 
         for (int motorIndex = 0; motorIndex < MAX_SUPPORTED_MOTORS && motorIndex < dshotMotorCount; motorIndex++) {
+            if (!bbInputIsActive(bbMotors[motorIndex].bbPort)) {
+                continue;
+            }
+#ifdef UNIT_TEST
+            bbTestDecodeCallCount++;
+#endif
             uint32_t rawValue = decode_bb(
                 bbMotors[motorIndex].bbPort->portInputBuffer,
                 bbMotors[motorIndex].bbPort->portInputCount,
@@ -520,6 +644,10 @@ static bool bbDecodeTelemetry(void)
 #endif
         }
 
+        for (int portIndex = 0; portIndex < usedMotorPorts; portIndex++) {
+            bbInputSetActive(&bbPorts[portIndex], false);
+        }
+
         dshotTelemetryState.rawValueState = DSHOT_RAW_VALUE_STATE_NOT_PROCESSED;
     }
 #endif
@@ -532,6 +660,10 @@ static void bbWriteInt(uint8_t motorIndex, uint16_t value)
     bbMotor_t *const bbmotor = &bbMotors[motorIndex];
 
     if (!bbmotor->configured) {
+        return;
+    }
+
+    if (!bbFrameCanWrite()) {
         return;
     }
 
@@ -576,34 +708,77 @@ static void bbUpdateComplete(void)
         bbTIM_DMACmd(bbPacer->tim, bbPacer->dmaSources, DISABLE);
     }
 
+    if (bbFrameHasPreflightFailure()) {
+        for (int i = 0; i < usedMotorPorts; i++) {
+            bbPort_t *bbPort = &bbPorts[i];
+            DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)bbPort->dmaResource;
+            ft32DmaRequestDisable(dmaRef);
+            const bool channelStopped = !ft32DmaIsChannelEnabled(dmaRef);
+#ifdef USE_DSHOT_TELEMETRY
+            if (!channelStopped || bbPort->telemetryPending) {
+                bbInputSetActive(bbPort, false);
+                bbPort->telemetryPending = false;
+            }
+#else
+            UNUSED(channelStopped);
+#endif
+        }
+        return;
+    }
+
     bool rearmReady = true;
     for (int i = 0; i < usedMotorPorts; i++) {
         bbPort_t *bbPort = &bbPorts[i];
 
 #ifdef USE_DSHOT_TELEMETRY
-        if (useDshotTelemetry) {
-            if (bbPort->direction == DSHOT_BITBANG_DIRECTION_INPUT) {
-                bbPort->inputActive = false;
+        if (useDshotTelemetry && bbDirection(bbPort) == DSHOT_BITBANG_DIRECTION_INPUT) {
+            bbSwitchToOutput(bbPort);
+            if (bbDirection(bbPort) != DSHOT_BITBANG_DIRECTION_OUTPUT ||
+                ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
+                bbInputSetActive(bbPort, false);
+                bbPort->telemetryPending = false;
+                bbSetDirection(bbPort, UINT8_MAX);
+                dshotDmaErrorCount++;
+                rearmReady = false;
             }
         }
 #endif
 
-        // FT32 DesignWare DMA advances SAR and BLOCK_TS while transferring.
-        // Restore the complete cached output descriptor before every frame.
-        bbSwitchToOutput(bbPort);
-        if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
-            dshotDmaErrorCount++;
+        if (bbDirection(bbPort) != DSHOT_BITBANG_DIRECTION_OUTPUT ||
+            ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
+            if (bbDirection(bbPort) != UINT8_MAX) {
+                dshotDmaErrorCount++;
+            }
             rearmReady = false;
         }
     }
 
     if (!rearmReady) {
+        for (int i = 0; i < usedMotorPorts; i++) {
+            DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)bbPorts[i].dmaResource;
+            ft32DmaRequestDisable(dmaRef);
+            (void)ft32DmaIsChannelEnabled(dmaRef);
+        }
         return;
     }
 
+    bool channelsReady = true;
     for (int i = 0; i < usedMotorPorts; i++) {
         bbPort_t *bbPort = &bbPorts[i];
         bbDMA_Cmd(bbPort, ENABLE);
+        if (!ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
+            dshotDmaErrorCount++;
+            channelsReady = false;
+        }
+    }
+
+    if (!channelsReady) {
+        for (int i = 0; i < usedMotorPorts; i++) {
+            DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)bbPorts[i].dmaResource;
+            ft32DmaRequestDisable(dmaRef);
+            (void)ft32DmaIsChannelEnabled(dmaRef);
+        }
+        return;
     }
 
     lastSendUs = micros();
@@ -612,6 +787,50 @@ static void bbUpdateComplete(void)
         bbTIM_DMACmd(bbPacer->tim, bbPacer->dmaSources, ENABLE);
     }
 }
+
+#ifdef UNIT_TEST
+void ft32DshotTestBitbangUpdateInit(void)
+{
+    bbUpdateInit();
+}
+
+void ft32DshotTestBitbangWriteInt(uint8_t motorIndex, uint16_t value)
+{
+    bbWriteInt(motorIndex, value);
+}
+
+bool ft32DshotTestBitbangDecodeTelemetry(void)
+{
+    return bbDecodeTelemetry();
+}
+
+void ft32DshotTestBitbangUpdateComplete(void)
+{
+    bbUpdateComplete();
+}
+
+void ft32DshotTestBitbangResetState(void)
+{
+    dshotDmaErrorCount = 0U;
+    lastSendUs = 0U;
+    bbTestDecodeCallCount = 0U;
+}
+
+uint32_t ft32DshotTestBitbangErrorCount(void)
+{
+    return dshotDmaErrorCount;
+}
+
+timeUs_t ft32DshotTestBitbangLastSendUs(void)
+{
+    return lastSendUs;
+}
+
+uint32_t ft32DshotTestBitbangDecodeCallCount(void)
+{
+    return bbTestDecodeCallCount;
+}
+#endif
 
 static bool bbEnableMotors(void)
 {
