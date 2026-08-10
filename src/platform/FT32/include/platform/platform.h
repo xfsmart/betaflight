@@ -158,12 +158,12 @@ typedef struct i2cHalHandle_s i2cHalHandle_t;
 #define UART_REG_TXD(base)      (((USART_TypeDef *)(base))->THR)
 #define UART_REG_RXD(base)      (((USART_TypeDef *)(base))->RHR)
 
-/* NVIC priority configuration (FT32F4 uses priority grouping 4) */
-#define NVIC_PRIORITY_GROUPING  4
+/* NVIC priority configuration (2 preemption bits, 2 subpriority bits) */
+#define NVIC_PRIORITY_GROUPING  5
 
 #define NVIC_BUILD_PRIORITY(base,sub) (((((base)<<(4-(7-(NVIC_PRIORITY_GROUPING))))|((sub)&(0x0f>>(7-(NVIC_PRIORITY_GROUPING)))))<<4)&0xf0)
 #define NVIC_PRIORITY_BASE(prio) (((prio)>>(4-(7-(NVIC_PRIORITY_GROUPING))))>>4)
-#define NVIC_PRIORITY_SUB(prio) (((prio)>>(4-(7-(NVIC_PRIORITY_GROUPING))))&0x0f)
+#define NVIC_PRIORITY_SUB(prio) (((prio)>>4)&(0x0f>>(7-(NVIC_PRIORITY_GROUPING))))
 #define NVIC_PRIORITY_TO_CMSIS(prio) ((uint32_t)(prio) >> (8U - __NVIC_PRIO_BITS))
 
 /* ADC configuration for FT32F4 */

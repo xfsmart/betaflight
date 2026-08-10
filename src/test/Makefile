@@ -68,6 +68,9 @@ atomic_unittest_SRC := \
 		$(USER_DIR)/build/atomic.c \
 		$(TEST_DIR)/atomic_unittest_c.c
 
+ft32_nvic_priority_unittest_SRC := \
+		$(USER_DIR)/common/encoding.c
+
 ft32_usb_ep0_unittest_SRC := \
 		$(TEST_DIR)/ft32_usb_ep0_test_support.c \
 		$(TEST_DIR)/ft32_usb_ep0_usb_source.c \
