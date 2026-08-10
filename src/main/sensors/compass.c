@@ -97,6 +97,7 @@ PG_REGISTER_WITH_RESET_FN(compassConfig_t, compassConfig, PG_COMPASS_CONFIG, 4);
 #define COMPASS_BUS_BUSY_INTERVAL_US 500
 // If we check for new mag data, and there is none, try again in 1000us
 #define COMPASS_RECHECK_INTERVAL_US 1000
+#define MAG_SAMPLE_MAX_AGE_US 500000U
 // default compass read interval, for those with no specified ODR, will be TASK_COMPASS_RATE_HZ
 static uint32_t compassReadIntervalUs = TASK_PERIOD_HZ(TASK_COMPASS_RATE_HZ);
 
@@ -163,6 +164,8 @@ void pgResetFn_compassConfig(compassConfig_t *compassConfig)
 }
 
 static int16_t magADCRaw[XYZ_AXIS_COUNT];
+static timeUs_t magLastSampleTimeUs;
+static bool magSampleValid;
 
 void compassPreInit(void)
 {
@@ -384,6 +387,9 @@ bool compassInit(void)
 {
     // initialize and calibration. turn on led during mag calibration (calibration routine blinks it)
 
+    magLastSampleTimeUs = 0;
+    magSampleValid = false;
+
     sensor_align_e alignment;
 
     if (!compassDetect(&magDev, &alignment)) {
@@ -431,7 +437,11 @@ bool compassInit(void)
 
 bool compassIsHealthy(void)
 {
-    return (mag.magADC.x != 0) && (mag.magADC.y != 0) && (mag.magADC.z != 0);
+    if (magSampleValid && (micros() - magLastSampleTimeUs) >= MAG_SAMPLE_MAX_AGE_US) {
+        magSampleValid = false;
+    }
+
+    return magSampleValid && (mag.magADC.x != 0) && (mag.magADC.y != 0) && (mag.magADC.z != 0);
 }
 
 void compassStartCalibration(void)
@@ -576,6 +586,9 @@ uint32_t compassUpdate(timeUs_t currentTimeUs)
         DEBUG_SET(DEBUG_MAG_TASK_RATE, 2, dataIntervalUs);
         DEBUG_SET(DEBUG_MAG_TASK_RATE, 3, executeTimeUs); // time in uS to complete the mag task
     }
+
+    magLastSampleTimeUs = currentTimeUs;
+    magSampleValid = true;
 
     // don't do the next read check until compassReadIntervalUs has expired
     schedulerIgnoreTaskExecRate();

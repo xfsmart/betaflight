@@ -49,6 +49,7 @@ unsigned rotationBuildCount;
 unsigned barometerInitCount;
 unsigned schedulerIgnoreCount;
 std::vector<bool> observedReadErrors;
+timeUs_t testTimeUs;
 
 struct BusCompletion {
     bool busy;
@@ -57,21 +58,45 @@ struct BusCompletion {
 
 std::deque<BusCompletion> busCompletions;
 
+struct MagReadResult {
+    bool available;
+    int16_t data[XYZ_AXIS_COUNT];
+};
+
+std::deque<MagReadResult> magReadResults;
+
 bool testMagInit(magDev_t *dev)
 {
     dev->magOdrHz = magInitResult ? 100 : 0;
     return magInitResult;
 }
 
-bool testMagRead(magDev_t *dev, int16_t *)
+bool testMagRead(magDev_t *dev, int16_t *data)
 {
     observedReadErrors.push_back(dev->busError);
-    return false;
+    if (magReadResults.empty()) {
+        return false;
+    }
+
+    const MagReadResult result = magReadResults.front();
+    magReadResults.pop_front();
+    if (result.available) {
+        std::memcpy(data, result.data, sizeof(result.data));
+    }
+    return result.available;
+}
+
+void publishMagSample(timeUs_t timestamp, int16_t x, int16_t y, int16_t z)
+{
+    testTimeUs = timestamp;
+    magReadResults.push_back({true, {x, y, z}});
+    compassUpdate(timestamp);
 }
 
 void configureCompass()
 {
     std::memset(&magDev, 0, sizeof(magDev));
+    std::memset(&mag, 0, sizeof(mag));
     std::memset(compassConfigMutable(), 0, sizeof(*compassConfigMutable()));
 
     compassConfigMutable()->mag_alignment = ALIGN_DEFAULT;
@@ -91,6 +116,8 @@ void configureCompass()
     schedulerIgnoreCount = 0;
     observedReadErrors.clear();
     busCompletions.clear();
+    magReadResults.clear();
+    testTimeUs = 0;
 }
 
 class CompassInitTest : public testing::Test {
@@ -153,6 +180,130 @@ TEST_F(CompassInitTest, BusyCompletionErrorIsLatchedUntilOneIdleRead)
     EXPECT_FALSE(magDev.busError);
     EXPECT_EQ(3U, schedulerIgnoreCount);
 }
+
+TEST_F(CompassInitTest, NoPublishedSampleIsUnhealthy)
+{
+    ASSERT_TRUE(compassInit());
+
+    EXPECT_FALSE(compassIsHealthy());
+}
+
+TEST_F(CompassInitTest, SampleExpiresAtExactFreshnessBoundary)
+{
+    ASSERT_TRUE(compassInit());
+    publishMagSample(1000, 11, 22, 33);
+
+    testTimeUs = 500999;
+    EXPECT_TRUE(compassIsHealthy());
+
+    testTimeUs = 501000;
+    EXPECT_FALSE(compassIsHealthy());
+}
+
+#if !defined(USE_64BIT_TIME)
+TEST_F(CompassInitTest, FreshnessAgeIsWrapSafeForUint32Time)
+{
+    ASSERT_TRUE(compassInit());
+    const timeUs_t publishedAt = UINT32_MAX - 250000U;
+    publishMagSample(publishedAt, 11, 22, 33);
+
+    testTimeUs = publishedAt + 499999U;
+    EXPECT_TRUE(compassIsHealthy());
+
+    testTimeUs = publishedAt + 500000U;
+    EXPECT_FALSE(compassIsHealthy());
+}
+
+TEST_F(CompassInitTest, HalfRangeOldSampleCannotAppearFresh)
+{
+    ASSERT_TRUE(compassInit());
+    publishMagSample(1000, 11, 22, 33);
+
+    testTimeUs = 1000U + 0x80000000U;
+    EXPECT_FALSE(compassIsHealthy());
+}
+
+TEST_F(CompassInitTest, ExpiredSampleCannotResurrectAfterFullUint32Wrap)
+{
+    ASSERT_TRUE(compassInit());
+    publishMagSample(1000, 11, 22, 33);
+
+    testTimeUs = 501000;
+    ASSERT_FALSE(compassIsHealthy());
+
+    testTimeUs = 1001;
+    EXPECT_FALSE(compassIsHealthy());
+
+    publishMagSample(2000, 44, 55, 66);
+    EXPECT_TRUE(compassIsHealthy());
+}
+#endif
+
+TEST_F(CompassInitTest, ReinitializationClearsPreviousFreshnessEvenOnFailure)
+{
+    ASSERT_TRUE(compassInit());
+    publishMagSample(1000, 11, 22, 33);
+    testTimeUs = 1001;
+    ASSERT_TRUE(compassIsHealthy());
+
+    magInitResult = false;
+    EXPECT_FALSE(compassInit());
+    EXPECT_FALSE(compassIsHealthy());
+}
+
+TEST_F(CompassInitTest, BusyAndCompletionErrorDoNotRefreshFreshness)
+{
+    ASSERT_TRUE(compassInit());
+    publishMagSample(1000, 11, 22, 33);
+    busCompletions = {{true, false}, {false, true}};
+
+    testTimeUs = 400000;
+    EXPECT_EQ(500U, compassUpdate(testTimeUs));
+    EXPECT_TRUE(compassIsHealthy());
+
+    testTimeUs = 450000;
+    EXPECT_EQ(1000U, compassUpdate(testTimeUs));
+    ASSERT_FALSE(observedReadErrors.empty());
+    EXPECT_TRUE(observedReadErrors.back());
+
+    testTimeUs = 501000;
+    EXPECT_FALSE(compassIsHealthy());
+}
+
+TEST_F(CompassInitTest, FirstSuccessfulSampleRestoresHealthAfterStaleness)
+{
+    ASSERT_TRUE(compassInit());
+    publishMagSample(1000, 11, 22, 33);
+    testTimeUs = 501000;
+    ASSERT_FALSE(compassIsHealthy());
+
+    publishMagSample(700000, 44, 55, 66);
+    EXPECT_TRUE(compassIsHealthy());
+}
+
+TEST_F(CompassInitTest, FreshSampleWithZeroAxisRetainsLegacyUnhealthyResult)
+{
+    ASSERT_TRUE(compassInit());
+    publishMagSample(1000, 0, 22, -33);
+
+    EXPECT_FALSE(compassIsHealthy());
+}
+
+#if defined(USE_64BIT_TIME)
+TEST_F(CompassInitTest, Simulator64FreshnessRetainsTimestampUpperBits)
+{
+    ASSERT_EQ(8U, sizeof(timeUs_t));
+    ASSERT_TRUE(compassInit());
+    const timeUs_t publishedAt = (static_cast<timeUs_t>(1) << 40) + 1234;
+    publishMagSample(publishedAt, 11, 22, 33);
+
+    testTimeUs = publishedAt + 499999;
+    EXPECT_TRUE(compassIsHealthy());
+
+    testTimeUs = publishedAt + 500000;
+    EXPECT_FALSE(compassIsHealthy());
+}
+#endif
 
 extern "C" {
 
@@ -255,7 +406,7 @@ void beeper(beeperMode_e)
 
 timeUs_t micros(void)
 {
-    return 0;
+    return testTimeUs;
 }
 
 void saveConfigAndNotify(void)

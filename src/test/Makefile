@@ -179,6 +179,13 @@ compass_init_unittest_DEFINES := \
 compass_init_unittest_FLAGS := -ffunction-sections -fdata-sections
 compass_init_unittest_LDFLAGS := -Wl,--gc-sections
 
+compass_freshness_64_unittest_SRC := $(compass_init_unittest_SRC)
+compass_freshness_64_unittest_DEFINES := \
+		$(compass_init_unittest_DEFINES) \
+		USE_64BIT_TIME=
+compass_freshness_64_unittest_FLAGS := $(compass_init_unittest_FLAGS)
+compass_freshness_64_unittest_LDFLAGS := $(compass_init_unittest_LDFLAGS)
+
 compass_ist8310_unittest_SRC := \
 		$(USER_DIR)/drivers/compass/compass_ist8310.c
 compass_ist8310_unittest_DEFINES := \
