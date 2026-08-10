@@ -263,7 +263,8 @@ SIZE_OPTIMISED_SRC += \
         common/stm32/config_flash.c \
         common/stm32/bus_spi_pinconfig.c \
         common/stm32/pwm_output_beeper.c \
-        common/stm32/serial_uart_pinconfig.c
+        common/stm32/serial_uart_pinconfig.c \
+        msp/msp.c
 
 # USB MSC Source
 MSC_SRC = \

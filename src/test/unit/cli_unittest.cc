@@ -19,6 +19,7 @@
 #include <stdbool.h>
 
 #include <limits.h>
+#include <string.h>
 
 #include <math.h>
 
@@ -62,6 +63,7 @@ extern "C" {
 
     void cliSet(const char *cmdName, char *cmdline);
     void cliHelp(const char *cmdName, char *cmdline);
+    char *cliStrstr(const char *haystack, const char *needle);
     int cliGetSettingIndex(char *name, uint8_t length);
     void *cliGetValuePointer(const clivalue_t *value);
 
@@ -107,6 +109,36 @@ extern "C" {
 #include "gtest/gtest.h"
 
 const bool PRINT_TEST_DATA = false;
+
+TEST(CLIUnittest, TestCliStrstrMatchesLibc)
+{
+    static const struct {
+        const char *haystack;
+        const char *needle;
+    } vectors[] = {
+        { "", "" },
+        { "", "a" },
+        { "a", "" },
+        { "a", "a" },
+        { "a", "aa" },
+        { "abc", "a" },
+        { "abc", "b" },
+        { "abc", "c" },
+        { "abc", "d" },
+        { "abc", "bcx" },
+        { "aaaaab", "aaab" },
+        { "abababa", "aba" },
+        { "mississippi", "issip" },
+        { "abcab", "cab" },
+        { "defaults // nosave", "//" },
+        { "value=value", "=" },
+        { "Invert,Stop2", "Stop2" },
+    };
+
+    for (const auto &vector : vectors) {
+        EXPECT_EQ(strstr(vector.haystack, vector.needle), cliStrstr(vector.haystack, vector.needle));
+    }
+}
 
 // Verifies that cliSet correctly parses and stores an array-type setting
 // with mixed positive and negative integer values.

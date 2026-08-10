@@ -1408,6 +1408,24 @@ static void cliSerial(const char *cmdName, char *cmdline)
         );
 }
 
+STATIC_UNIT_TESTED char *cliStrstr(const char *haystack, const char *needle)
+{
+    for (; *haystack; haystack++) {
+        const char *candidate = haystack;
+        const char *pattern = needle;
+
+        while (*candidate && *candidate == *pattern) {
+            candidate++;
+            pattern++;
+        }
+        if (!*pattern) {
+            return (char *)haystack;
+        }
+    }
+
+    return *needle ? NULL : (char *)haystack;
+}
+
 #if defined(USE_SERIAL_PASSTHROUGH)
 static void cbCtrlLine_reset(void *context, uint16_t ctrl)
 {
@@ -1454,7 +1472,7 @@ static portOptions_e cliParseSerialOptions(const char *tok)
     };
     portOptions_e options = 0;
     for (unsigned i = 0; i < ARRAYLEN(map); i++) {
-        if (strstr(tok, map[i].tag) != 0) {
+        if (cliStrstr(tok, map[i].tag) != 0) {
             options |= map[i].val;
         }
     }
@@ -4537,7 +4555,7 @@ STATIC_UNIT_TESTED void cliSet(const char *cmdName, char *cmdline)
             cliPrintVar(cmdName, val, len); // when len is 1 (when * is passed as argument), it will print min/max values as well, for gui
             cliPrintLinefeed();
         }
-    } else if ((eqptr = strstr(cmdline, "=")) != NULL) {
+    } else if ((eqptr = cliStrstr(cmdline, "=")) != NULL) {
         // has equals
 
         uint8_t variableNameLength = getWordLength(cmdline, eqptr);
@@ -7177,7 +7195,7 @@ void cliProcessConfigFile(const char *filename)
             if (cp) {
                 *cp = '\0';
             }
-            cp = strstr(stripped, "//");
+            cp = cliStrstr(stripped, "//");
             if (cp) {
                 *cp = '\0';
             }
