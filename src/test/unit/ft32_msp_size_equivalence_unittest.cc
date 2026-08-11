@@ -332,6 +332,7 @@ FT32_MSP_UNUSED_LINK_SEAM(systemResetToBootloader);
 FT32_MSP_UNUSED_LINK_SEAM(targetName);
 FT32_MSP_UNUSED_LINK_SEAM(transponderConfig_System);
 FT32_MSP_UNUSED_LINK_SEAM(transponderRequirements);
+FT32_MSP_UNUSED_LINK_SEAM(transponderStopRepeating);
 FT32_MSP_UNUSED_LINK_SEAM(transponderUpdateData);
 FT32_MSP_UNUSED_LINK_SEAM(validateAndFixGyroConfig);
 FT32_MSP_UNUSED_LINK_SEAM(voltageMeterADCtoIDMap);
