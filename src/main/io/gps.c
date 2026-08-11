@@ -1665,30 +1665,35 @@ static uint32_t GPS_coord_to_degrees(char *coordinateString)
 
 // helper functions
 #ifdef USE_GPS_NMEA
-static uint32_t grab_fields(char *src, uint8_t mult)
+static uint32_t grab_fields(const char *src, uint8_t mult)
 {                               // convert string to uint32
-    uint32_t i;
     uint32_t tmp = 0;
-    int isneg = 0;
-    for (i = 0; src[i] != 0; i++) {
-        if ((i == 0) && (src[0] == '-')) { // detect negative sign
-            isneg = 1;
-            continue; // jump to next character if the first one was a negative sign
-        }
-        if (src[i] == '.') {
-            i++;
+    bool fractional = false;
+    uint8_t fractionalDigits = 0;
+    const bool isneg = *src == '-';
+
+    if (isneg) {
+        src++;
+    }
+
+    for (; *src != '\0'; src++) {
+        if (*src == '.') {
             if (mult == 0) {
                 break;
-            } else {
-                src[i + mult] = 0;
             }
+            fractional = true;
+            continue;
         }
+        if (fractional && fractionalDigits >= mult) {
+            break;
+        }
+
         tmp *= 10;
-        if (src[i] >= '0' && src[i] <= '9') {
-            tmp += src[i] - '0';
+        if (*src >= '0' && *src <= '9') {
+            tmp += *src - '0';
         }
-        if (i >= 15) {
-            return 0; // out of bounds
+        if (fractional) {
+            fractionalDigits++;
         }
     }
     return isneg ? -tmp : tmp;    // handle negative altitudes
@@ -1915,12 +1920,17 @@ static bool gpsNewFrameNMEA(char c)
     static char string[16];
     static uint8_t param = 0, offset = 0, parity = 0;
     static uint8_t checksum_param, gps_frame = NO_FRAME;
-    static bool sentenceInvalid, fieldOverflow;
+    static bool inSentence, sentenceInvalid, fieldOverflow;
     bool receivedNavMessage = false;
+
+    if (c != '$' && !inSentence) {
+        return false;
+    }
 
     switch (c) {
 
     case '$':
+        inSentence = true;
         gps_msg = (gpsDataNmea_t){ 0 };
         param = 0;
         offset = 0;
@@ -1988,7 +1998,12 @@ static bool gpsNewFrameNMEA(char c)
             }
 #endif
         }
+        inSentence = false;
+        gps_msg = (gpsDataNmea_t){ 0 };
+        param = 0;
+        parity = 0;
         checksum_param = 0;
+        gps_frame = NO_FRAME;
         sentenceInvalid = false;
         fieldOverflow = false;
         offset = 0;

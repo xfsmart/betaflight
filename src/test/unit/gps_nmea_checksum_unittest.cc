@@ -42,7 +42,7 @@ void serialWrite(serialPort_t *, uint8_t) {}
 
 namespace {
 
-bool feedNmeaPayload(const std::string &payload, uint8_t checksumAdjustment = 0)
+std::string makeNmeaSentence(const std::string &payload, uint8_t checksumAdjustment = 0)
 {
     uint8_t checksum = 0;
     for (const char c : payload) {
@@ -55,7 +55,21 @@ bool feedNmeaPayload(const std::string &payload, uint8_t checksumAdjustment = 0)
     sentence += hex[checksum >> 4];
     sentence += hex[checksum & 0x0f];
     sentence += "\r\n";
+    return sentence;
+}
 
+bool feedNmeaPayload(const std::string &payload, uint8_t checksumAdjustment = 0)
+{
+    const std::string sentence = makeNmeaSentence(payload, checksumAdjustment);
+    bool completed = false;
+    for (const char c : sentence) {
+        completed = gpsNewFrame(static_cast<uint8_t>(c)) || completed;
+    }
+    return completed;
+}
+
+bool feedRawNmea(const std::string &sentence)
+{
     bool completed = false;
     for (const char c : sentence) {
         completed = gpsNewFrame(static_cast<uint8_t>(c)) || completed;
@@ -196,18 +210,11 @@ TEST_F(GpsNmeaChecksumTest, MissingNonHexAndShortChecksumsFailClosedThenRecover)
     gpsSol.llh.lon = -234567890;
     gpsSol.numSat = 7;
 
-    const auto feedRaw = [](const std::string &sentence) {
-        bool completed = false;
-        for (const char c : sentence) {
-            completed = gpsNewFrame(static_cast<uint8_t>(c)) || completed;
-        }
-        return completed;
-    };
     const std::string payload = "GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,";
 
-    EXPECT_FALSE(feedRaw("$" + payload + "\r\n"));
-    EXPECT_FALSE(feedRaw("$" + payload + "*ZZ\r\n"));
-    EXPECT_FALSE(feedRaw("$" + payload + "*0\r\n"));
+    EXPECT_FALSE(feedRawNmea("$" + payload + "\r\n"));
+    EXPECT_FALSE(feedRawNmea("$" + payload + "*ZZ\r\n"));
+    EXPECT_FALSE(feedRawNmea("$" + payload + "*0\r\n"));
     EXPECT_NE(0, STATE(GPS_FIX | GPS_FIX_EVER));
     EXPECT_EQ(123456789, gpsSol.llh.lat);
     EXPECT_EQ(-234567890, gpsSol.llh.lon);
@@ -255,12 +262,7 @@ TEST_F(GpsNmeaChecksumTest, RejectsChecksumWithTrailingThirdDigit)
 
     const std::string sentence =
         "$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*470\r\n";
-    bool completed = false;
-    for (const char c : sentence) {
-        completed = gpsNewFrame(static_cast<uint8_t>(c)) || completed;
-    }
-
-    EXPECT_FALSE(completed);
+    EXPECT_FALSE(feedRawNmea(sentence));
     EXPECT_EQ(0, STATE(GPS_FIX | GPS_FIX_EVER));
     EXPECT_EQ(123456789, gpsSol.llh.lat);
     EXPECT_EQ(-234567890, gpsSol.llh.lon);
@@ -279,6 +281,38 @@ TEST_F(GpsNmeaChecksumTest, FifteenByteStoredFieldBoundaryIsMemorySafe)
     EXPECT_TRUE(feedNmeaPayload("GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,"));
     EXPECT_EQ(481173000, gpsSol.llh.lat);
     EXPECT_EQ(115166666, gpsSol.llh.lon);
+}
+
+TEST_F(GpsNmeaChecksumTest, FifteenByteNumericFieldActuallyExercisesGrabFieldsSafely)
+{
+    EXPECT_TRUE(feedNmeaPayload("GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,12345678901234.,M,46.9,M,,"));
+
+    EXPECT_TRUE(feedNmeaPayload("GPGGA,123520,4907.038,N,01231.000,E,1,09,0.9,100.0,M,46.9,M,,"));
+    EXPECT_EQ(491173000, gpsSol.llh.lat);
+    EXPECT_EQ(125166666, gpsSol.llh.lon);
+    EXPECT_EQ(9, gpsSol.numSat);
+    EXPECT_EQ(10000, gpsSol.llh.altCm);
+}
+
+TEST_F(GpsNmeaChecksumTest, DollarlessFragmentAfterValidSentenceCannotReuseParserState)
+{
+    ASSERT_TRUE(feedNmeaPayload("GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,"));
+    const gpsLocation_t acceptedLocation = gpsSol.llh;
+    const uint8_t acceptedSatellites = gpsSol.numSat;
+
+    std::string fragment = makeNmeaSentence("GPGGA,123520,4907.038,N,01231.000,E,1,09,0.9,100.0,M,46.9,M,,");
+    fragment.erase(0, 1);
+    EXPECT_FALSE(feedRawNmea(fragment));
+    EXPECT_EQ(acceptedLocation.lat, gpsSol.llh.lat);
+    EXPECT_EQ(acceptedLocation.lon, gpsSol.llh.lon);
+    EXPECT_EQ(acceptedLocation.altCm, gpsSol.llh.altCm);
+    EXPECT_EQ(acceptedSatellites, gpsSol.numSat);
+
+    EXPECT_TRUE(feedNmeaPayload("GPGGA,123521,5007.038,N,01331.000,E,1,10,0.9,200.0,M,46.9,M,,"));
+    EXPECT_EQ(501173000, gpsSol.llh.lat);
+    EXPECT_EQ(135166666, gpsSol.llh.lon);
+    EXPECT_EQ(10, gpsSol.numSat);
+    EXPECT_EQ(20000, gpsSol.llh.altCm);
 }
 
 TEST_F(GpsNmeaChecksumTest, OverlongStoredFieldFailsClosedThenNextFixRecovers)
