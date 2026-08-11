@@ -552,3 +552,128 @@ void busDeviceRegister(const extDevice_t *)
 }
 
 }
+
+TEST_F(Ist8310Test, DetectReadFailureAndBusAddressOwnershipAreExplicit)
+{
+    waiReadAck = false;
+    EXPECT_FALSE(ist8310Detect(&device));
+    EXPECT_EQ(IST8310_ADDRESS, device.dev.busType_u.i2c.address);
+
+    resetBusFixture();
+    device.dev.busType_u.i2c.address = 0x2a;
+    ASSERT_TRUE(ist8310Detect(&device));
+    EXPECT_EQ(0x2a, device.dev.busType_u.i2c.address);
+
+    resetBusFixture();
+    i2cBus.busType = BUS_TYPE_SPI;
+    ASSERT_TRUE(ist8310Detect(&device));
+    EXPECT_EQ(0U, device.dev.busType_u.i2c.address);
+}
+
+TEST_F(Ist8310Test, EveryInitializationWriteFailureStopsPublicationAtItsBoundary)
+{
+    struct Scenario {
+        std::vector<bool> results;
+        std::size_t expectedWrites;
+    };
+    const Scenario scenarios[] = {
+        {{false}, 1U},
+        {{true, false}, 2U},
+        {{true, true, false}, 3U},
+    };
+
+    for (const Scenario &scenario : scenarios) {
+        SCOPED_TRACE(scenario.expectedWrites);
+        resetBusFixture();
+        ASSERT_TRUE(ist8310Detect(&device));
+        for (const bool result : scenario.results) {
+            synchronousWriteResults.push_back(result);
+        }
+        device.busError = true;
+
+        EXPECT_FALSE(device.init(&device));
+        EXPECT_FALSE(device.busError);
+        EXPECT_EQ(0U, device.magOdrHz);
+        EXPECT_EQ(scenario.expectedWrites, synchronousWrites.size());
+        EXPECT_EQ(1U, deviceRegisterCount);
+        EXPECT_EQ(2U, delays.size());
+    }
+}
+
+TEST_F(Ist8310Test, DataReadyAcceptsAdditionalStatusBits)
+{
+    detectAndInitialize();
+    queueStatus(0x81);
+    queueData(encodeSample(7, -8, 9));
+    asynchronousWriteResults.push_back(true);
+    int16_t sample[3] = {};
+
+    EXPECT_FALSE(readAfterCompletion(sample));
+    EXPECT_FALSE(readAfterCompletion(sample));
+    EXPECT_TRUE(readAfterCompletion(sample));
+    EXPECT_EQ(21, sample[0]);
+    EXPECT_EQ(24, sample[1]);
+    EXPECT_EQ(27, sample[2]);
+    EXPECT_EQ(1U, asynchronousWrites.size());
+}
+
+TEST_F(Ist8310Test, RetryFourteenFifteenAndSixteenBoundaryIsFailClosedAndRecovers)
+{
+    detectAndInitialize();
+    for (unsigned completion = 0; completion < 15U; completion++) {
+        queueStatus(0x00);
+    }
+    asynchronousWriteResults = {true, true};
+    int16_t sample[3] = {101, 202, 303};
+
+    EXPECT_FALSE(readAfterCompletion(sample));
+    for (unsigned completion = 1; completion <= 14U; completion++) {
+        EXPECT_FALSE(readAfterCompletion(sample)) << "completion=" << completion;
+        EXPECT_TRUE(asynchronousWrites.empty());
+        EXPECT_EQ(101, sample[0]);
+        EXPECT_EQ(202, sample[1]);
+        EXPECT_EQ(303, sample[2]);
+    }
+
+    EXPECT_FALSE(readAfterCompletion(sample));
+    ASSERT_EQ(1U, asynchronousWrites.size());
+    EXPECT_EQ(15U, asynchronousReads.size());
+
+    queueStatus(0x01);
+    EXPECT_FALSE(readAfterCompletion(sample));
+    EXPECT_EQ(16U, asynchronousReads.size());
+
+    queueData(encodeSample(10, 20, 30));
+    EXPECT_FALSE(readAfterCompletion(sample));
+    EXPECT_TRUE(readAfterCompletion(sample));
+    EXPECT_EQ(30, sample[0]);
+    EXPECT_EQ(-60, sample[1]);
+    EXPECT_EQ(90, sample[2]);
+    EXPECT_EQ(0U, unexpectedBusOperations);
+}
+
+TEST_F(Ist8310Test, Int16ExtremesOnEveryAxisRemainUnpublished)
+{
+    const std::array<std::array<int16_t, 3>, 6> extremes = {{
+        {{INT16_MIN, 0, 0}}, {{INT16_MAX, 0, 0}},
+        {{0, INT16_MIN, 0}}, {{0, INT16_MAX, 0}},
+        {{0, 0, INT16_MIN}}, {{0, 0, INT16_MAX}},
+    }};
+
+    for (const auto &raw : extremes) {
+        SCOPED_TRACE(testing::Message() << raw[0] << ',' << raw[1] << ',' << raw[2]);
+        resetBusFixture();
+        detectAndInitialize();
+        queueStatus(0x01);
+        queueData(encodeSample(raw[0], raw[1], raw[2]));
+        asynchronousWriteResults.push_back(true);
+        int16_t sample[3] = {101, 202, 303};
+
+        EXPECT_FALSE(readAfterCompletion(sample));
+        EXPECT_FALSE(readAfterCompletion(sample));
+        EXPECT_FALSE(readAfterCompletion(sample));
+        EXPECT_EQ(101, sample[0]);
+        EXPECT_EQ(202, sample[1]);
+        EXPECT_EQ(303, sample[2]);
+    }
+}

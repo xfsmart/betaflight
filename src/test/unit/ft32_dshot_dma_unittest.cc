@@ -1741,3 +1741,275 @@ uint32_t decode_bb(uint16_t *, uint32_t, uint32_t)
 }
 
 #endif // FT32_DSHOT_NO_TELEMETRY_VARIANT
+
+#ifdef FT32_DSHOT_NO_TELEMETRY_VARIANT
+
+TEST_F(Ft32DshotNoTelemetryTest, UnconfiguredAndBoundaryValuesKeepIndependentLaneCanary)
+{
+    std::fill(std::begin(dshotDmaBuffer[0]), std::end(dshotDmaBuffer[0]), 0x5a5a5a5aU);
+    std::fill(std::begin(dshotDmaBuffer[1]), std::end(dshotDmaBuffer[1]), 0xa5a5a5a5U);
+    DSHOT_DMA_BUFFER_UNIT unconfiguredSnapshot[DSHOT_DMA_BUFFER_ALLOC_SIZE];
+    std::memcpy(unconfiguredSnapshot, dshotDmaBuffer[0], sizeof(unconfiguredSnapshot));
+
+    pwmWriteDshotInt(0U, 1U);
+    EXPECT_EQ(0, std::memcmp(unconfiguredSnapshot, dshotDmaBuffer[0], sizeof(unconfiguredSnapshot)));
+    EXPECT_EQ(0U, enableCount);
+
+    ASSERT_TRUE(pwmDshotMotorHardwareConfig(
+        &timerHardware, 0U, 0U, MOTOR_PROTOCOL_DSHOT600, 0U));
+    loadDmaBuffer = mockLoadDmaBuffer;
+    for (const uint16_t value : {uint16_t{0U}, uint16_t{1U},
+             uint16_t{DSHOT_MAX_THROTTLE}, uint16_t{UINT16_MAX}}) {
+        SCOPED_TRACE(value);
+        dmaEnabled = false;
+        enableCount = 0U;
+        shadowCount = 0U;
+        pwmWriteDshotInt(0U, value);
+        EXPECT_EQ(value, dmaMotors[0].protocolControl.value);
+        EXPECT_EQ(DSHOT_DMA_BUFFER_SIZE, shadowCount);
+        EXPECT_EQ(1U, enableCount);
+        EXPECT_TRUE(dmaEnabled);
+        for (const DSHOT_DMA_BUFFER_UNIT canary : dshotDmaBuffer[1]) {
+            EXPECT_EQ(0xa5a5a5a5U, canary);
+        }
+    }
+}
+
+#else
+
+namespace {
+
+uint8_t appendedLoadCount;
+
+uint8_t appendedCountOnlyLoad(uint32_t *, int, uint16_t)
+{
+    return appendedLoadCount;
+}
+
+struct GuardedDirectBuffer {
+    uint32_t before;
+    DSHOT_DMA_BUFFER_UNIT payload[DSHOT_DMA_BUFFER_ALLOC_SIZE];
+    uint32_t after;
+};
+
+} // namespace
+
+TEST_F(Ft32DshotDmaTest, BlockSourceAndDestinationFlagsAloneAreNonTerminal)
+{
+    enum class StatusFlag : uint8_t { Block, Source, Destination };
+    for (const StatusFlag flag : {StatusFlag::Block, StatusFlag::Source, StatusFlag::Destination}) {
+        SCOPED_TRACE(static_cast<unsigned>(flag));
+        ResetMocks();
+        const uint64_t bit = uint64_t{1U} << 2U;
+        if (flag == StatusFlag::Block) {
+            dmaController.STATUSBLOCK = bit;
+        } else if (flag == StatusFlag::Source) {
+            dmaController.STATUSSRCTRAN = bit;
+        } else {
+            dmaController.STATUSDSTTRAN = bit;
+        }
+
+        dmaMotors[0] = MakeDirectMotor(CanonicalDirectDescriptor());
+        dmaEnabled = true;
+        dmaChannelDescriptor_t directDescriptor = MakeIrqDescriptor(0U);
+        ft32DshotTestMotorIrq(&directDescriptor);
+        EXPECT_TRUE(events.empty());
+        EXPECT_TRUE(dmaEnabled);
+        EXPECT_EQ(0U, dmaController.CLEARTFR);
+        EXPECT_EQ(0U, dmaController.CLEARBLOCK);
+        EXPECT_EQ(0U, dmaController.CLEARSRCTRAN);
+        EXPECT_EQ(0U, dmaController.CLEARDSTTRAN);
+        EXPECT_EQ(0U, dmaController.CLEARERR);
+
+        bbPort_t *port = ConfigureBitbangPort(0U);
+        events.clear();
+        dmaEnabled = true;
+        dmaChannelDescriptor_t bitbangDescriptor = MakeIrqDescriptor(
+            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(port)));
+        bbDMAIrqHandler(&bitbangDescriptor);
+        EXPECT_TRUE(events.empty());
+        EXPECT_TRUE(dmaEnabled);
+        EXPECT_EQ(DSHOT_BITBANG_DIRECTION_OUTPUT, port->direction);
+    }
+}
+
+TEST_F(Ft32DshotDmaTest, ZeroOneAndMaximumLoaderCountsFailClosedWithoutBufferMutation)
+{
+    GuardedDirectBuffer buffer{};
+    buffer.before = 0x11223344U;
+    buffer.after = 0x55667788U;
+    std::fill(std::begin(buffer.payload), std::end(buffer.payload), 0x5a5a5a5aU);
+    dmaMotors[0] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dmaMotors[0].dmaBuffer = buffer.payload;
+    dmaMotors[0].timer = &dmaMotorTimers[0];
+    dmaMotors[0].configured = true;
+    dmaMotorTimers[0].timer = reinterpret_cast<timerResource_t *>(&timerRegs);
+    dmaMotorTimers[0].timerDmaSources = TIM_DMA_CC1;
+    loadDmaBuffer = appendedCountOnlyLoad;
+
+    for (const uint8_t count : {uint8_t{0U}, uint8_t{1U}, uint8_t{UINT8_MAX}}) {
+        SCOPED_TRACE(static_cast<unsigned>(count));
+        DSHOT_DMA_BUFFER_UNIT snapshot[DSHOT_DMA_BUFFER_ALLOC_SIZE];
+        std::memcpy(snapshot, buffer.payload, sizeof(snapshot));
+        appendedLoadCount = count;
+        events.clear();
+        dmaEnabled = false;
+        dmaMotorTimers[0].timerDmaSources = TIM_DMA_CC1;
+
+        pwmWriteDshotInt(0U, 321U);
+
+        EXPECT_EQ(0, std::memcmp(snapshot, buffer.payload, sizeof(snapshot)));
+        EXPECT_EQ(0x11223344U, buffer.before);
+        EXPECT_EQ(0x55667788U, buffer.after);
+        EXPECT_EQ(0U, dmaMotorTimers[0].timerDmaSources);
+        EXPECT_EQ(0U, CountEvent(Event::DmaEnable));
+        EXPECT_FALSE(dmaEnabled);
+    }
+}
+
+TEST_F(Ft32DshotDmaTest, DirectOutputInputOutputRecoversOneHundredTimesWithCanaries)
+{
+    GuardedDirectBuffer buffer{};
+    buffer.before = 0x11223344U;
+    buffer.after = 0x55667788U;
+    std::fill(std::begin(buffer.payload), std::end(buffer.payload), 0xa5a5a5a5U);
+    dmaMotors[0] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dmaMotors[0].dmaBuffer = buffer.payload;
+    dmaMotors[0].timer = &dmaMotorTimers[0];
+    dmaMotors[0].configured = true;
+    dmaMotors[0].dshotTelemetryDeadtimeUs = 0U;
+    dmaMotorTimers[0].timer = reinterpret_cast<timerResource_t *>(&timerRegs);
+    dshotMotorCount = 1U;
+    useDshotTelemetry = true;
+    useBurstDshot = false;
+    loadDmaBuffer = loadDmaBufferDshot;
+
+    for (unsigned transition = 0; transition < 100U; transition++) {
+        SCOPED_TRACE(transition);
+        events.clear();
+        dmaEnabled = false;
+        pwmWriteDshotInt(0U, static_cast<uint16_t>(100U + transition));
+        ASSERT_TRUE(dmaEnabled);
+
+        SetTerminalFlags(true, false);
+        dmaChannelDescriptor_t descriptor = MakeIrqDescriptor(0U);
+        ft32DshotTestMotorIrq(&descriptor);
+        ASSERT_TRUE(dmaMotors[0].isInput);
+        ASSERT_TRUE(dmaEnabled);
+
+        shadowCount = GCR_TELEMETRY_INPUT_LEN;
+        ASSERT_TRUE(pwmTelemetryDecode());
+        EXPECT_FALSE(dmaMotors[0].isInput);
+        EXPECT_EQ(0U, inputStampUs);
+        EXPECT_EQ(0x11223344U, buffer.before);
+        EXPECT_EQ(0x55667788U, buffer.after);
+        for (unsigned i = DSHOT_DMA_BUFFER_SIZE; i < DSHOT_DMA_BUFFER_ALLOC_SIZE; i++) {
+            EXPECT_EQ(0xa5a5a5a5U, buffer.payload[i]);
+        }
+    }
+}
+
+TEST_F(Ft32DshotDmaTest, BurstInputRecoveryAndNullReferenceStayFailClosedWithoutLaneMutation)
+{
+    uint32_t guardedBurst[DSHOT_DMA_BUFFER_SIZE * 4U + 2U];
+    std::fill(std::begin(guardedBurst), std::end(guardedBurst), 0x5a5a5a5aU);
+    uint32_t *const payload = &guardedBurst[1];
+    dmaMotors[0] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dmaMotors[0].timer = &dmaMotorTimers[0];
+    dmaMotors[0].configured = true;
+    dmaMotorTimers[0].timer = reinterpret_cast<timerResource_t *>(&timerRegs);
+    dmaMotorTimers[0].dmaBurstRef = reinterpret_cast<dmaResource_t *>(&dmaChannel);
+    dmaMotorTimers[0].dmaBurstBuffer = payload;
+    dmaMotorTimerCount = 1U;
+    dshotMotorCount = 1U;
+    useDshotTelemetry = true;
+    useBurstDshot = true;
+    loadDmaBuffer = loadDmaBufferDshot;
+    uint32_t snapshot[DSHOT_DMA_BUFFER_SIZE * 4U];
+    std::memcpy(snapshot, payload, sizeof(snapshot));
+
+    dmaMotors[0].isInput = true;
+    pwmWriteDshotInt(0U, 301U);
+    EXPECT_EQ(UINT16_MAX, dmaMotorTimers[0].dmaBurstLength);
+    EXPECT_EQ(0, std::memcmp(snapshot, payload, sizeof(snapshot)));
+
+    dmaMotorTimers[0].dmaBurstLength = 0U;
+    dmaMotors[0].isInput = false;
+    dmaMotors[0].dmaInputLen = UINT8_MAX;
+    pwmWriteDshotInt(0U, 302U);
+    EXPECT_EQ(UINT16_MAX, dmaMotorTimers[0].dmaBurstLength);
+    EXPECT_EQ(0, std::memcmp(snapshot, payload, sizeof(snapshot)));
+
+    dmaMotorTimers[0].dmaBurstLength = DSHOT_DMA_BUFFER_SIZE * 4U;
+    dmaEnabled = true;
+    events.clear();
+    pwmCompleteDshotMotorUpdate();
+    EXPECT_EQ(0U, dmaMotorTimers[0].dmaBurstLength);
+    EXPECT_FALSE(dmaEnabled);
+    EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
+
+    dmaMotors[0].dmaInputLen = 0U;
+    dmaMotorTimers[0].dmaBurstRef = nullptr;
+    dmaMotorTimers[0].dmaBurstLength = 0U;
+    pwmWriteDshotInt(0U, 303U);
+    EXPECT_EQ(UINT16_MAX, dmaMotorTimers[0].dmaBurstLength);
+    EXPECT_EQ(0, std::memcmp(snapshot, payload, sizeof(snapshot)));
+    EXPECT_EQ(0x5a5a5a5aU, guardedBurst[0]);
+    EXPECT_EQ(0x5a5a5a5aU, guardedBurst[DSHOT_DMA_BUFFER_SIZE * 4U + 1U]);
+}
+
+TEST_F(Ft32DshotDmaTest, BitbangCountZeroOneAndMaximumOnlyDecodeActiveInputs)
+{
+    bbPort_t *port = ConfigureBitbangPort(0U);
+    usedMotorPorts = 1;
+    useDshotTelemetry = true;
+    for (unsigned motor = 0; motor < MAX_SUPPORTED_MOTORS; motor++) {
+        bbMotors[motor].bbPort = port;
+        bbMotors[motor].pinIndex = motor;
+    }
+
+    dshotMotorCount = 0U;
+    port->inputActive = true;
+    EXPECT_TRUE(ft32DshotTestBitbangDecodeTelemetry());
+    EXPECT_EQ(0U, ft32DshotTestBitbangDecodeCallCount());
+
+    dshotMotorCount = 1U;
+    port->inputActive = true;
+    EXPECT_TRUE(ft32DshotTestBitbangDecodeTelemetry());
+    EXPECT_EQ(1U, ft32DshotTestBitbangDecodeCallCount());
+
+    dshotMotorCount = MAX_SUPPORTED_MOTORS;
+    port->inputActive = true;
+    EXPECT_TRUE(ft32DshotTestBitbangDecodeTelemetry());
+    EXPECT_EQ(1U + MAX_SUPPORTED_MOTORS, ft32DshotTestBitbangDecodeCallCount());
+    EXPECT_EQ(0U, dshotTelemetryState.readCount);
+    EXPECT_FALSE(port->inputActive);
+}
+
+TEST_F(Ft32DshotDmaTest, BitbangOutputCanarySurvivesSuccessAndPreflightFailure)
+{
+    bbPort_t *port = ConfigureBitbangPort(0U);
+    usedMotorPorts = 1;
+    usedMotorPacers = 1;
+    bbPacers[0].tim = reinterpret_cast<timerResource_t *>(&timerRegs);
+    bbPacers[0].dmaSources = TIM_DMA_CC1;
+    bbMotors[0].configured = true;
+    bbMotors[0].bbPort = port;
+    bbMotors[0].pinIndex = 0U;
+    const unsigned canaryIndex = MOTOR_DSHOT_BUF_LENGTH;
+    bbOutputBuffer[canaryIndex] = 0x5a5a5a5aU;
+
+    ft32DshotTestBitbangUpdateInit();
+    ft32DshotTestBitbangWriteInt(0U, 321U);
+    ft32DshotTestBitbangUpdateComplete();
+    EXPECT_EQ(0x5a5a5a5aU, bbOutputBuffer[canaryIndex]);
+
+    uint32_t snapshot[MOTOR_DSHOT_BUF_LENGTH];
+    std::memcpy(snapshot, port->portOutputBuffer, sizeof(snapshot));
+    port->direction = UINT8_MAX;
+    ft32DshotTestBitbangWriteInt(0U, 654U);
+    EXPECT_EQ(0, std::memcmp(snapshot, port->portOutputBuffer, sizeof(snapshot)));
+    EXPECT_EQ(0x5a5a5a5aU, bbOutputBuffer[canaryIndex]);
+}
+
+#endif

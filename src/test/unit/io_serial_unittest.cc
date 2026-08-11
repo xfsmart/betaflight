@@ -87,3 +87,107 @@ extern "C" {
 
     void pinioSet(int, bool) {}
 }
+
+TEST(IoSerialTest, EnumeratesDuplicateFunctionsAndClassifiesSharingBoundaries)
+{
+    *serialConfigMutable() = {};
+    serialConfigMutable()->portConfigs[0].identifier = SERIAL_PORT_USB_VCP;
+    serialConfigMutable()->portConfigs[0].functionMask = FUNCTION_MSP;
+    serialConfigMutable()->portConfigs[1].identifier = SERIAL_PORT_USART1;
+    serialConfigMutable()->portConfigs[1].functionMask = FUNCTION_GPS | FUNCTION_BLACKBOX;
+    serialConfigMutable()->portConfigs[2].identifier = SERIAL_PORT_USART2;
+    serialConfigMutable()->portConfigs[2].functionMask = FUNCTION_GPS;
+
+    const serialPortConfig_t *firstGps = findSerialPortConfig(FUNCTION_GPS);
+    ASSERT_EQ(&serialConfig()->portConfigs[1], firstGps);
+    EXPECT_EQ(PORTSHARING_SHARED, determinePortSharing(firstGps, FUNCTION_GPS));
+    EXPECT_TRUE(isSerialPortShared(firstGps, FUNCTION_BLACKBOX, FUNCTION_GPS));
+    EXPECT_FALSE(isSerialPortShared(firstGps, FUNCTION_RX_SERIAL, FUNCTION_GPS));
+
+    const serialPortConfig_t *secondGps = findNextSerialPortConfig(FUNCTION_GPS);
+    ASSERT_EQ(&serialConfig()->portConfigs[2], secondGps);
+    EXPECT_EQ(PORTSHARING_NOT_SHARED, determinePortSharing(secondGps, FUNCTION_GPS));
+    EXPECT_EQ(nullptr, findNextSerialPortConfig(FUNCTION_GPS));
+    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(nullptr, FUNCTION_GPS));
+    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(secondGps, FUNCTION_MSP));
+    EXPECT_TRUE(doesConfigurationUsePort(SERIAL_PORT_USART1));
+    EXPECT_FALSE(doesConfigurationUsePort(SERIAL_PORT_USART3));
+}
+
+TEST(IoSerialTest, ValidationRejectsMissingMspUsbAndIllegalSharingCombinations)
+{
+    serialConfig_t *config = serialConfigMutable();
+
+    *config = {};
+    config->portConfigs[0].identifier = SERIAL_PORT_USB_VCP;
+    config->portConfigs[0].functionMask = FUNCTION_MSP;
+    EXPECT_TRUE(isSerialConfigValid(config));
+
+    config->portConfigs[0].functionMask = FUNCTION_MSP | FUNCTION_BLACKBOX;
+    EXPECT_TRUE(isSerialConfigValid(config));
+
+    config->portConfigs[0].functionMask = FUNCTION_NONE;
+    EXPECT_FALSE(isSerialConfigValid(config));
+
+    config->portConfigs[0].functionMask = FUNCTION_GPS;
+    EXPECT_FALSE(isSerialConfigValid(config));
+
+    *config = {};
+    config->portConfigs[0].identifier = SERIAL_PORT_USB_VCP;
+    config->portConfigs[0].functionMask = FUNCTION_MSP;
+    config->portConfigs[1].identifier = SERIAL_PORT_USART1;
+    config->portConfigs[1].functionMask = FUNCTION_GPS | FUNCTION_RX_SERIAL;
+    EXPECT_FALSE(isSerialConfigValid(config));
+
+    *config = {};
+    for (unsigned i = 0; i < 4; i++) {
+        config->portConfigs[i].identifier = serialPortIdentifiers[i];
+        config->portConfigs[i].functionMask = FUNCTION_MSP;
+    }
+    EXPECT_FALSE(isSerialConfigValid(config));
+}
+
+TEST(IoSerialTest, FailedOpenLeavesUsageUnclaimedAndExistingOwnerBlocksDuplicates)
+{
+    serialInit(false);
+    serialPortUsage_t *usage = findSerialPortUsageByIdentifier(SERIAL_PORT_USART1);
+    ASSERT_NE(nullptr, usage);
+    ASSERT_EQ(FUNCTION_NONE, usage->function);
+    ASSERT_EQ(nullptr, usage->serialPort);
+
+    EXPECT_EQ(nullptr, openSerialPort(SERIAL_PORT_USART1, FUNCTION_GPS, nullptr, nullptr, 38400, MODE_RXTX, SERIAL_NOT_INVERTED));
+    EXPECT_EQ(FUNCTION_NONE, usage->function);
+    EXPECT_EQ(nullptr, usage->serialPort);
+
+    serialPort_t ownedPort = {};
+    ownedPort.identifier = SERIAL_PORT_USART1;
+    ownedPort.rxCallback = +[](uint16_t, void *) {};
+    usage->function = FUNCTION_GPS;
+    usage->serialPort = &ownedPort;
+
+    EXPECT_EQ(nullptr, openSerialPort(SERIAL_PORT_USART1, FUNCTION_MSP, nullptr, nullptr, 115200, MODE_RXTX, SERIAL_NOT_INVERTED));
+    EXPECT_EQ(FUNCTION_GPS, usage->function);
+    EXPECT_EQ(&ownedPort, usage->serialPort);
+
+    closeSerialPort(&ownedPort);
+    EXPECT_EQ(nullptr, ownedPort.rxCallback);
+    EXPECT_EQ(FUNCTION_NONE, usage->function);
+    EXPECT_EQ(nullptr, usage->serialPort);
+
+    closeSerialPort(&ownedPort);
+    closeSerialPort(nullptr);
+    EXPECT_EQ(FUNCTION_NONE, usage->function);
+    EXPECT_EQ(nullptr, usage->serialPort);
+}
+
+TEST(IoSerialTest, RemovingPortAfterClosePreventsLaterOwnership)
+{
+    serialInit(false);
+    ASSERT_TRUE(serialIsPortAvailable(SERIAL_PORT_USART2));
+
+    serialRemovePort(SERIAL_PORT_USART2);
+
+    EXPECT_FALSE(serialIsPortAvailable(SERIAL_PORT_USART2));
+    EXPECT_EQ(nullptr, findSerialPortUsageByIdentifier(SERIAL_PORT_USART2));
+    EXPECT_EQ(nullptr, openSerialPort(SERIAL_PORT_USART2, FUNCTION_GPS, nullptr, nullptr, 38400, MODE_RXTX, SERIAL_NOT_INVERTED));
+}

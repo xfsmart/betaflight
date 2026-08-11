@@ -419,3 +419,24 @@ void schedulerIgnoreTaskExecRate(void)
 }
 
 }
+
+#if !defined(USE_64BIT_TIME)
+TEST_F(CompassInitTest, Exact499999And500000FailureDoesNotRefreshAndNextSampleRecoversAcrossWrap)
+{
+    ASSERT_EQ(4U, sizeof(timeUs_t));
+    ASSERT_TRUE(compassInit());
+    const timeUs_t publishedAt = UINT32_MAX - 100000U;
+    publishMagSample(publishedAt, 11, 22, 33);
+
+    testTimeUs = publishedAt + 499999U;
+    ASSERT_TRUE(compassIsHealthy());
+
+    magReadResults.push_back({false, {0, 0, 0}});
+    testTimeUs = publishedAt + 500000U;
+    EXPECT_EQ(1000U, compassUpdate(testTimeUs));
+    EXPECT_FALSE(compassIsHealthy());
+
+    publishMagSample(publishedAt + 700000U, 44, 55, 66);
+    EXPECT_TRUE(compassIsHealthy());
+}
+#endif

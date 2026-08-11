@@ -152,3 +152,37 @@ TEST(Ft32NvicPriorityTest, KeepsDirectCmsisPrioritiesInTheValidDomain)
     EXPECT_EQ(std::string::npos, cdcSource.find("NVIC_PRIORITY_TO_CMSIS(NVIC_BUILD_PRIORITY(6, 0))"));
     EXPECT_EQ(1U, countOccurrences(usbSource, "NVIC_PRIORITY_TO_CMSIS(NVIC_PRIO_USB)"));
 }
+
+TEST(Ft32NvicPriorityTest, KeepsNamedProductionMacroOrder)
+{
+    const std::string source = readSource("../main/drivers/nvic.h");
+    ASSERT_FALSE(source.empty());
+    EXPECT_EQ(1U, countOccurrences(source,
+        "#define NVIC_PRIO_USB                      NVIC_BUILD_PRIORITY(2, 0)"));
+    EXPECT_EQ(1U, countOccurrences(source,
+        "#define NVIC_PRIO_DSHOT_DMA                NVIC_BUILD_PRIORITY(2, 1)"));
+
+    constexpr uint32_t usb = NVIC_BUILD_PRIORITY(2, 0);
+    constexpr uint32_t dshot = NVIC_BUILD_PRIORITY(2, 1);
+    EXPECT_EQ(NVIC_PRIORITY_BASE(usb), NVIC_PRIORITY_BASE(dshot));
+    EXPECT_LT(NVIC_PRIORITY_SUB(usb), NVIC_PRIORITY_SUB(dshot));
+    EXPECT_LT(usb, dshot);
+}
+
+TEST(Ft32NvicPriorityTest, KeepsUsbAheadOfEveryDshotFinalCallsite)
+{
+    const std::string bitbangSource = readSource("../platform/FT32/dshot_bitbang.c");
+    const std::string directSource = readSource("../platform/FT32/pwm_output_dshot_ft32f4xx.c");
+    const std::string usbSource = readSource("../platform/FT32/vcpf4/usb_bsp_ft32f4.c");
+    ASSERT_FALSE(bitbangSource.empty());
+    ASSERT_FALSE(directSource.empty());
+    ASSERT_FALSE(usbSource.empty());
+
+    EXPECT_EQ(1U, countOccurrences(bitbangSource,
+        "dmaSetHandler(dmaIdentifier, bbDMAIrqHandler, NVIC_BUILD_PRIORITY(2, 1)"));
+    EXPECT_EQ(2U, countOccurrences(directSource,
+        "dmaSetHandler(dmaIdentifier, motor_DMA_IRQHandler, NVIC_PRIO_DSHOT_DMA"));
+    EXPECT_EQ(1U, countOccurrences(usbSource,
+        "NVIC_SetPriority(OTG_IRQ, NVIC_PRIORITY_TO_CMSIS(NVIC_PRIO_USB));"));
+    EXPECT_LT(NVIC_BUILD_PRIORITY(2, 0), NVIC_BUILD_PRIORITY(2, 1));
+}

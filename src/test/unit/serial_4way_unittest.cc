@@ -798,3 +798,195 @@ uint8_t Stk_Chip_Erase(void)
 }
 
 } // extern "C"
+
+namespace {
+
+TEST_F(Serial4WayTest, EveryRequestTruncationBoundaryFailsClosedThenAcceptsExit)
+{
+    constexpr size_t completeRequestSize = 10;
+    for (size_t retainedBytes = 1; retainedBytes < completeRequestSize; retainedBytes++) {
+        resetHarness();
+        beginSession();
+        appendRequest(CMD_WRITE, { 0x11, 0x22, 0x33 }, 0x12, 0x34);
+        ASSERT_EQ(completeRequestSize, serialInput.size());
+        while (serialInput.size() > retainedBytes) {
+            serialInput.pop_back();
+        }
+        injectExitAfterFirstResponse = true;
+
+        const std::vector<Response> responses = runSession();
+
+        ASSERT_EQ(2U, responses.size()) << "retained bytes: " << retainedBytes;
+        EXPECT_EQ(ACK_INVALID_CRC, responses[0].ack) << "retained bytes: " << retainedBytes;
+        EXPECT_EQ(CMD_EXIT, responses[1].command) << "retained bytes: " << retainedBytes;
+        EXPECT_EQ(ACK_OK, responses[1].ack) << "retained bytes: " << retainedBytes;
+        EXPECT_FALSE(isMcuConnected());
+        EXPECT_EQ(0U, blWriteCalls);
+        EXPECT_EQ(0U, stkWriteCalls);
+    }
+}
+
+#ifdef USE_SERIAL_4WAY_BLHELI_BOOTLOADER
+TEST_F(Serial4WayTest, AllSupportedBlSignatureBoundariesSelectExpectedMode)
+{
+    struct SignatureCase {
+        std::array<uint8_t, 4> deviceInfo;
+        uint8_t expectedMode;
+    };
+    const std::array<SignatureCase, 7> cases = {{
+        { { 0x0A, 0x93, 0x00, 0xA5 }, imATM_BLB },
+        { { 0x0F, 0x93, 0x00, 0xA5 }, imATM_BLB },
+        { { 0x0B, 0x94, 0x00, 0xA5 }, imATM_BLB },
+        { { 0x01, 0xE8, 0x00, 0xA5 }, imSIL_BLB },
+        { { 0xFF, 0xF8, 0x00, 0xA5 }, imSIL_BLB },
+        { { 0x06, 0x01, 0x00, 0xA5 }, imARM_BLB },
+        { { 0x06, 0x8F, 0x00, 0xA5 }, imARM_BLB },
+    }};
+
+    for (const SignatureCase &signatureCase : cases) {
+        resetHarness();
+        beginSession();
+#ifdef USE_SERIAL_4WAY_SK_BOOTLOADER
+        stkProbeResults.push_back(dirtyFailure());
+#endif
+        blProbeResults.push_back({ true, signatureCase.deviceInfo });
+        appendRequest(CMD_INIT_FLASH, { 0 });
+        appendRequest(CMD_EXIT);
+
+        const std::vector<Response> responses = runSession();
+
+        ASSERT_EQ(2U, responses.size());
+        ASSERT_EQ(4U, responses[0].payload.size());
+        EXPECT_EQ(ACK_OK, responses[0].ack);
+        EXPECT_EQ(signatureCase.expectedMode, responses[0].payload[3]);
+        EXPECT_EQ(ACK_OK, responses[1].ack);
+        EXPECT_TRUE(allProbeEntriesWereClear);
+        EXPECT_EQ(0U, DeviceInfo.dword);
+        EXPECT_EQ(UINT8_MAX, selected_esc);
+    }
+}
+
+TEST_F(Serial4WayTest, BlWriteFailureCanRecoverWithoutReconnect)
+{
+    beginSession();
+#ifdef USE_SERIAL_4WAY_SK_BOOTLOADER
+    stkProbeResults.push_back(dirtyFailure());
+#endif
+    blProbeResults.push_back(silabsSuccess());
+    blWriteResults.push_back(false);
+    blWriteResults.push_back(true);
+
+    appendRequest(CMD_INIT_FLASH, { 0 });
+    appendRequest(CMD_WRITE, { 0x11, 0x22 }, 0x00, 0x00);
+    appendRequest(CMD_WRITE, { 0x33, 0x44 }, 0xFF, 0xFF);
+    appendRequest(CMD_EXIT);
+    const std::vector<Response> responses = runSession();
+
+    ASSERT_EQ(4U, responses.size());
+    EXPECT_EQ(ACK_OK, responses[0].ack);
+    EXPECT_EQ(ACK_GENERAL_ERROR, responses[1].ack);
+    EXPECT_EQ(0x00, responses[1].addressHigh);
+    EXPECT_EQ(0x00, responses[1].addressLow);
+    EXPECT_EQ(ACK_OK, responses[2].ack);
+    EXPECT_EQ(0xFF, responses[2].addressHigh);
+    EXPECT_EQ(0xFF, responses[2].addressLow);
+    EXPECT_EQ(2U, blWriteCalls);
+    EXPECT_EQ(0U, stkWriteCalls);
+}
+
+TEST_F(Serial4WayTest, ZeroEncodedAndMaximumExplicitReadLengthsDispatchExactly)
+{
+    beginSession();
+#ifdef USE_SERIAL_4WAY_SK_BOOTLOADER
+    stkProbeResults.push_back(dirtyFailure());
+#endif
+    blProbeResults.push_back(silabsSuccess());
+    blReadResults.push_back(true);
+    blReadResults.push_back(true);
+
+    appendRequest(CMD_INIT_FLASH, { 0 });
+    appendRequest(CMD_READ, { 255 }, 0x00, 0x00);
+    appendRequest(CMD_READ, { 0 }, 0xFF, 0xFF);
+    appendRequest(CMD_EXIT);
+    const std::vector<Response> responses = runSession();
+
+    ASSERT_EQ(4U, responses.size());
+    ASSERT_EQ(255U, responses[1].payload.size());
+    EXPECT_EQ(0xA0, responses[1].payload.front());
+    EXPECT_EQ(static_cast<uint8_t>(0xA0 + 254), responses[1].payload.back());
+    ASSERT_EQ(256U, responses[2].payload.size());
+    EXPECT_EQ(0xA0, responses[2].payload.front());
+    EXPECT_EQ(static_cast<uint8_t>(0xA0 + 255), responses[2].payload.back());
+    EXPECT_EQ(2U, blReadCalls);
+}
+#endif
+
+#ifdef USE_SERIAL_4WAY_SK_BOOTLOADER
+TEST_F(Serial4WayTest, StkWriteFailureCanRecoverWithoutReconnect)
+{
+    beginSession();
+    stkProbeResults.push_back(stkSuccess());
+    stkWriteResults.push_back(false);
+    stkWriteResults.push_back(true);
+
+    appendRequest(CMD_INIT_FLASH, { 0 });
+    appendRequest(CMD_WRITE, { 0x11, 0x22 }, 0x12, 0x34);
+    appendRequest(CMD_WRITE, { 0x33, 0x44 }, 0x12, 0x34);
+    appendRequest(CMD_EXIT);
+    const std::vector<Response> responses = runSession();
+
+    ASSERT_EQ(4U, responses.size());
+    EXPECT_EQ(ACK_OK, responses[0].ack);
+    EXPECT_EQ(ACK_GENERAL_ERROR, responses[1].ack);
+    EXPECT_EQ(ACK_OK, responses[2].ack);
+    EXPECT_EQ(0U, blWriteCalls);
+    EXPECT_EQ(2U, stkWriteCalls);
+}
+#endif
+
+#if defined(USE_SERIAL_4WAY_BLHELI_BOOTLOADER) && defined(USE_SERIAL_4WAY_SK_BOOTLOADER)
+TEST_F(Serial4WayTest, ThreeAttemptFallbackOrderIsExactAndLeavesNoSignature)
+{
+    beginSession();
+    for (unsigned attempt = 0; attempt < 3; attempt++) {
+        stkProbeResults.push_back(dirtyFailure());
+        blProbeResults.push_back(dirtyFailure());
+    }
+
+    appendRequest(CMD_INIT_FLASH, { 0 });
+    appendRequest(CMD_EXIT);
+    const std::vector<Response> responses = runSession();
+
+    ASSERT_EQ(2U, responses.size());
+    EXPECT_EQ(ACK_GENERAL_ERROR, responses[0].ack);
+    EXPECT_EQ((std::vector<char>{ 'S', 'B', 'S', 'B', 'S', 'B' }), probeOrder);
+    EXPECT_TRUE(allProbeEntriesWereClear);
+    EXPECT_EQ(0U, DeviceInfo.dword);
+    EXPECT_EQ(UINT8_MAX, selected_esc);
+}
+
+TEST_F(Serial4WayTest, InvalidModeChannelAndCommandRemainIndependent)
+{
+    constexpr uint8_t ACK_INVALID_CHANNEL = 0x08;
+    constexpr uint8_t ACK_INVALID_PARAM = 0x09;
+
+    beginSession();
+    appendRequest(CMD_SET_MODE, { 0xFF });
+    appendRequest(CMD_INIT_FLASH, { 4 });
+    appendRequest(0x7F, { 0x00 }, 0xFF, 0xFF);
+    appendRequest(CMD_EXIT);
+    const std::vector<Response> responses = runSession();
+
+    ASSERT_EQ(4U, responses.size());
+    EXPECT_EQ(ACK_INVALID_PARAM, responses[0].ack);
+    EXPECT_EQ(ACK_INVALID_CHANNEL, responses[1].ack);
+    EXPECT_EQ(ACK_INVALID_CMD, responses[2].ack);
+    EXPECT_EQ(0xFF, responses[2].addressHigh);
+    EXPECT_EQ(0xFF, responses[2].addressLow);
+    EXPECT_EQ(ACK_OK, responses[3].ack);
+    EXPECT_EQ(0U, DeviceInfo.dword);
+    EXPECT_EQ(UINT8_MAX, selected_esc);
+}
+#endif
+
+} // namespace

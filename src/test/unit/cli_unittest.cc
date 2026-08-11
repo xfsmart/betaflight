@@ -467,3 +467,59 @@ TEST(CLIUnittest, TestCliHelpNullDescription)
     // If we reach here without a crash/SIGSEGV the null guard is working.
     SUCCEED();
 }
+
+TEST(CLIUnittest, TestCliStrstrExhaustiveBinaryCorpus)
+{
+    static const struct {
+        const char *haystack;
+        const char *needle;
+        size_t expectedOffset;
+    } fixedVectors[] = {
+        { "abababa", "aba", 0 },
+        { "abababa", "baba", 1 },
+        { "aaaaa", "aaa", 0 },
+        { "baaaa", "aaa", 1 },
+        { "bbbbba", "a", 5 },
+        { "aaaab", "ab", 3 },
+    };
+
+    // Pin first-match semantics for overlap and both left/right boundaries.
+    for (const auto &vector : fixedVectors) {
+        const char *actual = cliStrstr(vector.haystack, vector.needle);
+        ASSERT_NE(nullptr, actual);
+        EXPECT_EQ(vector.expectedOffset, static_cast<size_t>(actual - vector.haystack));
+    }
+
+    char haystack[9];
+    char needle[5];
+    uint32_t comparisonCount = 0;
+
+    // Sum(2^0..2^8) * Sum(2^0..2^4) = 511 * 31 = 15,841.
+    for (unsigned haystackLength = 0; haystackLength <= 8; haystackLength++) {
+        const unsigned haystackCount = 1U << haystackLength;
+        for (unsigned haystackBits = 0; haystackBits < haystackCount; haystackBits++) {
+            for (unsigned i = 0; i < haystackLength; i++) {
+                haystack[i] = ((haystackBits >> i) & 1U) ? 'b' : 'a';
+            }
+            haystack[haystackLength] = '\0';
+
+            for (unsigned needleLength = 0; needleLength <= 4; needleLength++) {
+                const unsigned needleCount = 1U << needleLength;
+                for (unsigned needleBits = 0; needleBits < needleCount; needleBits++) {
+                    for (unsigned i = 0; i < needleLength; i++) {
+                        needle[i] = ((needleBits >> i) & 1U) ? 'b' : 'a';
+                    }
+                    needle[needleLength] = '\0';
+
+                    const char *expected = strstr(haystack, needle);
+                    const char *actual = cliStrstr(haystack, needle);
+                    EXPECT_EQ(expected, actual)
+                        << "haystack='" << haystack << "' needle='" << needle << "'";
+                    comparisonCount++;
+                }
+            }
+        }
+    }
+
+    EXPECT_EQ(15841U, comparisonCount);
+}
