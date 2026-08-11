@@ -816,6 +816,141 @@ LDFLAGS  += -Wl,-T,$(TEST_DIR)/pg.ld -Wl,-Map,$(OBJECT_DIR)/$@.map
 endif
 
 # Gather up all of the tests.
+# Draft stanza for src/test/Makefile.  It is additive and does not modify the
+# generic test recipe.  The source file is expanded into two positive variants.
+
+BOARD_C_RESOURCE_CONFIG := \
+	$(ROOT)/src/platform/FT32/config/configs/FT32F405_FT32/config.h
+
+board_c_resource_integration_unittest_EXPAND := target_defaults reqmap
+
+board_c_resource_integration_unittest_SRC = \
+	$(if $(filter target_defaults,$1), \
+		$(USER_DIR)/config/feature.c \
+		$(USER_DIR)/drivers/serial_pinconfig.c \
+		$(USER_DIR)/io/serial.c \
+		$(USER_DIR)/io/serial_resource.c \
+		$(USER_DIR)/pg/adc.c \
+		$(USER_DIR)/pg/bus_i2c.c \
+		$(USER_DIR)/pg/gps.c \
+		$(USER_DIR)/pg/motor.c \
+		$(USER_DIR)/pg/rx.c \
+		$(USER_DIR)/pg/sdio.c \
+		$(USER_DIR)/pg/timerio.c) \
+	$(if $(filter reqmap,$1), \
+		$(USER_DIR)/pg/motor.c)
+
+board_c_resource_integration_unittest_DEFINES = \
+	$(if $(filter target_defaults,$1), \
+		BOARD_C_TARGET_DEFAULTS_VARIANT=1 \
+		SERIAL_TRAIT_PIN_CONFIG=1 \
+		TARGET_IO_PORTD=0xffff \
+		USE_ADC= \
+		USE_DSHOT= \
+		USE_DSHOT_BITBANG= \
+		USE_DSHOT_DMAR= \
+		USE_DSHOT_TELEMETRY= \
+		USE_I2C= \
+		USE_I2C_DEVICE_1= \
+		USE_MOTOR= \
+		USE_RX_PPM= \
+		USE_TIMER_MGMT=) \
+	$(if $(filter reqmap,$1), \
+		ADC1=1 \
+		ADC2=2 \
+		ADC3=3 \
+		BOARD_C_REQMAP_VARIANT=1 \
+		PLATFORM_TRAIT_ADC_DEVICE=1 \
+		PLATFORM_TRAIT_RCC=1 \
+		TARGET_IO_PORTD=0xffff \
+		UART_TRAIT_AF_PIN=1 \
+		UARTHARDWARE_MAX_PINS=4 \
+		USE_DMA= \
+		USE_DMA_SPEC= \
+		USE_DSHOT= \
+		USE_DSHOT_BITBANG= \
+		USE_DSHOT_DMAR= \
+		USE_DSHOT_TELEMETRY= \
+		USE_MOTOR= \
+		USE_TIMER= \
+		USE_TIMER_DMA= \
+		USE_TIMER_MGMT= \
+		USE_UART6=)
+
+board_c_resource_integration_unittest_INCLUDE_DIRS = \
+	$(ROOT)/src/platform/common/stm32
+
+board_c_resource_integration_unittest_FLAGS = \
+	-include $(BOARD_C_RESOURCE_CONFIG) \
+	-ffunction-sections -fdata-sections \
+	-Wno-macro-redefined
+
+board_c_resource_integration_unittest_LDFLAGS = -Wl,--gc-sections
+
+# The reqmap binary links real FT32 production mapping objects.  They use the
+# real FT32 platform/config/header stack, not src/test/unit platform stubs.
+BOARD_C_RESOURCE_PLATFORM_OBJ_DIR := \
+	$(OBJECT_DIR)/board_c_resource_integration_unittest.reqmap/production
+
+BOARD_C_RESOURCE_PLATFORM_OBJS := \
+	$(BOARD_C_RESOURCE_PLATFORM_OBJ_DIR)/FT32/adc_ft32f4xx.c.o \
+	$(BOARD_C_RESOURCE_PLATFORM_OBJ_DIR)/FT32/dma_reqmap_mcu.c.o \
+	$(BOARD_C_RESOURCE_PLATFORM_OBJ_DIR)/FT32/serial_uart_ft32f4xx.c.o \
+	$(BOARD_C_RESOURCE_PLATFORM_OBJ_DIR)/FT32/timer_ft32f4xx.c.o \
+	$(BOARD_C_RESOURCE_PLATFORM_OBJ_DIR)/common/stm32/adc_impl.c.o \
+	$(BOARD_C_RESOURCE_PLATFORM_OBJ_DIR)/main/drivers/timer_common.c.o
+
+BOARD_C_RESOURCE_PLATFORM_DEFINES := \
+	USE_CONFIG=1 \
+	FT32F4=1 \
+	FT32F405xE=1 \
+	FT32F405=1 \
+	TARGET_FLASH_SIZE=512
+
+BOARD_C_RESOURCE_PLATFORM_INCLUDE_DIRS := \
+	$(USER_DIR) \
+	$(ROOT)/src/platform/FT32/config/configs/FT32F405_FT32 \
+	$(ROOT)/src/platform/FT32/include \
+	$(ROOT)/src/platform/FT32 \
+	$(ROOT)/src/platform/FT32/target/FT32F405 \
+	$(ROOT)/src/platform/common/stm32 \
+	$(ROOT)/lib/main/FT32F4/Drivers/FT32F4xx_Driver/Inc \
+	$(ROOT)/lib/main/FT32F4/CMSIS/cm4/device_support \
+	$(ROOT)/lib/main/CMSIS/Core/Include \
+	$(ROOT)/lib/main/FT32F4/middlewares/i2c_application_library
+
+BOARD_C_RESOURCE_PLATFORM_CFLAGS := \
+	$(filter-out -Werror,$(C_FLAGS)) \
+	-ffunction-sections -fdata-sections \
+	-Wno-typedef-redefinition \
+	-Wno-int-to-pointer-cast \
+	-Wno-pointer-to-int-cast \
+	-Wno-c23-extensions \
+	$(addprefix -I,$(BOARD_C_RESOURCE_PLATFORM_INCLUDE_DIRS)) \
+	$(foreach def,$(BOARD_C_RESOURCE_PLATFORM_DEFINES),-D $(def))
+
+$(BOARD_C_RESOURCE_PLATFORM_OBJ_DIR)/FT32/%.c.o: \
+		$(ROOT)/src/platform/FT32/%.c $(BOARD_C_RESOURCE_CONFIG)
+	@mkdir -p $(dir $@)
+	$(V1) $(CC) $(BOARD_C_RESOURCE_PLATFORM_CFLAGS) -c $< -o $@
+
+$(BOARD_C_RESOURCE_PLATFORM_OBJ_DIR)/common/stm32/adc_impl.c.o: \
+		$(ROOT)/src/platform/common/stm32/adc_impl.c $(BOARD_C_RESOURCE_CONFIG)
+	@mkdir -p $(dir $@)
+	$(V1) $(CC) $(BOARD_C_RESOURCE_PLATFORM_CFLAGS) -c $< -o $@
+
+$(BOARD_C_RESOURCE_PLATFORM_OBJ_DIR)/main/drivers/timer_common.c.o: \
+		$(USER_DIR)/drivers/timer_common.c $(BOARD_C_RESOURCE_CONFIG)
+	@mkdir -p $(dir $@)
+	$(V1) $(CC) $(BOARD_C_RESOURCE_PLATFORM_CFLAGS) -c $< -o $@
+
+-include $(BOARD_C_RESOURCE_PLATFORM_OBJS:.o=.d)
+
+# Multiple target rules merge prerequisites; the generic recipe later links
+# these objects once through its $^ list.
+$(OBJECT_DIR)/board_c_resource_integration_unittest.reqmap/board_c_resource_integration_unittest: \
+	$(BOARD_C_RESOURCE_PLATFORM_OBJS)
+
 TEST_SRCS = $(sort $(wildcard $(TEST_DIR)/*.cc))
 TEST_BASENAMES = $(TEST_SRCS:$(TEST_DIR)/%.cc=%)
 TESTS_TARGET_SPECIFIC = $(foreach test,$(TEST_BASENAMES),$(if $($(test)_EXPAND),$(test)))
