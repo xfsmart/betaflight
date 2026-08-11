@@ -1707,6 +1707,7 @@ typedef struct gpsDataNmea_s {
     uint16_t ground_course;
     uint32_t time;
     uint32_t date;
+    bool rmcValid;
 } gpsDataNmea_t;
 
 static void parseFieldNmea(gpsDataNmea_t *data, char *str, uint8_t gpsFrame, uint8_t idx)
@@ -1752,6 +1753,9 @@ static void parseFieldNmea(gpsDataNmea_t *data, char *str, uint8_t gpsFrame, uin
         switch (idx) {
         case 1:
             data->time = grab_fields(str, 2); // UTC time hhmmss.ss
+            break;
+        case 2:
+            data->rmcValid = str[0] == 'A' && str[1] == '\0';
             break;
         case 7:
             data->speed = ((grab_fields(str, 1) * 5144L) / 1000L);    // speed in cm/s added by Mis
@@ -1865,6 +1869,9 @@ static bool writeGpsSolutionNmea(gpsSolutionData_t *sol, const gpsDataNmea_t *da
 #ifdef USE_DASHBOARD
         *dashboardGpsPacketLogCurrentChar = DASHBOARD_LOG_NMEA_RMC;
 #endif
+        if (!data->rmcValid) {
+            return false;
+        }
         sol->groundSpeed = data->speed;
         sol->groundCourse = data->ground_course;
 #ifdef USE_RTC_TIME
@@ -1888,24 +1895,47 @@ static bool writeGpsSolutionNmea(gpsSolutionData_t *sol, const gpsDataNmea_t *da
     }
 }
 
+static int8_t nmeaHexDigitValue(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    return -1;
+}
+
 static bool gpsNewFrameNMEA(char c)
 {
     static gpsDataNmea_t gps_msg;
-    static char string[15];
+    static char string[16];
     static uint8_t param = 0, offset = 0, parity = 0;
     static uint8_t checksum_param, gps_frame = NO_FRAME;
+    static bool sentenceInvalid, fieldOverflow;
     bool receivedNavMessage = false;
 
     switch (c) {
 
     case '$':
+        gps_msg = (gpsDataNmea_t){ 0 };
         param = 0;
         offset = 0;
         parity = 0;
+        checksum_param = 0;
+        gps_frame = NO_FRAME;
+        sentenceInvalid = false;
+        fieldOverflow = false;
         break;
 
     case ',':
     case '*':
+        if (checksum_param) {
+            sentenceInvalid = true;
+        }
         string[offset] = 0;
         if (param == 0) {  // frame identification (5 chars, e.g. "GPGGA", "GNGGA", "GLGGA", ...)
             gps_frame = NO_FRAME;
@@ -1920,11 +1950,17 @@ static bool gpsNewFrameNMEA(char c)
             }
         }
 
-        // parse string and write data into gps_msg
-        parseFieldNmea(&gps_msg, string, gps_frame, param);
+        // Parse only complete fields.  An overlong field invalidates the
+        // sentence so truncated data can never be published.
+        if (!fieldOverflow) {
+            parseFieldNmea(&gps_msg, string, gps_frame, param);
+        } else {
+            sentenceInvalid = true;
+        }
 
         param++;
         offset = 0;
+        fieldOverflow = false;
         if (c == '*')
             checksum_param = 1;
         else
@@ -1933,12 +1969,13 @@ static bool gpsNewFrameNMEA(char c)
 
     case '\r':
     case '\n':
-        if (checksum_param) {   //parity checksum
+        if (checksum_param && !sentenceInvalid && offset == 2) {   //parity checksum
 #ifdef USE_DASHBOARD
             shiftPacketLog();
 #endif
-            uint8_t checksum = 16 * ((string[0] >= 'A') ? string[0] - 'A' + 10 : string[0] - '0') + ((string[1] >= 'A') ? string[1] - 'A' + 10 : string[1] - '0');
-            if (checksum == parity) {
+            const int8_t checksumHigh = nmeaHexDigitValue(string[0]);
+            const int8_t checksumLow = nmeaHexDigitValue(string[1]);
+            if (checksumHigh >= 0 && checksumLow >= 0 && (uint8_t)((checksumHigh << 4) | checksumLow) == parity) {
 #ifdef USE_DASHBOARD
                 *dashboardGpsPacketLogCurrentChar = DASHBOARD_LOG_IGNORED;
                 dashboardGpsPacketCount++;
@@ -1952,11 +1989,18 @@ static bool gpsNewFrameNMEA(char c)
 #endif
         }
         checksum_param = 0;
+        sentenceInvalid = false;
+        fieldOverflow = false;
+        offset = 0;
         break;
 
     default:
-        if (offset < 15)
+        if (offset < sizeof(string) - 1) {
             string[offset++] = c;
+        } else {
+            fieldOverflow = true;
+            sentenceInvalid = true;
+        }
         if (!checksum_param)
             parity ^= c;
         break;

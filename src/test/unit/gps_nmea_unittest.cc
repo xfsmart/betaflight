@@ -29,6 +29,8 @@ extern "C" {
 
     #include "common/maths.h"
 
+    #include "config/feature.h"
+
     #include "drivers/serial.h"
     #include "drivers/time.h"
 
@@ -37,6 +39,7 @@ extern "C" {
     #include "flight/gps_rescue.h"
 
     #include "io/beeper.h"
+    #include "io/dashboard.h"
     #include "io/gps.h"
     #include "io/serial.h"
 
@@ -265,6 +268,21 @@ float atan2_approx(float, float)
 {
     return 0.0f;
 }
+
+float cos_approx(float)
+{
+    return 1.0f;
+}
+
+bool featureIsEnabled(uint32_t)
+{
+    return false;
+}
+
+void dashboardUpdate(timeUs_t) {}
+void dashboardShowFixedPage(pageId_e) {}
+void waitForSerialPortToFinishTransmitting(serialPort_t *) {}
+void serialPassthrough(serialPort_t *, serialPort_t *, serialConsumer *, serialConsumer *) {}
 
 }
 
@@ -514,4 +532,157 @@ TEST_F(GpsNmeaTest, TimesOutReinitializesAndRecoversAfterPartialInput)
     EXPECT_EQ(1U, fakeSerial.openCount);
     EXPECT_EQ(2U, fakeSerial.baudChangeCount);
     EXPECT_EQ(0U, fakeBeeperCount);
+}
+
+TEST_F(GpsNmeaTest, FragmentedSerialFramePublishesOnceAfterFinalChecksumByte)
+{
+    gpsInit();
+    advanceGpsBy(501);
+    advanceGpsBy(501);
+    advanceGpsBy(501);
+    ASSERT_EQ(GPS_STATE_RECEIVING_DATA, gpsData.state);
+    ASSERT_TRUE(gpsIsHealthy());
+    ASSERT_EQ(BAUD_38400, getGpsPortActualBaudRateIndex());
+
+    uint16_t dataStamp = UINT16_MAX;
+    (void)gpsHasNewData(&dataStamp);
+    EXPECT_FALSE(gpsHasNewData(&dataStamp));
+
+    const std::string sentence = makeNmeaSentence("GNGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
+    const size_t split = sentence.size() / 2;
+    const uint8_t updateBefore = GPS_update;
+    const timeMs_t lastNavBefore = gpsData.lastNavMessage;
+
+    queueSerialRx(sentence.substr(0, split));
+    advanceGpsBy(100);
+    EXPECT_FALSE(sensors(SENSOR_GPS));
+    EXPECT_EQ(updateBefore, GPS_update);
+    EXPECT_EQ(lastNavBefore, gpsData.lastNavMessage);
+    EXPECT_FALSE(gpsHasNewData(&dataStamp));
+
+    queueSerialRx(sentence.substr(split));
+    advanceGpsBy(100);
+    EXPECT_TRUE(sensors(SENSOR_GPS));
+    EXPECT_EQ(static_cast<uint8_t>(updateBefore ^ GPS_DIRECT_TICK), GPS_update);
+    EXPECT_EQ(fakeNowMs, gpsData.lastNavMessage);
+    EXPECT_TRUE(gpsHasNewData(&dataStamp));
+    EXPECT_FALSE(gpsHasNewData(&dataStamp));
+    EXPECT_EQ(481173000, gpsSol.llh.lat);
+    EXPECT_EQ(115166666, gpsSol.llh.lon);
+    EXPECT_EQ(8, gpsSol.numSat);
+    EXPECT_GE(gpsSol.navIntervalMs, 50U);
+    EXPECT_LE(gpsSol.navIntervalMs, 2500U);
+    EXPECT_FLOAT_EQ(gpsSol.navIntervalMs * 0.001f, getGpsDataIntervalSeconds());
+    EXPECT_FLOAT_EQ(1.0f / getGpsDataIntervalSeconds(), getGpsDataFrequencyHz());
+}
+
+TEST_F(GpsNmeaTest, TimeoutBoundaryRemainsHealthyAtThresholdAcrossTimeWrap)
+{
+    gpsData.state = GPS_STATE_RECEIVING_DATA;
+    gpsData.lastNavMessage = UINT32_MAX - 1000U;
+    fakeNowMs = 1499U;
+    sensorsSet(SENSOR_GPS);
+    ENABLE_STATE(GPS_FIX | GPS_FIX_EVER);
+    gpsSol.numSat = 8;
+
+    updateGps();
+    EXPECT_EQ(GPS_STATE_RECEIVING_DATA, gpsData.state);
+    EXPECT_TRUE(gpsIsHealthy());
+    EXPECT_TRUE(sensors(SENSOR_GPS));
+    EXPECT_NE(0, STATE(GPS_FIX));
+
+    fakeNowMs = 1500U;
+    updateGps();
+    EXPECT_EQ(GPS_STATE_LOST_COMMUNICATION, gpsData.state);
+    EXPECT_FALSE(gpsIsHealthy());
+    EXPECT_FALSE(sensors(SENSOR_GPS));
+    EXPECT_NE(0, STATE(GPS_FIX));
+
+    updateGps();
+    EXPECT_EQ(GPS_STATE_DETECT_BAUD, gpsData.state);
+    EXPECT_EQ(0, STATE(GPS_FIX));
+    EXPECT_NE(0, STATE(GPS_FIX_EVER));
+    EXPECT_EQ(0, gpsSol.numSat);
+    EXPECT_EQ(1U, gpsData.timeouts);
+}
+
+TEST_F(GpsNmeaTest, GsvOutOfOrderDuplicateAndLegacyCountClippingAreDeterministic)
+{
+    GPS_numCh = 0;
+    memset(GPS_svinfo, 0, sizeof(GPS_svinfo));
+    const uint8_t updateBefore = GPS_update;
+
+    EXPECT_FALSE(feedNmeaPayload("GNGSV,5,2,20,05,40,083,31,06,17,308,32,07,13,172,33,08,09,301,34"));
+    EXPECT_EQ(GPS_SV_MAXSATS_LEGACY, GPS_numCh);
+    for (unsigned i = 4; i < 8; i++) {
+        EXPECT_EQ(i + 1, GPS_svinfo[i].chn);
+        EXPECT_EQ(i + 1, GPS_svinfo[i].svid);
+        EXPECT_EQ(27 + i, GPS_svinfo[i].cno);
+    }
+
+    EXPECT_FALSE(feedNmeaPayload("GNGSV,5,2,20,05,40,083,41,06,17,308,42,07,13,172,43,08,09,301,44"));
+    for (unsigned i = 4; i < 8; i++) {
+        EXPECT_EQ(37 + i, GPS_svinfo[i].cno);
+    }
+
+    EXPECT_FALSE(feedNmeaPayload("GNGSV,5,5,20,17,40,083,91,18,17,308,92,19,13,172,93,20,09,301,94"));
+    for (unsigned i = 4; i < 8; i++) {
+        EXPECT_EQ(37 + i, GPS_svinfo[i].cno);
+    }
+    EXPECT_EQ(updateBefore, GPS_update);
+}
+
+TEST_F(GpsNmeaTest, EmptyGsaDilutionFieldsClearValuesWithoutNavigationTick)
+{
+    gpsSol.dop.pdop = 123;
+    gpsSol.dop.hdop = 90;
+    gpsSol.dop.vdop = 80;
+    const uint8_t updateBefore = GPS_update;
+
+    EXPECT_FALSE(feedNmeaPayload("GPGSA,A,1,,,,,,,,,,,,,,,"));
+    EXPECT_EQ(0, gpsSol.dop.pdop);
+    EXPECT_EQ(0, gpsSol.dop.hdop);
+    EXPECT_EQ(0, gpsSol.dop.vdop);
+    EXPECT_EQ(updateBefore, GPS_update);
+}
+
+TEST_F(GpsNmeaTest, VoidRmcDoesNotPublishMotionAndNextValidRmcRecovers)
+{
+    gpsSol.groundSpeed = 4321;
+    gpsSol.groundCourse = 987;
+    const uint8_t updateBefore = GPS_update;
+
+    EXPECT_FALSE(feedNmeaPayload("GPRMC,123519,V,4807.038,N,01131.000,E,12.3,84.4,230394,,"));
+    EXPECT_EQ(4321, gpsSol.groundSpeed);
+    EXPECT_EQ(987, gpsSol.groundCourse);
+    EXPECT_EQ(updateBefore, GPS_update);
+
+    EXPECT_FALSE(feedNmeaPayload("GPRMC,123520,A,4807.038,N,01131.000,E,12.3,84.4,230394,,"));
+    EXPECT_EQ(632, gpsSol.groundSpeed);
+    EXPECT_EQ(844, gpsSol.groundCourse);
+    EXPECT_EQ(updateBefore, GPS_update);
+}
+
+TEST_F(GpsNmeaTest, FifteenByteStoredFieldIsMemorySafeAndParserRecovers)
+{
+    gpsSol.llh.lat = 123456789;
+    gpsSol.llh.lon = -234567890;
+
+    EXPECT_FALSE(feedNmeaPayload("GPXXX,123456789012345,noise"));
+    EXPECT_EQ(123456789, gpsSol.llh.lat);
+    EXPECT_EQ(-234567890, gpsSol.llh.lon);
+
+    EXPECT_TRUE(feedNmeaPayload("GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,"));
+    EXPECT_EQ(481173000, gpsSol.llh.lat);
+    EXPECT_EQ(115166666, gpsSol.llh.lon);
+}
+
+extern "C" baudRate_e lookupBaudRateIndex(uint32_t baudRate)
+{
+    for (unsigned index = 0; index < BAUD_COUNT; index++) {
+        if (baudRates[index] == baudRate) {
+            return static_cast<baudRate_e>(index);
+        }
+    }
+    return BAUD_AUTO;
 }
