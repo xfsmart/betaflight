@@ -100,7 +100,7 @@ TEST(BoardCIst8310ConfigTest, BoardCSelectsOnlyIst8310OnI2c1)
 
 TEST(BoardCIst8310ConfigTest, CompiledI2c1ResetDefaultIs400Khz)
 {
-    i2cConfig_t config[I2CDEV_COUNT] = {};
+    i2cConfig_t config[I2CDEV_1 + 1] = {};
 
     pgResetFn_i2cConfig(config);
 
