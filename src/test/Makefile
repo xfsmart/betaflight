@@ -382,6 +382,30 @@ io_serial_unittest_SRC := \
 		$(USER_DIR)/io/serial_resource.c
 
 
+board_c_serial_sbus_unittest_SRC := \
+		$(USER_DIR)/rx/sbus.c \
+		$(USER_DIR)/rx/sbus_channels.c
+
+board_c_serial_sbus_unittest_DEFINES := \
+		USE_SBUS_CHANNELS= \
+		USE_SERIALRX_SBUS= \
+		USE_TELEMETRY=
+
+
+ft32_msp_size_equivalence_unittest_EXPAND := o2 os
+
+ft32_msp_size_equivalence_unittest_SRC = \
+		$(USER_DIR)/common/streambuf.c \
+		$(USER_DIR)/msp/msp.c
+
+ft32_msp_size_equivalence_unittest_FLAGS = \
+		-ffunction-sections -fdata-sections \
+		$(if $(filter o2,$1),-O2,-Os)
+
+ft32_msp_size_equivalence_unittest_LDFLAGS = \
+		-Wl,--gc-sections -no-pie
+
+
 serial_4way_unittest_EXPAND := dual bl sk
 
 serial_4way_unittest_SRC = \
