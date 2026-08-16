@@ -157,9 +157,15 @@ static bool bbSaveDMARegs(dmaResource_t *dmaResource, dmaRegCache_t *dmaRegCache
 }
 #endif
 
+static inline void bbPublishDirection(bbPort_t *bbPort, uint8_t direction)
+{
+    *(volatile uint8_t *)&bbPort->direction = direction;
+}
+
 void bbSwitchToOutput(bbPort_t *bbPort)
 {
     dbgPinHi(1);
+    bbPublishDirection(bbPort, UINT8_MAX);
 
     dmaResource_t *dmaResource = bbPort->dmaResource;
 #ifdef USE_DMA_REGISTER_CACHE
@@ -183,7 +189,7 @@ void bbSwitchToOutput(bbPort_t *bbPort)
         MODIFY_REG(bbPort->gpio->MODER, bbPort->gpioModeMask, bbPort->gpioModeOutput);
     }
     ((TIM_TypeDef *)bbPort->timhw->tim)->ARR = bbPort->outputARR;
-    bbPort->direction = DSHOT_BITBANG_DIRECTION_OUTPUT;
+    bbPublishDirection(bbPort, DSHOT_BITBANG_DIRECTION_OUTPUT);
 
     dbgPinLo(1);
 }
@@ -192,6 +198,7 @@ void bbSwitchToOutput(bbPort_t *bbPort)
 void bbSwitchToInput(bbPort_t *bbPort)
 {
     dbgPinHi(1);
+    bbPublishDirection(bbPort, UINT8_MAX);
 
     dmaResource_t *dmaResource = bbPort->dmaResource;
 #ifdef USE_DMA_REGISTER_CACHE
@@ -223,7 +230,7 @@ void bbSwitchToInput(bbPort_t *bbPort)
     ATOMIC_BLOCK(NVIC_PRIO_TIMER) {
         MODIFY_REG(bbPort->gpio->MODER, bbPort->gpioModeMask, bbPort->gpioModeInput);
     }
-    bbPort->direction = DSHOT_BITBANG_DIRECTION_INPUT;
+    bbPublishDirection(bbPort, DSHOT_BITBANG_DIRECTION_INPUT);
     dbgPinLo(1);
 }
 #endif
@@ -237,10 +244,10 @@ static bool bbTryDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
     dmainit->ReloadSrc = DISABLE;
 
     const uint32_t hardwareInterface = ft32DmaGetHardwareInterface(bbPort->dmaResource);
-    dmainit->SrcHardwareInterface = hardwareInterface;
-    dmainit->DstHardwareInterface = hardwareInterface;
 
     if (direction == DSHOT_BITBANG_DIRECTION_OUTPUT) {
+        dmainit->SrcHardwareInterface = DMA_SRC_HARDWARE_INTERFACE_0;
+        dmainit->DstHardwareInterface = hardwareInterface;
         dmainit->Priority = DMA_CH_PRIORITY_6;
         dmainit->SrcAddress = (uint32_t)bbPort->portOutputBuffer;
         dmainit->DstAddress = (uint32_t)&bbPort->gpio->BSRR;
@@ -251,11 +258,15 @@ static bool bbTryDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
         dmainit->DstAddrMode = DMA_DST_ADDRMODE_HOLD;
         dmainit->SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_32BITS;
         dmainit->DstTransferWidth = DMA_DST_TRANSFERWIDTH_32BITS;
+        dmainit->SrcHsIfPol = DMA_SRCHSIFPOL_HIGH;
+        dmainit->DstHsIfPol = DMA_DSTHSIFPOL_LOW;
         dmainit->SrcHsSel = DMA_SRCHSSEL_SOFTWARE;
         dmainit->DstHsSel = DMA_DSTHSSEL_HARDWARE;
         dmainit->SrcHsIfPeriphSel = 0U;
         dmainit->DstHsIfPeriphSel = bbPort->dmaChannel;
     } else {
+        dmainit->SrcHardwareInterface = hardwareInterface;
+        dmainit->DstHardwareInterface = DMA_DST_HARDWARE_INTERFACE_0;
         dmainit->Priority = DMA_CH_PRIORITY_7;
         dmainit->SrcAddress = (uint32_t)&bbPort->gpio->IDR;
         dmainit->DstAddress = (uint32_t)bbPort->portInputBuffer;
@@ -266,6 +277,8 @@ static bool bbTryDMAPreconfigure(bbPort_t *bbPort, uint8_t direction)
         dmainit->DstAddrMode = DMA_DST_ADDRMODE_INC;
         dmainit->SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_16BITS;
         dmainit->DstTransferWidth = DMA_DST_TRANSFERWIDTH_16BITS;
+        dmainit->SrcHsIfPol = DMA_SRCHSIFPOL_LOW;
+        dmainit->DstHsIfPol = DMA_DSTHSIFPOL_HIGH;
         dmainit->SrcHsSel = DMA_SRCHSSEL_HARDWARE;
         dmainit->DstHsSel = DMA_DSTHSSEL_SOFTWARE;
         dmainit->SrcHsIfPeriphSel = bbPort->dmaChannel;

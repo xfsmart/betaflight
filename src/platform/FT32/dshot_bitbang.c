@@ -27,6 +27,7 @@
 
 #ifdef USE_DSHOT_BITBANG
 
+#include "build/atomic.h"
 #include "build/debug.h"
 #include "build/debug_pin.h"
 
@@ -74,6 +75,14 @@ FAST_DATA_ZERO_INIT timeUs_t dshotFrameUs;
 // DMA error counter for debugging
 static volatile uint32_t dshotDmaErrorCount = 0;
 
+static void bbRecordDmaError(void)
+{
+    const uint32_t count = dshotDmaErrorCount;
+    if (count != UINT32_MAX) {
+        dshotDmaErrorCount = count + 1U;
+    }
+}
+
 typedef struct bbTimerSpec_s {
     timerHardware_t hardware;
     dmaoptValue_t dmaopt;
@@ -119,6 +128,18 @@ static void bbSetDirection(bbPort_t *bbPort, uint8_t direction)
     *(volatile uint8_t *)&bbPort->direction = direction;
 }
 
+static void bbInvalidatePort(bbPort_t *bbPort)
+{
+    if (bbDirection(bbPort) != UINT8_MAX) {
+        bbRecordDmaError();
+    }
+    bbSetDirection(bbPort, UINT8_MAX);
+    bbInputSetActive(bbPort, false);
+#ifdef USE_DSHOT_TELEMETRY
+    bbPort->telemetryPending = false;
+#endif
+}
+
 static bool bbFrameHasPreflightFailure(void)
 {
     for (int i = 0; i < usedMotorPorts; i++) {
@@ -143,8 +164,7 @@ static bool bbFrameCanWrite(void)
         }
         if (direction != DSHOT_BITBANG_DIRECTION_OUTPUT ||
             ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
-            bbSetDirection(bbPort, UINT8_MAX);
-            bbInputSetActive(bbPort, false);
+            bbInvalidatePort(bbPort);
             return false;
         }
     }
@@ -342,23 +362,33 @@ FAST_IRQ_HANDLER void bbDMAIrqHandler(dmaChannelDescriptor_t *descriptor)
     }
 
     bbTIM_DMACmd(bbPort->timhw->tim, bbPort->dmaSource, DISABLE);
+    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)bbPort->dmaResource;
+    ft32DmaRequestDisable(dmaRef);
+    const bool channelStopped = !ft32DmaIsChannelEnabled(dmaRef);
+
+    if (!channelStopped) {
+        const uint8_t observedTerminalFlags =
+            (transferComplete ? DMA_IT_TFR : 0U) |
+            (transferError ? DMA_IT_ERR : 0U);
+        DMA_CLEAR_FLAG(descriptor, observedTerminalFlags);
+        bbInvalidatePort(bbPort);
+        dbgPinLo(0);
+        return;
+    }
+
     DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
 
-    bool transitionReady = false;
+    bool transitionReady = wasOutput || wasInput;
 #ifdef USE_DSHOT_TELEMETRY
     if (wasOutput && transferComplete && !transferError && useDshotTelemetry) {
         bbSwitchToInput(bbPort);
         transitionReady = bbDirection(bbPort) == DSHOT_BITBANG_DIRECTION_INPUT;
         bbInputSetActive(bbPort, false);
-    } else
-#endif
-    {
-        ft32DmaRequestDisable((DMA_ARCH_TYPE *)bbPort->dmaResource);
-        transitionReady = !ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource);
     }
+#endif
 
     if (transferError || !transitionReady) {
-        dshotDmaErrorCount++;
+        bbRecordDmaError();
         bbInputSetActive(bbPort, false);
 #ifdef USE_DSHOT_TELEMETRY
         bbPort->telemetryPending = false;
@@ -414,7 +444,7 @@ static void bbFindPacerTimer(void)
 
             for (int index = 0; index < bbPortIndex; index++) {
                 const timerHardware_t* t = bbPorts[index].timhw;
-                if (timerGetTIMNumber(t) == timNumber && timer->channel == t->channel) {
+                if (t && timerGetTIMNumber(t) == timNumber && timer->channel == t->channel) {
                     timerConflict = true;
                     break;
                 }
@@ -507,12 +537,12 @@ static bool bbMotorConfig(IO_t io, uint8_t motorIndex, motorProtocolTypes_e pwmP
         bbSetupDma(bbPort);
         bbDMAPreconfigure(bbPort, DSHOT_BITBANG_DIRECTION_OUTPUT);
         if (bbPort->dmaRegOutput.CTL == 0U) {
-            dshotDmaErrorCount++;
+            bbRecordDmaError();
             return false;
         }
         bbDMAPreconfigure(bbPort, DSHOT_BITBANG_DIRECTION_INPUT);
         if (bbPort->dmaRegInput.CTL == 0U) {
-            dshotDmaErrorCount++;
+            bbRecordDmaError();
             return false;
         }
 
@@ -540,7 +570,7 @@ static bool bbMotorConfig(IO_t io, uint8_t motorIndex, motorProtocolTypes_e pwmP
     bbSwitchToOutput(bbPort);
     if (bbPort->direction != DSHOT_BITBANG_DIRECTION_OUTPUT ||
         ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
-        dshotDmaErrorCount++;
+        bbRecordDmaError();
         return false;
     }
 
@@ -588,8 +618,10 @@ static void bbUpdateInit(void)
         bbSwitchToOutput(bbPort);
         if (bbDirection(bbPort) != DSHOT_BITBANG_DIRECTION_OUTPUT ||
             ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
-            bbSetDirection(bbPort, UINT8_MAX);
-            bbInputSetActive(bbPort, false);
+            if (bbDirection(bbPort) == UINT8_MAX) {
+                bbRecordDmaError();
+            }
+            bbInvalidatePort(bbPort);
             preflightReady = false;
         }
     }
@@ -735,10 +767,10 @@ static void bbUpdateComplete(void)
             bbSwitchToOutput(bbPort);
             if (bbDirection(bbPort) != DSHOT_BITBANG_DIRECTION_OUTPUT ||
                 ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
-                bbInputSetActive(bbPort, false);
-                bbPort->telemetryPending = false;
-                bbSetDirection(bbPort, UINT8_MAX);
-                dshotDmaErrorCount++;
+                if (bbDirection(bbPort) == UINT8_MAX) {
+                    bbRecordDmaError();
+                }
+                bbInvalidatePort(bbPort);
                 rearmReady = false;
             }
         }
@@ -747,7 +779,7 @@ static void bbUpdateComplete(void)
         if (bbDirection(bbPort) != DSHOT_BITBANG_DIRECTION_OUTPUT ||
             ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
             if (bbDirection(bbPort) != UINT8_MAX) {
-                dshotDmaErrorCount++;
+                bbRecordDmaError();
             }
             rearmReady = false;
         }
@@ -767,7 +799,7 @@ static void bbUpdateComplete(void)
         bbPort_t *bbPort = &bbPorts[i];
         bbDMA_Cmd(bbPort, ENABLE);
         if (!ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)bbPort->dmaResource)) {
-            dshotDmaErrorCount++;
+            bbRecordDmaError();
             channelsReady = false;
         }
     }
@@ -812,6 +844,7 @@ void ft32DshotTestBitbangUpdateComplete(void)
 void ft32DshotTestBitbangResetState(void)
 {
     dshotDmaErrorCount = 0U;
+    bbStatus = DSHOT_BITBANG_STATUS_OK;
     lastSendUs = 0U;
     bbTestDecodeCallCount = 0U;
 }
@@ -834,10 +867,24 @@ uint32_t ft32DshotTestBitbangDecodeCallCount(void)
 
 static bool bbEnableMotors(void)
 {
+    if (dshotBitbangGetStatus() != DSHOT_BITBANG_STATUS_OK) {
+        return false;
+    }
+
+    if (dshotMotorCount > ARRAYLEN(bbMotors)) {
+        bbRecordDmaError();
+        return false;
+    }
+
     for (int i = 0; i < dshotMotorCount; i++) {
-        if (bbMotors[i].configured) {
-            IOConfigGPIO(bbMotors[i].io, bbMotors[i].iocfg);
+        if (!bbMotors[i].configured) {
+            bbRecordDmaError();
+            return false;
         }
+    }
+
+    for (int i = 0; i < dshotMotorCount; i++) {
+        IOConfigGPIO(bbMotors[i].io, bbMotors[i].iocfg);
     }
     return true;
 }
@@ -857,19 +904,85 @@ static bool bbIsMotorEnabled(unsigned index)
     return bbMotors[index].enabled;
 }
 
+static bool bbTryQuiesceDma(DMA_ARCH_TYPE *dmaRef)
+{
+    const uint32_t terminalFlags = DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR;
+
+    ft32DmaRequestDisable(dmaRef);
+    ATOMIC_BLOCK(NVIC_PRIO_DSHOT_DMA) {
+        if (ft32DmaIsChannelEnabled(dmaRef)) {
+            return false;
+        }
+        xDMA_ITConfig(dmaRef, terminalFlags, DISABLE);
+        xDMA_ClearFlag(dmaRef, terminalFlags);
+    }
+
+    return true;
+}
+
+static void bbQuiescePostInitFailure(void)
+{
+    for (int i = 0; i < usedMotorPacers; i++) {
+        bbTIM_DMACmd(bbPacers[i].tim, bbPacers[i].dmaSources, DISABLE);
+    }
+
+    for (int i = 0; i < usedMotorPorts; i++) {
+        bbPort_t *bbPort = &bbPorts[i];
+        DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)bbPort->dmaResource;
+        bbSetDirection(bbPort, UINT8_MAX);
+        bbInputSetActive(bbPort, false);
+#ifdef USE_DSHOT_TELEMETRY
+        bbPort->telemetryPending = false;
+#endif
+
+        if (!bbTryQuiesceDma(dmaRef)) {
+            bbRecordDmaError();
+        }
+    }
+
+    for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
+        bbMotors[i].enabled = false;
+    }
+}
+
 static void bbPostInit(void)
 {
+    if (dshotMotorCount > ARRAYLEN(bbMotors)) {
+        bbRecordDmaError();
+        bbQuiescePostInitFailure();
+        return;
+    }
+
     bbFindPacerTimer();
 
-    for (int motorIndex = 0; motorIndex < MAX_SUPPORTED_MOTORS && motorIndex < dshotMotorCount; motorIndex++) {
+    for (int motorIndex = 0; motorIndex < dshotMotorCount; motorIndex++) {
 
         if (!bbMotorConfig(bbMotors[motorIndex].io, motorIndex, motorProtocol, bbMotors[motorIndex].output)) {
+            bbRecordDmaError();
+            bbQuiescePostInitFailure();
             return;
         }
 
         bbMotors[motorIndex].enabled = true;
     }
 }
+
+#ifdef UNIT_TEST
+void ft32DshotTestBitbangQuiescePostInitFailure(void)
+{
+    bbQuiescePostInitFailure();
+}
+
+void ft32DshotTestBitbangPostInit(void)
+{
+    bbPostInit();
+}
+
+bool ft32DshotTestBitbangEnableMotors(void)
+{
+    return bbEnableMotors();
+}
+#endif
 
 static const motorVTable_t bbVTable = {
     .postInit = bbPostInit,
@@ -892,7 +1005,10 @@ static const motorVTable_t bbVTable = {
 
 dshotBitbangStatus_e dshotBitbangGetStatus(void)
 {
-    return bbStatus;
+    if (bbStatus != DSHOT_BITBANG_STATUS_OK) {
+        return bbStatus;
+    }
+    return dshotDmaErrorCount == 0U ? DSHOT_BITBANG_STATUS_OK : DSHOT_BITBANG_STATUS_DMA_ERROR;
 }
 
 bool dshotBitbangDevInit(motorDevice_t *device, const motorDevConfig_t *motorConfig)
@@ -908,6 +1024,7 @@ bool dshotBitbangDevInit(motorDevice_t *device, const motorDevConfig_t *motorCon
     device->vTable = &bbVTable;
 
     dshotMotorCount = device->count;
+    dshotDmaErrorCount = 0U;
     bbStatus = DSHOT_BITBANG_STATUS_OK;
 
 #ifdef USE_DSHOT_TELEMETRY

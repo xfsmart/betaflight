@@ -17,6 +17,8 @@ extern "C" {
 #include "platform/timer.h"
 #include "dshot_dpwm.h"
 #include "pwm_output_dshot_shared.h"
+
+void ft32DshotTestMotorIrq(dmaChannelDescriptor_t *descriptor);
 }
 
 namespace {
@@ -30,8 +32,16 @@ dmaChannelSpec_t dmaSpec;
 resourceOwner_t dmaOwner;
 volatile timCCR_t fakeCcr;
 bool dmaEnabled;
+bool stickyDisable;
 uint16_t shadowCount;
 uint32_t enableCount;
+uint32_t counterWriteCount;
+uint32_t dmaInitCount;
+uint32_t maskConfigCount;
+uint32_t timerEnableCount;
+uint32_t operationSequence;
+uint32_t timerDisableOrder;
+uint32_t dmaDisableOrder;
 
 uint8_t mockLoadDmaBuffer(uint32_t *buffer, int stride, uint16_t)
 {
@@ -56,8 +66,16 @@ protected:
         std::memset(dmaMotorTimers, 0, sizeof(dmaMotorTimers));
         dmaMotorTimerCount = 0U;
         dmaEnabled = false;
+        stickyDisable = false;
         shadowCount = 0U;
         enableCount = 0U;
+        counterWriteCount = 0U;
+        dmaInitCount = 0U;
+        maskConfigCount = 0U;
+        timerEnableCount = 0U;
+        operationSequence = 0U;
+        timerDisableOrder = 0U;
+        dmaDisableOrder = 0U;
         fakeCcr = 0U;
         dmaSpec.ref = reinterpret_cast<dmaResource_t *>(&dmaChannel);
         dmaSpec.channel = 7U;
@@ -84,6 +102,65 @@ TEST_F(Ft32DshotNoTelemetryTest, ProducerPersistsCanonicalCountAndWriteEnablesOn
     enableCount = 0U;
     pwmWriteDshotInt(0U, 321U);
     EXPECT_EQ(DSHOT_DMA_BUFFER_SIZE, shadowCount);
+    EXPECT_EQ(1U, enableCount);
+    EXPECT_TRUE(dmaEnabled);
+    EXPECT_EQ(motor->timerDmaSource, motor->timer->timerDmaSources);
+}
+
+TEST_F(Ft32DshotNoTelemetryTest, StickyOutputClearsOnlyObservedAndRetriesWithoutRecoverySentinel)
+{
+    ASSERT_TRUE(pwmDshotMotorHardwareConfig(
+        &timerHardware, 0U, 0U, MOTOR_PROTOCOL_DSHOT600, 0U));
+    motorDmaOutput_t *motor = &dmaMotors[0];
+    ASSERT_TRUE(motor->configured);
+
+    counterWriteCount = 0U;
+    dmaInitCount = 0U;
+    maskConfigCount = 0U;
+    enableCount = 0U;
+    timerEnableCount = 0U;
+    operationSequence = 0U;
+    timerDisableOrder = 0U;
+    dmaDisableOrder = 0U;
+    dmaController.CLEARTFR = 0U;
+    dmaController.CLEARBLOCK = 0U;
+    dmaController.CLEARSRCTRAN = 0U;
+    dmaController.CLEARDSTTRAN = 0U;
+    dmaController.CLEARERR = 0U;
+
+    const uint32_t bit = 1U << 2U;
+    dmaController.STATUSTFR = bit;
+    dmaController.STATUSERR = 0U;
+    dmaEnabled = true;
+    stickyDisable = true;
+    dmaChannelDescriptor_t descriptor{};
+    descriptor.ref = reinterpret_cast<dmaResource_t *>(&dmaChannel);
+    descriptor.userParam = 0U;
+
+    ft32DshotTestMotorIrq(&descriptor);
+
+    EXPECT_TRUE(dmaEnabled);
+    EXPECT_EQ(bit, dmaController.CLEARTFR);
+    EXPECT_EQ(0U, dmaController.CLEARBLOCK);
+    EXPECT_EQ(0U, dmaController.CLEARSRCTRAN);
+    EXPECT_EQ(0U, dmaController.CLEARDSTTRAN);
+    EXPECT_EQ(0U, dmaController.CLEARERR);
+    EXPECT_EQ(0U, counterWriteCount);
+    EXPECT_EQ(0U, dmaInitCount);
+    EXPECT_EQ(0U, maskConfigCount);
+    EXPECT_EQ(0U, enableCount);
+    EXPECT_EQ(0U, timerEnableCount);
+    ASSERT_NE(0U, timerDisableOrder);
+    ASSERT_NE(0U, dmaDisableOrder);
+    EXPECT_LT(timerDisableOrder, dmaDisableOrder);
+
+    stickyDisable = false;
+    dmaEnabled = false;
+    loadDmaBuffer = mockLoadDmaBuffer;
+    pwmWriteDshotInt(0U, 321U);
+
+    EXPECT_EQ(DSHOT_DMA_BUFFER_SIZE, shadowCount);
+    EXPECT_EQ(1U, counterWriteCount);
     EXPECT_EQ(1U, enableCount);
     EXPECT_TRUE(dmaEnabled);
     EXPECT_EQ(motor->timerDmaSource, motor->timer->timerDmaSources);
@@ -146,9 +223,14 @@ void IOConfigGPIOAF(IO_t, ioConfig_t, uint8_t)
 
 void DMA_Channel_Cmd(DMA_Channel_TypeDef *, FunctionalState state)
 {
-    dmaEnabled = state == ENABLE;
     if (state == ENABLE) {
+        dmaEnabled = true;
         enableCount++;
+    } else {
+        dmaDisableOrder = ++operationSequence;
+        if (!stickyDisable) {
+            dmaEnabled = false;
+        }
     }
 }
 
@@ -158,6 +240,7 @@ bool ft32DmaTrySetCurrDataCounter(DMA_ARCH_TYPE *resource, uint16_t count)
     if (dmaEnabled) {
         return false;
     }
+    counterWriteCount++;
     shadowCount = count;
     return true;
 }
@@ -183,6 +266,7 @@ void DMA_StructInit(DMA_InitTypeDef *init)
 
 void DMA_Init(DMA_Channel_TypeDef *resource, DMA_InitTypeDef *init)
 {
+    dmaInitCount++;
     resource->SAR = init->SrcAddress;
     resource->DAR = init->DstAddress;
     resource->CTL = 1U;
@@ -191,6 +275,7 @@ void DMA_Init(DMA_Channel_TypeDef *resource, DMA_InitTypeDef *init)
 
 void DMA_ITConfig(DMA_Channel_TypeDef *, uint8_t, FunctionalState)
 {
+    maskConfigCount++;
 }
 
 void DMA_ClearFlagStatus(DMA_Channel_TypeDef *, uint8_t)
@@ -202,8 +287,13 @@ FlagStatus DMA_GetFlagStatus(DMA_Channel_TypeDef *, uint8_t)
     return RESET;
 }
 
-void TIM_DMACmd(TIM_TypeDef *, uint32_t, FunctionalState)
+void TIM_DMACmd(TIM_TypeDef *, uint32_t, FunctionalState state)
 {
+    if (state == DISABLE) {
+        timerDisableOrder = ++operationSequence;
+    } else {
+        timerEnableCount++;
+    }
 }
 
 void TIM_TimeBaseStructInit(TIM_TimeBaseInitTypeDef *init)
@@ -308,9 +398,11 @@ uint16_t prepareDshotPacket(dshotProtocolControl_t *)
 
 extern "C" {
 #include "../../main/platform.h"
+#include "build/atomic.h"
 #include "drivers/dma.h"
 #include "drivers/dma_reqmap.h"
 #include "drivers/dshot.h"
+#include "drivers/nvic.h"
 #include "drivers/pwm_output.h"
 #include "drivers/timer.h"
 #include "platform/timer.h"
@@ -333,18 +425,38 @@ void ft32DshotTestBitbangResetState(void);
 uint32_t ft32DshotTestBitbangErrorCount(void);
 timeUs_t ft32DshotTestBitbangLastSendUs(void);
 uint32_t ft32DshotTestBitbangDecodeCallCount(void);
+void ft32DshotTestBitbangQuiescePostInitFailure(void);
+void ft32DshotTestBitbangPostInit(void);
+bool ft32DshotTestBitbangEnableMotors(void);
 }
 
 namespace {
 
+constexpr uint32_t DMA_CFG_DST_HS_POL_TEST = 1U << 18U;
+constexpr uint32_t DMA_CFG_SRC_HS_POL_TEST = 1U << 19U;
+constexpr uint32_t DMA_CFG_HS_POL_TEST_MASK = DMA_CFG_DST_HS_POL_TEST | DMA_CFG_SRC_HS_POL_TEST;
+constexpr uint32_t DMA_CFG_SRC_INTERFACE_TEST_MASK = 0xfU << 7U;
+constexpr uint32_t DMA_CFG_DST_INTERFACE_TEST_MASK = 0xfU << 11U;
+
+uint32_t DmaCfgLow(uint64_t cfg)
+{
+    return static_cast<uint32_t>(cfg);
+}
+
+uint32_t DmaCfgHigh(uint64_t cfg)
+{
+    return static_cast<uint32_t>(cfg >> 32U);
+}
+
 enum class Event : uint8_t {
     DmaDisable,
     DmaEnable,
-    Counter,
+    CounterWrite,
     DmaInit,
     MaskDisable,
     MaskEnable,
     FlagClear,
+    FinalStoppedRead,
     TimerDisable,
     TimerEnable,
 };
@@ -367,6 +479,14 @@ uint32_t enableCallCount;
 uint32_t failEnableCall;
 uint32_t disableCallCount;
 uint32_t failDisableCall;
+bool convergeAfterFailedTrySet;
+bbPort_t *directionProbePort;
+uint8_t directionObservedAtTrySet;
+bool injectRestartAfterStoppedRead;
+bbPort_t *stoppedReadProbePort;
+uint8_t directionAtStoppedRead;
+uint8_t basepriAtStoppedRead;
+bool restartDeferred;
 uint32_t rawInitCount;
 uint32_t blockingDisableCount;
 uint32_t maskDisableCount;
@@ -381,9 +501,12 @@ timeUs_t mockMicros;
 uint32_t mockCycles;
 bool dmaEnableSawAllFlagsCleared;
 bool timerEnableSawDmaAndAllFlagsCleared;
+bool maskConfigSawEnabledChannel;
+bool dmaTimerSpecAvailable;
 uint32_t timerCmdEnableCount;
 uint32_t dmaHandlerInstallCount;
 uint32_t channelOutputEnableCount;
+uint32_t ioConfigCount;
 volatile timCCR_t fakeCcr;
 dmaChannelSpec_t fakeDmaSpec;
 resourceOwner_t fakeDmaOwner;
@@ -422,6 +545,14 @@ void ResetMocks()
     failEnableCall = 0U;
     disableCallCount = 0U;
     failDisableCall = 0U;
+    convergeAfterFailedTrySet = false;
+    directionProbePort = nullptr;
+    directionObservedAtTrySet = UINT8_MAX;
+    injectRestartAfterStoppedRead = false;
+    stoppedReadProbePort = nullptr;
+    directionAtStoppedRead = UINT8_MAX;
+    basepriAtStoppedRead = 0U;
+    restartDeferred = false;
     rawInitCount = 0U;
     blockingDisableCount = 0U;
     maskDisableCount = 0U;
@@ -432,9 +563,12 @@ void ResetMocks()
     mockCycles = 100U;
     dmaEnableSawAllFlagsCleared = false;
     timerEnableSawDmaAndAllFlagsCleared = false;
+    maskConfigSawEnabledChannel = false;
+    dmaTimerSpecAvailable = true;
     timerCmdEnableCount = 0U;
     dmaHandlerInstallCount = 0U;
     channelOutputEnableCount = 0U;
+    ioConfigCount = 0U;
     fakeCcr = 0U;
     std::memset(&fakeDmaSpec, 0, sizeof(fakeDmaSpec));
     fakeDmaSpec.ref = reinterpret_cast<dmaResource_t *>(&dmaChannel);
@@ -456,6 +590,7 @@ void ResetMocks()
     inputStampUs = 0U;
     useDshotTelemetry = false;
     useBurstDshot = false;
+    atomic_BASEPRI = 0U;
     ft32DshotTestBitbangResetState();
 }
 
@@ -467,6 +602,11 @@ size_t CountEvent(Event event)
 void SetTerminalFlags(bool transferComplete, bool transferError)
 {
     const uint32_t bit = 1U << 2U;
+    dmaController.CLEARTFR = 0U;
+    dmaController.CLEARBLOCK = 0U;
+    dmaController.CLEARSRCTRAN = 0U;
+    dmaController.CLEARDSTTRAN = 0U;
+    dmaController.CLEARERR = 0U;
     dmaController.STATUSTFR = transferComplete ? bit : 0U;
     dmaController.STATUSERR = transferError ? bit : 0U;
 }
@@ -562,9 +702,11 @@ void ExpectDirectOutput(const DMA_InitTypeDef &descriptor, uint16_t count)
     EXPECT_EQ(DMA_DST_TRANSFERWIDTH_32BITS, descriptor.DstTransferWidth);
     EXPECT_EQ(DMA_SRCHSSEL_SOFTWARE, descriptor.SrcHsSel);
     EXPECT_EQ(DMA_DSTHSSEL_HARDWARE, descriptor.DstHsSel);
+    EXPECT_EQ(DMA_SRCHSIFPOL_HIGH, descriptor.SrcHsIfPol);
+    EXPECT_EQ(DMA_DSTHSIFPOL_LOW, descriptor.DstHsIfPol);
     EXPECT_EQ(0U, descriptor.SrcHsIfPeriphSel);
     EXPECT_EQ(7U, descriptor.DstHsIfPeriphSel);
-    EXPECT_EQ(2U, descriptor.SrcHardwareInterface);
+    EXPECT_EQ(0U, descriptor.SrcHardwareInterface);
     EXPECT_EQ(2U, descriptor.DstHardwareInterface);
 }
 
@@ -573,6 +715,11 @@ protected:
     void SetUp() override
     {
         ResetMocks();
+    }
+
+    void TearDown() override
+    {
+        EXPECT_FALSE(maskConfigSawEnabledChannel);
     }
 };
 
@@ -595,9 +742,11 @@ TEST_F(Ft32DshotDmaTest, DirectDescriptorsAreCompleteAndCanonicalStaysOutput)
     EXPECT_EQ(DMA_SRC_TRANSFERWIDTH_32BITS, input.SrcTransferWidth);
     EXPECT_EQ(DMA_DST_TRANSFERWIDTH_32BITS, input.DstTransferWidth);
     EXPECT_EQ(2U, input.SrcHardwareInterface);
-    EXPECT_EQ(2U, input.DstHardwareInterface);
+    EXPECT_EQ(0U, input.DstHardwareInterface);
     EXPECT_EQ(DMA_SRCHSSEL_HARDWARE, input.SrcHsSel);
     EXPECT_EQ(DMA_DSTHSSEL_SOFTWARE, input.DstHsSel);
+    EXPECT_EQ(DMA_SRCHSIFPOL_LOW, input.SrcHsIfPol);
+    EXPECT_EQ(DMA_DSTHSIFPOL_HIGH, input.DstHsIfPol);
     EXPECT_EQ(7U, input.SrcHsIfPeriphSel);
     EXPECT_EQ(0U, input.DstHsIfPeriphSel);
     EXPECT_EQ(0, std::memcmp(&canonical, &motor.dmaInitStruct, sizeof(canonical)));
@@ -647,6 +796,33 @@ TEST_F(Ft32DshotDmaTest, DescriptorLoadUsesSameBoundaryCountAndOnlyTerminalMasks
     EXPECT_EQ(0U, blockingDisableCount);
 }
 
+TEST_F(Ft32DshotDmaTest, EncodedDescriptorsSelectOnlyTheActiveLowHandshake)
+{
+    motorDmaOutput_t motor = MakeDirectMotor(CanonicalDirectDescriptor());
+    DMA_InitTypeDef output = ft32DshotTestOutputDescriptor(&motor, &motor.dmaInitStruct);
+    ASSERT_TRUE(ft32DshotTestLoadDescriptor(&motor, &output));
+    EXPECT_EQ(DMA_CFG_DST_HS_POL_TEST, DmaCfgLow(dmaChannel.CFG) & DMA_CFG_HS_POL_TEST_MASK);
+    EXPECT_EQ(0U, DmaCfgHigh(dmaChannel.CFG) & DMA_CFG_SRC_INTERFACE_TEST_MASK);
+    EXPECT_EQ(2U << 11U, DmaCfgHigh(dmaChannel.CFG) & DMA_CFG_DST_INTERFACE_TEST_MASK);
+
+    ResetMocks();
+    motor = MakeDirectMotor(CanonicalDirectDescriptor());
+    DMA_InitTypeDef input = ft32DshotTestInputDescriptor(&motor);
+    ASSERT_TRUE(ft32DshotTestLoadDescriptor(&motor, &input));
+    EXPECT_EQ(DMA_CFG_SRC_HS_POL_TEST, DmaCfgLow(dmaChannel.CFG) & DMA_CFG_HS_POL_TEST_MASK);
+    EXPECT_EQ(2U << 7U, DmaCfgHigh(dmaChannel.CFG) & DMA_CFG_SRC_INTERFACE_TEST_MASK);
+    EXPECT_EQ(0U, DmaCfgHigh(dmaChannel.CFG) & DMA_CFG_DST_INTERFACE_TEST_MASK);
+
+    ResetMocks();
+    bbPort_t *port = ConfigureBitbangPort(0U);
+    EXPECT_EQ(DMA_CFG_DST_HS_POL_TEST, DmaCfgLow(port->dmaRegOutput.CFG) & DMA_CFG_HS_POL_TEST_MASK);
+    EXPECT_EQ(0U, DmaCfgHigh(port->dmaRegOutput.CFG) & DMA_CFG_SRC_INTERFACE_TEST_MASK);
+    EXPECT_EQ(2U << 11U, DmaCfgHigh(port->dmaRegOutput.CFG) & DMA_CFG_DST_INTERFACE_TEST_MASK);
+    EXPECT_EQ(DMA_CFG_SRC_HS_POL_TEST, DmaCfgLow(port->dmaRegInput.CFG) & DMA_CFG_HS_POL_TEST_MASK);
+    EXPECT_EQ(2U << 7U, DmaCfgHigh(port->dmaRegInput.CFG) & DMA_CFG_SRC_INTERFACE_TEST_MASK);
+    EXPECT_EQ(0U, DmaCfgHigh(port->dmaRegInput.CFG) & DMA_CFG_DST_INTERFACE_TEST_MASK);
+}
+
 TEST_F(Ft32DshotDmaTest, BitbangPublicPreconfigureRemainsVoidAndBuildsBothDirections)
 {
     static_assert(std::is_same<decltype(&bbDMAPreconfigure), void (*)(bbPort_t *, uint8_t)>::value,
@@ -676,8 +852,10 @@ TEST_F(Ft32DshotDmaTest, BitbangPublicPreconfigureRemainsVoidAndBuildsBothDirect
     EXPECT_EQ(DMA_SRC_TRANSFERWIDTH_32BITS, port.outputDmaInit.SrcTransferWidth);
     EXPECT_EQ(DMA_DST_TRANSFERWIDTH_32BITS, port.outputDmaInit.DstTransferWidth);
     EXPECT_EQ(51U, port.outputDmaInit.BlockTransSize);
-    EXPECT_EQ(2U, port.outputDmaInit.SrcHardwareInterface);
+    EXPECT_EQ(0U, port.outputDmaInit.SrcHardwareInterface);
     EXPECT_EQ(2U, port.outputDmaInit.DstHardwareInterface);
+    EXPECT_EQ(DMA_SRCHSIFPOL_HIGH, port.outputDmaInit.SrcHsIfPol);
+    EXPECT_EQ(DMA_DSTHSIFPOL_LOW, port.outputDmaInit.DstHsIfPol);
     EXPECT_EQ(0U, port.outputDmaInit.SrcHsIfPeriphSel);
     EXPECT_EQ(7U, port.outputDmaInit.DstHsIfPeriphSel);
 
@@ -695,7 +873,9 @@ TEST_F(Ft32DshotDmaTest, BitbangPublicPreconfigureRemainsVoidAndBuildsBothDirect
     EXPECT_EQ(DMA_DST_TRANSFERWIDTH_16BITS, port.inputDmaInit.DstTransferWidth);
     EXPECT_EQ(48U, port.inputDmaInit.BlockTransSize);
     EXPECT_EQ(2U, port.inputDmaInit.SrcHardwareInterface);
-    EXPECT_EQ(2U, port.inputDmaInit.DstHardwareInterface);
+    EXPECT_EQ(0U, port.inputDmaInit.DstHardwareInterface);
+    EXPECT_EQ(DMA_SRCHSIFPOL_LOW, port.inputDmaInit.SrcHsIfPol);
+    EXPECT_EQ(DMA_DSTHSIFPOL_HIGH, port.inputDmaInit.DstHsIfPol);
     EXPECT_EQ(7U, port.inputDmaInit.SrcHsIfPeriphSel);
     EXPECT_EQ(0U, port.inputDmaInit.DstHsIfPeriphSel);
 
@@ -799,19 +979,25 @@ TEST_F(Ft32DshotDmaTest, DirectIrqErrorMixedStickyAndEnableFailureFailClosed)
         bool tfr;
         bool error;
         bool sticky;
+        bool wasInput;
         bool enableOk;
         uint32_t expectedInit;
+        bool expectedRecovery;
     };
     const Scenario scenarios[] = {
-        {false, true, false, true, 0U},
-        {true, true, false, true, 0U},
-        {true, false, true, true, 0U},
-        {true, false, false, false, 1U},
+        {false, true, false, false, true, 0U, false},
+        {true, true, false, false, true, 0U, false},
+        {true, false, true, false, true, 0U, true},
+        {false, true, true, false, true, 0U, true},
+        {true, true, true, false, true, 0U, true},
+        {true, false, true, true, true, 0U, true},
+        {true, false, false, false, false, 1U, true},
     };
 
     for (const Scenario &scenario : scenarios) {
         ResetMocks();
         dmaMotors[0] = MakeDirectMotor(CanonicalDirectDescriptor());
+        dmaMotors[0].isInput = scenario.wasInput;
         useDshotTelemetry = true;
         dmaEnabled = true;
         stickyDisable = scenario.sticky;
@@ -824,10 +1010,59 @@ TEST_F(Ft32DshotDmaTest, DirectIrqErrorMixedStickyAndEnableFailureFailClosed)
         EXPECT_EQ(scenario.expectedInit, rawInitCount);
         EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
         EXPECT_FALSE(dmaMotors[0].isInput);
+        EXPECT_EQ(scenario.expectedRecovery ? UINT8_MAX : 0U, dmaMotors[0].dmaInputLen);
         EXPECT_EQ(0U, inputStampUs);
         EXPECT_EQ(0U, blockingDisableCount);
-        ExpectAllTerminalFlagsCleared();
+        if (scenario.sticky) {
+            const uint32_t bit = 1U << 2U;
+            EXPECT_EQ(scenario.tfr ? bit : 0U, dmaController.CLEARTFR);
+            EXPECT_EQ(scenario.error ? bit : 0U, dmaController.CLEARERR);
+            EXPECT_EQ(0U, dmaController.CLEARBLOCK);
+            EXPECT_EQ(0U, dmaController.CLEARSRCTRAN);
+            EXPECT_EQ(0U, dmaController.CLEARDSTTRAN);
+            EXPECT_EQ(0U, CountEvent(Event::DmaInit));
+            EXPECT_EQ(0U, CountEvent(Event::MaskDisable));
+            EXPECT_EQ(0U, CountEvent(Event::MaskEnable));
+            EXPECT_EQ(0U, CountEvent(Event::CounterWrite));
+            EXPECT_EQ(0U, CountEvent(Event::DmaEnable));
+            const auto timerDisable = std::find(events.begin(), events.end(), Event::TimerDisable);
+            const auto dmaDisable = std::find(events.begin(), events.end(), Event::DmaDisable);
+            ASSERT_NE(events.end(), timerDisable);
+            ASSERT_NE(events.end(), dmaDisable);
+            EXPECT_LT(timerDisable, dmaDisable);
+        } else {
+            ExpectAllTerminalFlagsCleared();
+        }
     }
+}
+
+TEST_F(Ft32DshotDmaTest, DirectStickyOutputRecoversAfterChannelConverges)
+{
+    dmaMotors[0] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dshotMotorCount = 1U;
+    useDshotTelemetry = true;
+    dmaEnabled = true;
+    stickyDisable = true;
+    SetTerminalFlags(true, false);
+    dmaChannelDescriptor_t descriptor = MakeIrqDescriptor(0U);
+
+    ft32DshotTestMotorIrq(&descriptor);
+
+    ASSERT_EQ(UINT8_MAX, dmaMotors[0].dmaInputLen);
+    ASSERT_FALSE(dmaMotors[0].isInput);
+    ASSERT_TRUE(dmaEnabled);
+
+    stickyDisable = false;
+    dmaEnabled = false;
+    events.clear();
+    rawInitCount = 0U;
+
+    EXPECT_TRUE(pwmTelemetryDecode());
+    EXPECT_EQ(0U, dmaMotors[0].dmaInputLen);
+    EXPECT_FALSE(dmaMotors[0].isInput);
+    EXPECT_EQ(1U, rawInitCount);
+    EXPECT_EQ(0U, CountEvent(Event::DmaEnable));
+    EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
 }
 
 TEST_F(Ft32DshotDmaTest, BitbangIrqNoFlagsReturnsWithoutMutation)
@@ -910,6 +1145,8 @@ TEST_F(Ft32DshotDmaTest, BitbangIrqTelemetryOffErrorsMixedAndStickyFailClosed)
         ResetMocks();
         bbPort_t *port = ConfigureBitbangPort(0U);
         events.clear();
+        maskDisableCount = 0U;
+        maskEnableCount = 0U;
         ft32DshotTestBitbangResetState();
         useDshotTelemetry = scenario.telemetry;
         dmaEnabled = true;
@@ -920,12 +1157,79 @@ TEST_F(Ft32DshotDmaTest, BitbangIrqTelemetryOffErrorsMixedAndStickyFailClosed)
 
         bbDMAIrqHandler(&descriptor);
 
-        EXPECT_EQ(DSHOT_BITBANG_DIRECTION_OUTPUT, port->direction);
+        EXPECT_EQ(scenario.sticky ? UINT8_MAX : DSHOT_BITBANG_DIRECTION_OUTPUT, port->direction);
         EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
         EXPECT_EQ(scenario.expectedErrors, ft32DshotTestBitbangErrorCount());
+        EXPECT_EQ(scenario.expectedErrors ? DSHOT_BITBANG_STATUS_DMA_ERROR : DSHOT_BITBANG_STATUS_OK,
+            dshotBitbangGetStatus());
         EXPECT_EQ(0U, blockingDisableCount);
-        ExpectAllTerminalFlagsCleared();
+        if (scenario.sticky) {
+            const uint32_t bit = 1U << 2U;
+            EXPECT_EQ(0U, maskDisableCount);
+            EXPECT_EQ(scenario.tfr ? bit : 0U, dmaController.CLEARTFR);
+            EXPECT_EQ(scenario.error ? bit : 0U, dmaController.CLEARERR);
+            EXPECT_EQ(0U, dmaController.CLEARBLOCK);
+            EXPECT_EQ(0U, dmaController.CLEARSRCTRAN);
+            EXPECT_EQ(0U, dmaController.CLEARDSTTRAN);
+        } else {
+            ExpectAllTerminalFlagsCleared();
+        }
     }
+}
+
+TEST_F(Ft32DshotDmaTest, BitbangEnableIsAllOrNothingAndPostInitFailureQuiescesEveryConsumer)
+{
+    bbPort_t *port = ConfigureBitbangPort(0U);
+    usedMotorPorts = 1;
+    usedMotorPacers = 1;
+    bbPacers[0].tim = reinterpret_cast<timerResource_t *>(&timerRegs);
+    bbPacers[0].dmaSources = TIM_DMA_CC1;
+    for (unsigned motor = 0; motor < MAX_SUPPORTED_MOTORS; motor++) {
+        bbMotors[motor].enabled = true;
+    }
+    dmaEnabled = true;
+    events.clear();
+
+    ft32DshotTestBitbangQuiescePostInitFailure();
+
+    EXPECT_EQ(UINT8_MAX, port->direction);
+    EXPECT_FALSE(dmaEnabled);
+    EXPECT_EQ(1U, CountEvent(Event::TimerDisable));
+    for (unsigned motor = 0; motor < MAX_SUPPORTED_MOTORS; motor++) {
+        EXPECT_FALSE(bbMotors[motor].enabled);
+    }
+
+    ft32DshotTestBitbangResetState();
+    dshotMotorCount = 2U;
+    bbMotors[0].configured = true;
+    bbMotors[1].configured = false;
+    ioConfigCount = 0U;
+    EXPECT_FALSE(ft32DshotTestBitbangEnableMotors());
+    EXPECT_EQ(0U, ioConfigCount);
+    EXPECT_EQ(DSHOT_BITBANG_STATUS_DMA_ERROR, dshotBitbangGetStatus());
+
+    ft32DshotTestBitbangResetState();
+    bbMotors[1].configured = true;
+    bbMotors[0].io = reinterpret_cast<IO_t>(&gpioRegs);
+    bbMotors[1].io = reinterpret_cast<IO_t>(&gpioRegs);
+    EXPECT_TRUE(ft32DshotTestBitbangEnableMotors());
+    EXPECT_EQ(2U, ioConfigCount);
+    EXPECT_EQ(DSHOT_BITBANG_STATUS_OK, dshotBitbangGetStatus());
+
+    ft32DshotTestBitbangResetState();
+    std::memset(bbPorts, 0, sizeof(bbPorts));
+    std::memset(bbPacers, 0, sizeof(bbPacers));
+    std::memset(bbMotors, 0, sizeof(bbMotors));
+    usedMotorPorts = 0;
+    usedMotorPacers = 0;
+    dshotMotorCount = 1U;
+    bbMotors[0].enabled = true;
+
+    ft32DshotTestBitbangPostInit();
+
+    EXPECT_FALSE(bbMotors[0].enabled);
+    EXPECT_EQ(DSHOT_BITBANG_STATUS_DMA_ERROR, dshotBitbangGetStatus());
+    EXPECT_FALSE(ft32DshotTestBitbangEnableMotors());
 }
 
 TEST_F(Ft32DshotDmaTest, BitbangInputErrorInvalidatesCaptureAndDecoderSkipsPort)
@@ -985,7 +1289,7 @@ TEST_F(Ft32DshotDmaTest, BitbangUpdatePublishesAllConsumersBeforePacerForOneHund
         ASSERT_EQ(Event::TimerEnable, events.back());
         const auto firstEnable = std::find(events.begin(), events.end(), Event::DmaEnable);
         ASSERT_NE(events.end(), firstEnable);
-        EXPECT_EQ(2U, static_cast<size_t>(std::count(events.begin(), firstEnable, Event::Counter)));
+        EXPECT_EQ(2U, static_cast<size_t>(std::count(events.begin(), firstEnable, Event::CounterWrite)));
         EXPECT_EQ(2U, enableCallCount);
         ASSERT_FALSE(enabledTimerSources.empty());
         EXPECT_EQ(TIM_DMA_CC1 | TIM_DMA_CC2, enabledTimerSources.back());
@@ -994,8 +1298,10 @@ TEST_F(Ft32DshotDmaTest, BitbangUpdatePublishesAllConsumersBeforePacerForOneHund
         EXPECT_EQ(mockMicros, ft32DshotTestBitbangLastSendUs());
         EXPECT_EQ(expected0.SAR, port0->dmaRegOutput.SAR);
         EXPECT_EQ(expected0.CTL, port0->dmaRegOutput.CTL);
+        EXPECT_EQ(expected0.CFG, port0->dmaRegOutput.CFG);
         EXPECT_EQ(expected1.SAR, port1->dmaRegOutput.SAR);
         EXPECT_EQ(expected1.CTL, port1->dmaRegOutput.CTL);
+        EXPECT_EQ(expected1.CFG, port1->dmaRegOutput.CFG);
         EXPECT_EQ(0U, blockingDisableCount);
     }
 }
@@ -1043,11 +1349,17 @@ TEST_F(Ft32DshotDmaTest, InitialDirectionAndBurstEnableReadbackFailuresPropagate
     TIM_OCInitTypeDef ocInit{};
     stickyDisable = true;
     dmaEnabled = true;
+    SetTerminalFlags(true, true);
 
     EXPECT_FALSE(ft32DshotTestSetDirectionOutput(&motor, &ocInit, &motor.dmaInitStruct));
     EXPECT_TRUE(motor.isInput);
     EXPECT_EQ(0U, rawInitCount);
     EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
+    EXPECT_EQ(0U, dmaController.CLEARTFR);
+    EXPECT_EQ(0U, dmaController.CLEARBLOCK);
+    EXPECT_EQ(0U, dmaController.CLEARSRCTRAN);
+    EXPECT_EQ(0U, dmaController.CLEARDSTTRAN);
+    EXPECT_EQ(0U, dmaController.CLEARERR);
 
     ResetMocks();
     enableSucceeds = false;
@@ -1391,6 +1703,232 @@ TEST_F(Ft32DshotDmaTest, BitbangUpdateInitPreservesInputSamplingAndDropsStickyOu
     EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
 }
 
+TEST_F(Ft32DshotDmaTest, BitbangDelayedDisableConvergenceKeepsDirectionInvalidThenRecovers)
+{
+    bbPort_t *port = ConfigureBitbangPort(0U);
+    usedMotorPorts = 1;
+    usedMotorPacers = 1;
+    bbPacers[0].tim = reinterpret_cast<timerResource_t *>(&timerRegs);
+    bbPacers[0].dmaSources = TIM_DMA_CC1;
+    bbMotors[0].configured = true;
+    bbMotors[0].bbPort = port;
+    bbMotors[0].pinIndex = 0U;
+
+    std::fill(port->portOutputBuffer,
+        port->portOutputBuffer + MOTOR_DSHOT_BUF_LENGTH, 0x5a5a5a5aU);
+    uint32_t snapshot[MOTOR_DSHOT_BUF_LENGTH];
+    std::memcpy(snapshot, port->portOutputBuffer, sizeof(snapshot));
+    const uint32_t terminalSar = port->dmaRegOutput.SAR + port->portOutputCount * sizeof(uint32_t);
+    dmaChannel.SAR = terminalSar;
+    dmaEnabled = true;
+    stickyDisable = true;
+    convergeAfterFailedTrySet = true;
+    directionProbePort = port;
+    events.clear();
+
+    ft32DshotTestBitbangUpdateInit();
+
+    EXPECT_EQ(UINT8_MAX, directionObservedAtTrySet);
+    EXPECT_EQ(UINT8_MAX, port->direction);
+    EXPECT_EQ(1U, ft32DshotTestBitbangErrorCount());
+    EXPECT_EQ(DSHOT_BITBANG_STATUS_DMA_ERROR, dshotBitbangGetStatus());
+    EXPECT_EQ(terminalSar, dmaChannel.SAR);
+    EXPECT_EQ(1U, CountEvent(Event::DmaDisable));
+    EXPECT_EQ(0U, CountEvent(Event::FlagClear));
+    EXPECT_EQ(0U, CountEvent(Event::CounterWrite));
+    EXPECT_EQ(0U, CountEvent(Event::DmaInit));
+    EXPECT_EQ(0, std::memcmp(snapshot, port->portOutputBuffer, sizeof(snapshot)));
+
+    ft32DshotTestBitbangWriteInt(0U, 333U);
+    ft32DshotTestBitbangUpdateComplete();
+    EXPECT_EQ(0U, bbMotors[0].protocolControl.value);
+    EXPECT_EQ(0U, CountEvent(Event::DmaEnable));
+    EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
+    EXPECT_EQ(0U, ft32DshotTestBitbangLastSendUs());
+
+    stickyDisable = false;
+    convergeAfterFailedTrySet = false;
+    dmaEnabled = false;
+    events.clear();
+    enabledTimerSources.clear();
+    mockMicros = 4321U;
+
+    ft32DshotTestBitbangUpdateInit();
+    EXPECT_EQ(UINT8_MAX, directionObservedAtTrySet);
+    EXPECT_EQ(DSHOT_BITBANG_DIRECTION_OUTPUT, port->direction);
+    EXPECT_EQ(port->dmaRegOutput.SAR, dmaChannel.SAR);
+    ft32DshotTestBitbangWriteInt(0U, 444U);
+    ft32DshotTestBitbangUpdateComplete();
+
+    EXPECT_EQ(444U, bbMotors[0].protocolControl.value);
+    EXPECT_EQ(1U, CountEvent(Event::DmaEnable));
+    EXPECT_EQ(1U, CountEvent(Event::TimerEnable));
+    EXPECT_EQ(4321U, ft32DshotTestBitbangLastSendUs());
+}
+
+TEST_F(Ft32DshotDmaTest, BitbangStickyIrqRecoveryClearsOldFlagsBeforeReloadAndEnable)
+{
+    bbPort_t *port = ConfigureBitbangPort(0U);
+    usedMotorPorts = 1;
+    usedMotorPacers = 1;
+    bbPacers[0].tim = reinterpret_cast<timerResource_t *>(&timerRegs);
+    bbPacers[0].dmaSources = TIM_DMA_CC1;
+    bbMotors[0].configured = true;
+    bbMotors[0].bbPort = port;
+    bbMotors[0].pinIndex = 0U;
+
+    dmaEnabled = true;
+    stickyDisable = true;
+    SetTerminalFlags(true, false);
+    dmaChannelDescriptor_t descriptor = MakeIrqDescriptor(
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(port)));
+    events.clear();
+
+    bbDMAIrqHandler(&descriptor);
+
+    EXPECT_EQ(UINT8_MAX, port->direction);
+    EXPECT_EQ(0U, CountEvent(Event::FlagClear));
+    EXPECT_EQ(1U << 2U, dmaController.CLEARTFR);
+    EXPECT_EQ(0U, dmaController.CLEARERR);
+
+    stickyDisable = false;
+    dmaEnabled = false;
+    events.clear();
+    enabledTimerSources.clear();
+
+    ft32DshotTestBitbangUpdateInit();
+    ft32DshotTestBitbangWriteInt(0U, 555U);
+    ft32DshotTestBitbangUpdateComplete();
+
+    const auto counterWrite = std::find(events.begin(), events.end(), Event::CounterWrite);
+    const auto dmaDisable = std::find(events.begin(), events.end(), Event::DmaDisable);
+    const auto flagClear = std::find(events.begin(), events.end(), Event::FlagClear);
+    const auto maskEnable = std::find(events.begin(), events.end(), Event::MaskEnable);
+    const auto dmaEnable = std::find(events.begin(), events.end(), Event::DmaEnable);
+    const auto timerEnable = std::find(events.begin(), events.end(), Event::TimerEnable);
+    ASSERT_NE(events.end(), counterWrite);
+    ASSERT_NE(events.end(), dmaDisable);
+    ASSERT_NE(events.end(), flagClear);
+    ASSERT_NE(events.end(), maskEnable);
+    ASSERT_NE(events.end(), dmaEnable);
+    ASSERT_NE(events.end(), timerEnable);
+    EXPECT_LT(dmaDisable, flagClear);
+    EXPECT_LT(flagClear, counterWrite);
+    EXPECT_LT(counterWrite, maskEnable);
+    EXPECT_LT(maskEnable, dmaEnable);
+    EXPECT_LT(dmaEnable, timerEnable);
+    EXPECT_TRUE(dmaEnableSawAllFlagsCleared);
+    EXPECT_TRUE(timerEnableSawDmaAndAllFlagsCleared);
+    ExpectAllTerminalFlagsCleared();
+    EXPECT_EQ(555U, bbMotors[0].protocolControl.value);
+}
+
+TEST_F(Ft32DshotDmaTest, BitbangInputReloadConvergenceFailurePublishesInvalidBeforeTrySet)
+{
+    bbPort_t *port = ConfigureBitbangPort(0U);
+    useDshotTelemetry = true;
+    port->direction = DSHOT_BITBANG_DIRECTION_OUTPUT;
+    directionProbePort = port;
+    dmaEnabled = true;
+    failDisableCall = disableCallCount + 2U;
+    convergeAfterFailedTrySet = true;
+    SetTerminalFlags(true, false);
+    events.clear();
+    const uint32_t oldSar = dmaChannel.SAR;
+    dmaChannelDescriptor_t descriptor = MakeIrqDescriptor(
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(port)));
+
+    bbDMAIrqHandler(&descriptor);
+
+    EXPECT_EQ(UINT8_MAX, directionObservedAtTrySet);
+    EXPECT_EQ(UINT8_MAX, port->direction);
+    EXPECT_EQ(oldSar, dmaChannel.SAR);
+    EXPECT_FALSE(port->inputActive);
+    EXPECT_FALSE(port->telemetryPending);
+    EXPECT_EQ(1U, ft32DshotTestBitbangErrorCount());
+    EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
+}
+
+TEST_F(Ft32DshotDmaTest, BitbangPostInitQuiesceNeverMutatesInterruptControlOnLiveChannel)
+{
+    bbPort_t *port = ConfigureBitbangPort(0U);
+    usedMotorPorts = 1;
+    usedMotorPacers = 1;
+    bbPacers[0].tim = reinterpret_cast<timerResource_t *>(&timerRegs);
+    bbPacers[0].dmaSources = TIM_DMA_CC1;
+    dmaEnabled = true;
+    stickyDisable = true;
+    events.clear();
+    maskDisableCount = 0U;
+    maskEnableCount = 0U;
+
+    ft32DshotTestBitbangQuiescePostInitFailure();
+
+    EXPECT_TRUE(dmaEnabled);
+    EXPECT_EQ(UINT8_MAX, port->direction);
+    EXPECT_EQ(0U, maskDisableCount);
+    EXPECT_EQ(0U, CountEvent(Event::MaskDisable));
+    EXPECT_EQ(0U, atomic_BASEPRI);
+    EXPECT_EQ(DSHOT_BITBANG_STATUS_DMA_ERROR, dshotBitbangGetStatus());
+}
+
+TEST_F(Ft32DshotDmaTest, BitbangPostInitQuiesceFencesStoppedReadBeforeMaskMutation)
+{
+    bbPort_t *port = ConfigureBitbangPort(0U);
+    usedMotorPorts = 1;
+    usedMotorPacers = 1;
+    bbPacers[0].tim = reinterpret_cast<timerResource_t *>(&timerRegs);
+    bbPacers[0].dmaSources = TIM_DMA_CC1;
+    port->direction = DSHOT_BITBANG_DIRECTION_OUTPUT;
+    dmaEnabled = false;
+    stoppedReadProbePort = port;
+    injectRestartAfterStoppedRead = true;
+    events.clear();
+
+    ft32DshotTestBitbangQuiescePostInitFailure();
+
+    EXPECT_EQ(UINT8_MAX, directionAtStoppedRead);
+    EXPECT_EQ(NVIC_PRIO_DSHOT_DMA, basepriAtStoppedRead);
+    EXPECT_TRUE(restartDeferred);
+    EXPECT_FALSE(dmaEnabled);
+    EXPECT_FALSE(maskConfigSawEnabledChannel);
+    EXPECT_EQ(0U, atomic_BASEPRI);
+    EXPECT_EQ(DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR,
+        lastDisabledMask);
+    ExpectAllTerminalFlagsCleared();
+
+    const auto timerDisable = std::find(events.begin(), events.end(), Event::TimerDisable);
+    const auto dmaDisable = std::find(events.begin(), events.end(), Event::DmaDisable);
+    const auto stoppedRead = std::find(events.begin(), events.end(), Event::FinalStoppedRead);
+    const auto maskDisable = std::find(events.begin(), events.end(), Event::MaskDisable);
+    const auto flagClear = std::find(events.begin(), events.end(), Event::FlagClear);
+    ASSERT_NE(events.end(), timerDisable);
+    ASSERT_NE(events.end(), dmaDisable);
+    ASSERT_NE(events.end(), stoppedRead);
+    ASSERT_NE(events.end(), maskDisable);
+    ASSERT_NE(events.end(), flagClear);
+    EXPECT_LT(timerDisable, dmaDisable);
+    EXPECT_LT(dmaDisable, stoppedRead);
+    EXPECT_LT(stoppedRead, maskDisable);
+    EXPECT_LT(maskDisable, flagClear);
+}
+
+TEST_F(Ft32DshotDmaTest, BitbangMissingPacerSpecFailsWithoutDereferencingUnassignedPort)
+{
+    dmaTimerSpecAvailable = false;
+    dshotMotorCount = 1U;
+    bbMotors[0].io = reinterpret_cast<IO_t>(&gpioRegs);
+    bbMotors[0].enabled = true;
+
+    ft32DshotTestBitbangPostInit();
+
+    EXPECT_EQ(DSHOT_BITBANG_STATUS_NO_PACER, dshotBitbangGetStatus());
+    EXPECT_FALSE(bbMotors[0].enabled);
+    EXPECT_FALSE(ft32DshotTestBitbangEnableMotors());
+    EXPECT_EQ(0U, usedMotorPorts);
+    EXPECT_EQ(0U, usedMotorPacers);
+}
+
 } // namespace
 
 extern "C" {
@@ -1403,6 +1941,8 @@ dshotTelemetryState_t dshotTelemetryState;
 dshotTelemetryQuality_t dshotTelemetryQuality[MAX_SUPPORTED_MOTORS];
 pwmOutputPort_t pwmMotors[MAX_SUPPORTED_MOTORS];
 uint8_t pwmMotorCount;
+motorConfig_t motorConfig_System;
+motorConfig_t motorConfig_Copy;
 
 DMA_BaseAddressAndChannelIndex CalBaseAddressAndChannelIndex(DMA_Channel_TypeDef *resource)
 {
@@ -1412,6 +1952,11 @@ DMA_BaseAddressAndChannelIndex CalBaseAddressAndChannelIndex(DMA_Channel_TypeDef
 const dmaChannelSpec_t *dmaGetChannelSpecByTimer(const timerHardware_t *)
 {
     return &fakeDmaSpec;
+}
+
+const dmaChannelSpec_t *dmaGetChannelSpecByTimerValue(timerResource_t *, uint8_t, dmaoptValue_t)
+{
+    return dmaTimerSpecAvailable ? &fakeDmaSpec : nullptr;
 }
 
 const dmaChannelSpec_t *dmaGetChannelSpecByPeripheral(dmaPeripheral_e, uint8_t, int8_t)
@@ -1448,8 +1993,32 @@ IO_t IOGetByTag(ioTag_t)
     return reinterpret_cast<IO_t>(&gpioRegs);
 }
 
+GPIO_TypeDef *IO_GPIO(IO_t)
+{
+    return &gpioRegs;
+}
+
+int IO_GPIOPinIdx(IO_t)
+{
+    return 0;
+}
+
+int IO_GPIOPortIdx(IO_t)
+{
+    return 0;
+}
+
+void IOWrite(IO_t, bool)
+{
+}
+
 void IOConfigGPIOAF(IO_t, ioConfig_t, uint8_t)
 {
+}
+
+void IOConfigGPIO(IO_t, ioConfig_t)
+{
+    ioConfigCount++;
 }
 
 void IOInit(IO_t, resourceOwner_e, uint8_t)
@@ -1459,6 +2028,16 @@ void IOInit(IO_t, resourceOwner_e, uint8_t)
 const timerHardware_t *timerAllocate(ioTag_t, resourceOwner_e, uint8_t)
 {
     return &timerHardware;
+}
+
+const timerHardware_t *timerGetAllocatedByNumberAndChannel(int8_t, uint16_t)
+{
+    return nullptr;
+}
+
+const resourceOwner_t *timerGetOwner(const timerHardware_t *)
+{
+    return &fakeDmaOwner;
 }
 
 void DMA_Channel_Cmd(DMA_Channel_TypeDef *resource, FunctionalState state)
@@ -1483,18 +2062,39 @@ void DMA_Channel_Cmd(DMA_Channel_TypeDef *resource, FunctionalState state)
 
 bool ft32DmaTrySetCurrDataCounter(DMA_ARCH_TYPE *resource, uint16_t count)
 {
-    events.push_back(Event::Counter);
+    if (directionProbePort) {
+        directionObservedAtTrySet = directionProbePort->direction;
+    }
     DMA_Channel_Cmd(resource, DISABLE);
     if (DmaEnabledFor(resource)) {
+        if (convergeAfterFailedTrySet) {
+            DmaEnabledFor(resource) = false;
+        }
         return false;
     }
+    DMA_ClearFlagStatus(resource, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
+    events.push_back(Event::CounterWrite);
     shadowCount = count;
     return true;
 }
 
 uint8_t ft32DmaIsChannelEnabled(DMA_ARCH_TYPE *resource)
 {
-    return DmaEnabledFor(resource);
+    const bool enabled = DmaEnabledFor(resource);
+    if (!enabled && injectRestartAfterStoppedRead) {
+        injectRestartAfterStoppedRead = false;
+        directionAtStoppedRead = stoppedReadProbePort ? stoppedReadProbePort->direction : UINT8_MAX;
+        basepriAtStoppedRead = atomic_BASEPRI;
+        events.push_back(Event::FinalStoppedRead);
+
+        const bool irqMasked = atomic_BASEPRI != 0U && NVIC_PRIO_DSHOT_DMA >= atomic_BASEPRI;
+        if (irqMasked) {
+            restartDeferred = true;
+        } else {
+            DmaEnabledFor(resource) = true;
+        }
+    }
+    return enabled;
 }
 
 uint16_t ft32DmaGetCurrDataCounter(DMA_ARCH_TYPE *)
@@ -1527,15 +2127,36 @@ void DMA_Init(DMA_Channel_TypeDef *resource, DMA_InitTypeDef *init)
     resource->SAR = init->SrcAddress;
     resource->DAR = init->DstAddress;
     resource->CTL = 1U | (static_cast<uint64_t>(init->BlockTransSize) << 4U);
-    resource->CFG = 1U;
+    uint32_t cfgHigh = (init->DstHardwareInterface << 11U) |
+        (init->SrcHardwareInterface << 7U);
+    if (init->FIFOMode == ENABLE) {
+        cfgHigh |= 1U << 1U;
+    }
+    if (init->FlowCtlMode == ENABLE) {
+        cfgHigh |= 1U;
+    }
+    uint32_t cfgLow = (init->MaxBurstLength << 20U) |
+        (init->SrcHsIfPol << 19U) |
+        (init->DstHsIfPol << 18U) |
+        (init->SrcHsSel << 11U) |
+        (init->DstHsSel << 10U) |
+        (init->Priority << 5U);
+    if (init->ReloadDst == ENABLE) {
+        cfgLow |= 1U << 31U;
+    }
+    if (init->ReloadSrc == ENABLE) {
+        cfgLow |= 1U << 30U;
+    }
+    resource->CFG = (static_cast<uint64_t>(cfgHigh) << 32U) | cfgLow;
     dmaController.CHSEL |=
         static_cast<uint64_t>(init->DstHsIfPeriphSel) << (init->DstHardwareInterface * 3U);
     dmaController.CHSEL |=
         static_cast<uint64_t>(init->SrcHsIfPeriphSel) << (init->SrcHardwareInterface * 3U);
 }
 
-void DMA_ITConfig(DMA_Channel_TypeDef *, uint8_t mask, FunctionalState state)
+void DMA_ITConfig(DMA_Channel_TypeDef *resource, uint8_t mask, FunctionalState state)
 {
+    maskConfigSawEnabledChannel = maskConfigSawEnabledChannel || DmaEnabledFor(resource);
     if (state == DISABLE) {
         events.push_back(Event::MaskDisable);
         maskDisableCount++;
@@ -1547,9 +2168,25 @@ void DMA_ITConfig(DMA_Channel_TypeDef *, uint8_t mask, FunctionalState state)
     }
 }
 
-void DMA_ClearFlagStatus(DMA_Channel_TypeDef *, uint8_t)
+void DMA_ClearFlagStatus(DMA_Channel_TypeDef *resource, uint8_t mask)
 {
     events.push_back(Event::FlagClear);
+    const uint32_t bit = 1U << (resource == &dmaChannel2 ? 3U : 2U);
+    if ((mask & DMA_IT_TFR) != 0U) {
+        dmaController.CLEARTFR = bit;
+    }
+    if ((mask & DMA_IT_BLOCK) != 0U) {
+        dmaController.CLEARBLOCK = bit;
+    }
+    if ((mask & DMA_IT_SRC) != 0U) {
+        dmaController.CLEARSRCTRAN = bit;
+    }
+    if ((mask & DMA_IT_DST) != 0U) {
+        dmaController.CLEARDSTTRAN = bit;
+    }
+    if ((mask & DMA_IT_ERR) != 0U) {
+        dmaController.CLEARERR = bit;
+    }
 }
 
 FlagStatus DMA_GetFlagStatus(DMA_Channel_TypeDef *, uint8_t)

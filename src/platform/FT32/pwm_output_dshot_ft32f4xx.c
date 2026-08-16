@@ -119,10 +119,12 @@ static DMA_InitTypeDef pwmDshotOutputDmaDescriptor(const motorDmaOutput_t *motor
     descriptor.DstAddrMode = DMA_DST_ADDRMODE_HOLD;
     descriptor.SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_32BITS;
     descriptor.DstTransferWidth = DMA_DST_TRANSFERWIDTH_32BITS;
-    descriptor.SrcHardwareInterface = hardwareInterface;
+    descriptor.SrcHardwareInterface = 0U;
     descriptor.DstHardwareInterface = hardwareInterface;
     descriptor.SrcHsSel = DMA_SRCHSSEL_SOFTWARE;
     descriptor.DstHsSel = DMA_DSTHSSEL_HARDWARE;
+    descriptor.SrcHsIfPol = DMA_SRCHSIFPOL_HIGH;
+    descriptor.DstHsIfPol = DMA_DSTHSIFPOL_LOW;
     descriptor.SrcHsIfPeriphSel = 0U;
     descriptor.DstHsIfPeriphSel = canonical->DstHsIfPeriphSel;
 
@@ -162,7 +164,6 @@ static bool pwmDshotTrySetDirectionOutputInternal(
 
     DMA_InitTypeDef descriptor = pwmDshotOutputDmaDescriptor(motor, pDmaInit);
     if (!pwmDshotTryLoadDmaDescriptor(motor, &descriptor)) {
-        xDMA_ClearFlag(motor->dmaRef, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
         return false;
     }
 
@@ -211,9 +212,11 @@ static DMA_InitTypeDef pwmDshotInputDmaDescriptor(const motorDmaOutput_t *motor)
     descriptor.SrcTransferWidth = DMA_SRC_TRANSFERWIDTH_32BITS;
     descriptor.DstTransferWidth = DMA_DST_TRANSFERWIDTH_32BITS;
     descriptor.SrcHardwareInterface = hardwareInterface;
-    descriptor.DstHardwareInterface = hardwareInterface;
+    descriptor.DstHardwareInterface = 0U;
     descriptor.SrcHsSel = DMA_SRCHSSEL_HARDWARE;
     descriptor.DstHsSel = DMA_DSTHSSEL_SOFTWARE;
+    descriptor.SrcHsIfPol = DMA_SRCHSIFPOL_LOW;
+    descriptor.DstHsIfPol = DMA_DSTHSIFPOL_HIGH;
     descriptor.SrcHsIfPeriphSel = output->DstHsIfPeriphSel;
     descriptor.DstHsIfPeriphSel = 0U;
 
@@ -340,26 +343,31 @@ FAST_CODE static void motor_DMA_IRQHandler(dmaChannelDescriptor_t *descriptor)
         TIM_DMACmd((TIM_TypeDef *)motor->timerHardware->tim, motor->timerDmaSource, DISABLE);
     }
 
-    bool inputReady = false;
+    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)motor->dmaRef;
+    ft32DmaRequestDisable(dmaRef);
+    const bool channelStopped = !ft32DmaIsChannelEnabled(dmaRef);
+    if (!channelStopped) {
+        const uint8_t observedTerminalFlags =
+            (transferComplete ? DMA_IT_TFR : 0U) |
+            (transferError ? DMA_IT_ERR : 0U);
+        DMA_CLEAR_FLAG(descriptor, observedTerminalFlags);
 #ifdef USE_DSHOT_TELEMETRY
-    bool channelStopped = true;
-    if (!wasInput && !pwmDshotDirectionRecoveryIsPending(motor) && transferComplete && !transferError && useDshotTelemetry) {
-        inputReady = pwmDshotTrySetDirectionInputStopped(motor);
-    } else
+        if (wasInput || useDshotTelemetry) {
+            pwmDshotDirectionRecoveryMarkPending(motor);
+        }
 #endif
-    {
-        ft32DmaRequestDisable((DMA_ARCH_TYPE *)motor->dmaRef);
-#ifdef USE_DSHOT_TELEMETRY
-        channelStopped = !ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)motor->dmaRef);
-#else
-        (void)ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)motor->dmaRef);
-#endif
+        return;
     }
 
     DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
 
 #ifdef USE_DSHOT_TELEMETRY
-    if (wasInput && (transferError || !channelStopped)) {
+    bool inputReady = false;
+    if (!wasInput && !pwmDshotDirectionRecoveryIsPending(motor) && transferComplete && !transferError && useDshotTelemetry) {
+        inputReady = pwmDshotTrySetDirectionInputStopped(motor);
+    }
+
+    if (wasInput && transferError) {
         pwmDshotDirectionRecoveryMarkPending(motor);
     }
 
@@ -377,8 +385,6 @@ FAST_CODE static void motor_DMA_IRQHandler(dmaChannelDescriptor_t *descriptor)
             pwmDshotDirectionRecoveryMarkPending(motor);
         }
     }
-#else
-    UNUSED(inputReady);
 #endif
 }
 
