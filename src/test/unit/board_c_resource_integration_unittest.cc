@@ -481,7 +481,7 @@ TEST(BoardCResourceReqmapTest, TargetTimerOccurrencesResolveThroughProductionTim
     const std::array<uint8_t, 4> expectedChannels = {{ 0x00, 0x04, 0x08, 0x0c }};
     const std::array<int8_t, 4> expectedDmaopt = {{ 0, 1, 1, 0 }};
     const std::array<DmaIdentity, 4> expectedDma = {{
-        { 2, 2, 0 },
+        { 2, 2, 7 },
         { 2, 3, 7 },
         { 2, 4, 7 },
         { 2, 7, 7 },

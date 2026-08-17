@@ -220,9 +220,9 @@ static const dmaTimerMapping_t dmaTimerMapping[] = {
     { (timerResource_t *)TIM5, TC(CH3), { FT32_DMA(1, 0, 6) } },
     { (timerResource_t *)TIM5, TC(CH4), { FT32_DMA(1, 1, 6) } },
 
-    // TIM8: DMA2 Channel_2 (CH1/CH2/CH3 PeriphSel=0), Channel_3 (CH2 alt PeriphSel=7),
-    //       Channel_4 (CH3 alt PeriphSel=7), Channel_7 (CH4 PeriphSel=7)
-    { (timerResource_t *)TIM8, TC(CH1), { FT32_DMA(2, 2, 0) } },
+    // TIM8: dedicated PeriphSel=7 requests use Channel_2/3/4/7 for CH1/2/3/4;
+    // CH2/CH3 also retain their aggregate PeriphSel=0 alternatives.
+    { (timerResource_t *)TIM8, TC(CH1), { FT32_DMA(2, 2, 7) } },
     { (timerResource_t *)TIM8, TC(CH2), { FT32_DMA(2, 2, 0), FT32_DMA(2, 3, 7) } },
     { (timerResource_t *)TIM8, TC(CH3), { FT32_DMA(2, 2, 0), FT32_DMA(2, 4, 7) } },
     { (timerResource_t *)TIM8, TC(CH4), { FT32_DMA(2, 7, 7) } },

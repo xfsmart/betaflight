@@ -64,6 +64,8 @@ protected:
         std::memset(&dmaOwner, 0, sizeof(dmaOwner));
         std::memset(dmaMotors, 0, sizeof(dmaMotors));
         std::memset(dmaMotorTimers, 0, sizeof(dmaMotorTimers));
+        dshotMotorCount = 0U;
+        pwmMotorCount = 0U;
         dmaMotorTimerCount = 0U;
         dmaEnabled = false;
         stickyDisable = false;
@@ -86,12 +88,13 @@ protected:
     }
 };
 
-TEST_F(Ft32DshotNoTelemetryTest, ProducerPersistsCanonicalCountAndWriteEnablesOnce)
+TEST_F(Ft32DshotNoTelemetryTest, ProducerPersistsCanonicalCountAndCompleteEnablesOnce)
 {
     ASSERT_TRUE(pwmDshotMotorHardwareConfig(
         &timerHardware, 0U, 0U, MOTOR_PROTOCOL_DSHOT600, 0U));
     motorDmaOutput_t *motor = &dmaMotors[0];
     ASSERT_TRUE(motor->configured);
+    dshotMotorCount = 1U;
     EXPECT_EQ(DSHOT_DMA_BUFFER_SIZE, motor->dmaInitStruct.BlockTransSize);
     EXPECT_EQ(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(motor->dmaBuffer)),
         motor->dmaInitStruct.SrcAddress);
@@ -102,9 +105,15 @@ TEST_F(Ft32DshotNoTelemetryTest, ProducerPersistsCanonicalCountAndWriteEnablesOn
     enableCount = 0U;
     pwmWriteDshotInt(0U, 321U);
     EXPECT_EQ(DSHOT_DMA_BUFFER_SIZE, shadowCount);
+    EXPECT_EQ(0U, enableCount);
+    EXPECT_FALSE(dmaEnabled);
+    EXPECT_EQ(motor->timerDmaSource, motor->timer->timerDmaSources);
+
+    pwmCompleteDshotMotorUpdate();
     EXPECT_EQ(1U, enableCount);
     EXPECT_TRUE(dmaEnabled);
-    EXPECT_EQ(motor->timerDmaSource, motor->timer->timerDmaSources);
+    EXPECT_EQ(1U, timerEnableCount);
+    EXPECT_EQ(0U, motor->timer->timerDmaSources);
 }
 
 TEST_F(Ft32DshotNoTelemetryTest, StickyOutputClearsOnlyObservedAndRetriesWithoutRecoverySentinel)
@@ -113,6 +122,7 @@ TEST_F(Ft32DshotNoTelemetryTest, StickyOutputClearsOnlyObservedAndRetriesWithout
         &timerHardware, 0U, 0U, MOTOR_PROTOCOL_DSHOT600, 0U));
     motorDmaOutput_t *motor = &dmaMotors[0];
     ASSERT_TRUE(motor->configured);
+    dshotMotorCount = 1U;
 
     counterWriteCount = 0U;
     dmaInitCount = 0U;
@@ -161,9 +171,15 @@ TEST_F(Ft32DshotNoTelemetryTest, StickyOutputClearsOnlyObservedAndRetriesWithout
 
     EXPECT_EQ(DSHOT_DMA_BUFFER_SIZE, shadowCount);
     EXPECT_EQ(1U, counterWriteCount);
+    EXPECT_EQ(0U, enableCount);
+    EXPECT_FALSE(dmaEnabled);
+    EXPECT_EQ(motor->timerDmaSource, motor->timer->timerDmaSources);
+
+    pwmCompleteDshotMotorUpdate();
     EXPECT_EQ(1U, enableCount);
     EXPECT_TRUE(dmaEnabled);
-    EXPECT_EQ(motor->timerDmaSource, motor->timer->timerDmaSources);
+    EXPECT_EQ(1U, timerEnableCount);
+    EXPECT_EQ(0U, motor->timer->timerDmaSources);
 }
 
 } // namespace
@@ -171,6 +187,7 @@ TEST_F(Ft32DshotNoTelemetryTest, StickyOutputClearsOnlyObservedAndRetriesWithout
 extern "C" {
 
 uint8_t dshotMotorCount;
+uint8_t pwmMotorCount;
 DSHOT_DMA_BUFFER_ATTRIBUTE DSHOT_DMA_BUFFER_UNIT dshotDmaBuffer[MAX_SUPPORTED_MOTORS][DSHOT_DMA_BUFFER_ALLOC_SIZE];
 loadDmaBufferFn *loadDmaBuffer;
 
@@ -294,6 +311,10 @@ void TIM_DMACmd(TIM_TypeDef *, uint32_t, FunctionalState state)
     } else {
         timerEnableCount++;
     }
+}
+
+void TIM_SetCounter(TIM_TypeDef *, uint32_t)
+{
 }
 
 void TIM_TimeBaseStructInit(TIM_TimeBaseInitTypeDef *init)
@@ -457,6 +478,8 @@ enum class Event : uint8_t {
     MaskEnable,
     FlagClear,
     FinalStoppedRead,
+    CounterReset,
+    // These events represent TIM_DMACmd request gating, not TIM_Cmd/CEN.
     TimerDisable,
     TimerEnable,
 };
@@ -687,6 +710,30 @@ DMA_InitTypeDef CanonicalDirectDescriptor(uint16_t count = DSHOT_DMA_BUFFER_SIZE
     descriptor.BlockTransSize = count;
     descriptor.DstHsIfPeriphSel = 7U;
     return descriptor;
+}
+
+void ConfigureTwoDirectMotors(DSHOT_DMA_BUFFER_UNIT *output0, DSHOT_DMA_BUFFER_UNIT *output1)
+{
+    dmaMotors[0] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dmaMotors[0].dmaBuffer = output0;
+    dmaMotors[0].timer = &dmaMotorTimers[0];
+    dmaMotors[0].configured = true;
+
+    timerHardware2 = timerHardware;
+    timerHardware2.channel = TIM_Channel_2;
+    dmaMotors[1] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dmaMotors[1].timerHardware = &timerHardware2;
+    dmaMotors[1].dmaRef = reinterpret_cast<dmaResource_t *>(&dmaChannel2);
+    dmaMotors[1].timerDmaSource = TIM_DMA_CC2;
+    dmaMotors[1].dmaBuffer = output1;
+    dmaMotors[1].timer = &dmaMotorTimers[0];
+    dmaMotors[1].configured = true;
+
+    dmaMotorTimers[0].timer = reinterpret_cast<timerResource_t *>(&timerRegs);
+    dmaMotorTimers[0].outputPeriod = 20U;
+    dmaMotorTimerCount = 1U;
+    dshotMotorCount = 2U;
+    loadDmaBuffer = loadDmaBufferDshot;
 }
 
 void ExpectDirectOutput(const DMA_InitTypeDef &descriptor, uint16_t count)
@@ -1522,7 +1569,7 @@ TEST_F(Ft32DshotDmaTest, OutputRecoveryFailurePreservesBufferAndSkipsDuplicateDe
     EXPECT_NE(0, std::memcmp(snapshot, oldTelemetry, sizeof(snapshot)));
 }
 
-TEST_F(Ft32DshotDmaTest, DirectWriteStopsBeforeMutationAndPublishesSourceAfterSingleEnable)
+TEST_F(Ft32DshotDmaTest, DirectWritePreparesDisabledChannelAndCompletePublishesOnce)
 {
     DSHOT_DMA_BUFFER_UNIT outputBuffer[DSHOT_DMA_BUFFER_ALLOC_SIZE];
     std::memset(outputBuffer, 0x5a, sizeof(outputBuffer));
@@ -1532,6 +1579,8 @@ TEST_F(Ft32DshotDmaTest, DirectWriteStopsBeforeMutationAndPublishesSourceAfterSi
     dmaMotors[0].configured = true;
     dmaMotorTimers[0].timer = reinterpret_cast<timerResource_t *>(&timerRegs);
     dmaMotorTimers[0].timerDmaSources = TIM_DMA_CC1;
+    dmaMotorTimerCount = 1U;
+    dshotMotorCount = 1U;
     loadDmaBuffer = loadDmaBufferDshot;
 
     DSHOT_DMA_BUFFER_UNIT snapshot[DSHOT_DMA_BUFFER_ALLOC_SIZE];
@@ -1553,8 +1602,224 @@ TEST_F(Ft32DshotDmaTest, DirectWriteStopsBeforeMutationAndPublishesSourceAfterSi
     EXPECT_EQ(321U, dmaMotors[0].protocolControl.value);
     EXPECT_NE(0, std::memcmp(snapshot, outputBuffer, sizeof(snapshot)));
     EXPECT_EQ(TIM_DMA_CC1, dmaMotorTimers[0].timerDmaSources);
+    EXPECT_EQ(0U, CountEvent(Event::DmaEnable));
+    EXPECT_FALSE(dmaEnabled);
+
+    events.clear();
+    enabledTimerSources.clear();
+    pwmCompleteDshotMotorUpdate();
     EXPECT_EQ(1U, CountEvent(Event::DmaEnable));
+    ASSERT_EQ(1U, enabledTimerSources.size());
+    EXPECT_EQ(TIM_DMA_CC1, enabledTimerSources.back());
+    EXPECT_EQ(0U, dmaMotorTimers[0].timerDmaSources);
+    EXPECT_TRUE(dmaEnabled);
+    EXPECT_EQ(Event::DmaEnable, events.front());
+    ASSERT_EQ(1U, CountEvent(Event::CounterReset));
+    EXPECT_LT(std::find(events.begin(), events.end(), Event::DmaEnable),
+        std::find(events.begin(), events.end(), Event::CounterReset));
+    EXPECT_LT(std::find(events.begin(), events.end(), Event::CounterReset),
+        std::find(events.begin(), events.end(), Event::TimerEnable));
+    EXPECT_EQ(Event::TimerEnable, events.back());
     EXPECT_EQ(0U, blockingDisableCount);
+}
+
+TEST_F(Ft32DshotDmaTest, DirectSharedTimerArmsEveryConsumerBeforeProducer)
+{
+    DSHOT_DMA_BUFFER_UNIT output0[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    DSHOT_DMA_BUFFER_UNIT output1[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    dmaMotors[0] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dmaMotors[0].dmaBuffer = output0;
+    dmaMotors[0].timer = &dmaMotorTimers[0];
+    dmaMotors[0].configured = true;
+
+    timerHardware2 = timerHardware;
+    timerHardware2.channel = TIM_Channel_2;
+    dmaMotors[1] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dmaMotors[1].timerHardware = &timerHardware2;
+    dmaMotors[1].dmaRef = reinterpret_cast<dmaResource_t *>(&dmaChannel2);
+    dmaMotors[1].timerDmaSource = TIM_DMA_CC2;
+    dmaMotors[1].dmaBuffer = output1;
+    dmaMotors[1].timer = &dmaMotorTimers[0];
+    dmaMotors[1].configured = true;
+
+    dmaMotorTimers[0].timer = reinterpret_cast<timerResource_t *>(&timerRegs);
+    dmaMotorTimers[0].outputPeriod = 20U;
+    dmaMotorTimerCount = 1U;
+    dshotMotorCount = 2U;
+    loadDmaBuffer = loadDmaBufferDshot;
+
+    pwmWriteDshotInt(0U, 321U);
+    pwmWriteDshotInt(1U, 654U);
+    EXPECT_FALSE(dmaEnabled);
+    EXPECT_FALSE(dmaEnabled2);
+    EXPECT_EQ(TIM_DMA_CC1 | TIM_DMA_CC2, dmaMotorTimers[0].timerDmaSources);
+
+    events.clear();
+    enabledTimerSources.clear();
+    enableCallCount = 0U;
+    pwmCompleteDshotMotorUpdate();
+
+    EXPECT_TRUE(dmaEnabled);
+    EXPECT_TRUE(dmaEnabled2);
+    EXPECT_EQ(2U, CountEvent(Event::DmaEnable));
+    ASSERT_EQ(1U, CountEvent(Event::TimerEnable));
+    const auto producer = std::find(events.begin(), events.end(), Event::TimerEnable);
+    ASSERT_NE(events.end(), producer);
+    EXPECT_EQ(2U, static_cast<size_t>(std::count(events.begin(), producer, Event::DmaEnable)));
+    const auto counterReset = std::find(events.begin(), events.end(), Event::CounterReset);
+    ASSERT_NE(events.end(), counterReset);
+    EXPECT_EQ(2U, static_cast<size_t>(std::count(events.begin(), counterReset, Event::DmaEnable)));
+    EXPECT_LT(counterReset, producer);
+    ASSERT_EQ(1U, enabledTimerSources.size());
+    EXPECT_EQ(TIM_DMA_CC1 | TIM_DMA_CC2, enabledTimerSources.back());
+    EXPECT_EQ(0U, dmaMotorTimers[0].timerDmaSources);
+}
+
+TEST_F(Ft32DshotDmaTest, DirectSharedTimerEnableFailureRollsBackEveryConsumer)
+{
+    DSHOT_DMA_BUFFER_UNIT output0[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    DSHOT_DMA_BUFFER_UNIT output1[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    dmaMotors[0] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dmaMotors[0].dmaBuffer = output0;
+    dmaMotors[0].timer = &dmaMotorTimers[0];
+    dmaMotors[0].configured = true;
+
+    timerHardware2 = timerHardware;
+    timerHardware2.channel = TIM_Channel_2;
+    dmaMotors[1] = MakeDirectMotor(CanonicalDirectDescriptor());
+    dmaMotors[1].timerHardware = &timerHardware2;
+    dmaMotors[1].dmaRef = reinterpret_cast<dmaResource_t *>(&dmaChannel2);
+    dmaMotors[1].timerDmaSource = TIM_DMA_CC2;
+    dmaMotors[1].dmaBuffer = output1;
+    dmaMotors[1].timer = &dmaMotorTimers[0];
+    dmaMotors[1].configured = true;
+
+    dmaMotorTimers[0].timer = reinterpret_cast<timerResource_t *>(&timerRegs);
+    dmaMotorTimerCount = 1U;
+    dshotMotorCount = 2U;
+    loadDmaBuffer = loadDmaBufferDshot;
+    pwmWriteDshotInt(0U, 321U);
+    pwmWriteDshotInt(1U, 654U);
+
+    events.clear();
+    disabledResources.clear();
+    enabledTimerSources.clear();
+    enableCallCount = 0U;
+    failEnableCall = 2U;
+    pwmCompleteDshotMotorUpdate();
+
+    EXPECT_FALSE(dmaEnabled);
+    EXPECT_FALSE(dmaEnabled2);
+    EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
+    EXPECT_EQ(0U, CountEvent(Event::CounterReset));
+    EXPECT_TRUE(enabledTimerSources.empty());
+    EXPECT_NE(disabledResources.end(), std::find(disabledResources.begin(), disabledResources.end(), &dmaChannel));
+    EXPECT_NE(disabledResources.end(), std::find(disabledResources.begin(), disabledResources.end(), &dmaChannel2));
+    EXPECT_EQ(0U, dmaMotorTimers[0].timerDmaSources);
+}
+
+TEST_F(Ft32DshotDmaTest, DirectSharedTimerPartialPrepareSuppressesWholeBatch)
+{
+    DSHOT_DMA_BUFFER_UNIT output0[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    DSHOT_DMA_BUFFER_UNIT output1[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    ConfigureTwoDirectMotors(output0, output1);
+
+    dmaEnabled = true;
+    stickyDisable = true;
+    pwmWriteDshotInt(0U, 321U);
+    pwmWriteDshotInt(1U, 654U);
+    EXPECT_EQ(TIM_DMA_CC2, dmaMotorTimers[0].timerDmaSources);
+
+    events.clear();
+    disabledResources.clear();
+    enabledTimerSources.clear();
+    pwmCompleteDshotMotorUpdate();
+
+    EXPECT_TRUE(dmaEnabled);
+    EXPECT_FALSE(dmaEnabled2);
+    EXPECT_EQ(0U, CountEvent(Event::DmaEnable));
+    EXPECT_EQ(0U, CountEvent(Event::CounterReset));
+    EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
+    EXPECT_TRUE(enabledTimerSources.empty());
+    EXPECT_NE(disabledResources.end(),
+        std::find(disabledResources.begin(), disabledResources.end(), &dmaChannel2));
+    EXPECT_EQ(0U, dmaMotorTimers[0].timerDmaSources);
+}
+
+TEST_F(Ft32DshotDmaTest, DirectSharedTimerStickyRollbackSuppressesFollowingPartialFrame)
+{
+    DSHOT_DMA_BUFFER_UNIT output0[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    DSHOT_DMA_BUFFER_UNIT output1[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    ConfigureTwoDirectMotors(output0, output1);
+    pwmWriteDshotInt(0U, 321U);
+    pwmWriteDshotInt(1U, 654U);
+
+    stickyDisable = true;
+    failEnableCall = 2U;
+    pwmCompleteDshotMotorUpdate();
+    ASSERT_TRUE(dmaEnabled);
+    ASSERT_FALSE(dmaEnabled2);
+    ASSERT_TRUE(enabledTimerSources.empty());
+
+    events.clear();
+    disabledResources.clear();
+    enabledTimerSources.clear();
+    failEnableCall = 0U;
+    pwmWriteDshotInt(0U, 111U);
+    pwmWriteDshotInt(1U, 222U);
+    EXPECT_EQ(TIM_DMA_CC2, dmaMotorTimers[0].timerDmaSources);
+
+    events.clear();
+    disabledResources.clear();
+    pwmCompleteDshotMotorUpdate();
+
+    EXPECT_TRUE(dmaEnabled);
+    EXPECT_FALSE(dmaEnabled2);
+    EXPECT_EQ(0U, CountEvent(Event::DmaEnable));
+    EXPECT_EQ(0U, CountEvent(Event::CounterReset));
+    EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
+    EXPECT_TRUE(enabledTimerSources.empty());
+    EXPECT_EQ(0U, dmaMotorTimers[0].timerDmaSources);
+}
+
+TEST_F(Ft32DshotDmaTest, DirectSharedTimerMixedInputOutputSuppressesWholeBatch)
+{
+    DSHOT_DMA_BUFFER_UNIT output0[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    DSHOT_DMA_BUFFER_UNIT output1[DSHOT_DMA_BUFFER_ALLOC_SIZE] = {};
+    ConfigureTwoDirectMotors(output0, output1);
+    dmaMotors[0].isInput = true;
+    dmaEnabled = true;
+
+    pwmWriteDshotInt(0U, 321U);
+    pwmWriteDshotInt(1U, 654U);
+    EXPECT_EQ(TIM_DMA_CC2, dmaMotorTimers[0].timerDmaSources);
+
+    events.clear();
+    disabledResources.clear();
+    enabledTimerSources.clear();
+    pwmCompleteDshotMotorUpdate();
+
+    EXPECT_TRUE(dmaEnabled);
+    EXPECT_FALSE(dmaEnabled2);
+    EXPECT_EQ(0U, CountEvent(Event::DmaEnable));
+    EXPECT_EQ(0U, CountEvent(Event::CounterReset));
+    EXPECT_EQ(0U, CountEvent(Event::TimerEnable));
+    EXPECT_TRUE(enabledTimerSources.empty());
+    EXPECT_EQ(0U, dmaMotorTimers[0].timerDmaSources);
+}
+
+TEST_F(Ft32DshotDmaTest, DirectCompleteWithNoPreparedSourceDoesNotTouchHardware)
+{
+    dmaMotorTimers[0].timer = reinterpret_cast<timerResource_t *>(&timerRegs);
+    dmaMotorTimerCount = 1U;
+    dshotMotorCount = 1U;
+
+    events.clear();
+    pwmCompleteDshotMotorUpdate();
+
+    EXPECT_TRUE(events.empty());
+    EXPECT_FALSE(dmaEnabled);
+    EXPECT_TRUE(enabledTimerSources.empty());
 }
 
 TEST_F(Ft32DshotDmaTest, BurstStickyPreflightLatchesWholeTimerWithoutBufferMutation)
@@ -2250,8 +2515,10 @@ void TIM_DMAConfig(TIM_TypeDef *, uint32_t, uint32_t)
 {
 }
 
-void TIM_SetCounter(TIM_TypeDef *, uint32_t)
+void TIM_SetCounter(TIM_TypeDef *timer, uint32_t counter)
 {
+    timer->CNT = counter;
+    events.push_back(Event::CounterReset);
 }
 
 timeUs_t micros(void)
@@ -2394,6 +2661,7 @@ TEST_F(Ft32DshotNoTelemetryTest, UnconfiguredAndBoundaryValuesKeepIndependentLan
 
     ASSERT_TRUE(pwmDshotMotorHardwareConfig(
         &timerHardware, 0U, 0U, MOTOR_PROTOCOL_DSHOT600, 0U));
+    dshotMotorCount = 1U;
     loadDmaBuffer = mockLoadDmaBuffer;
     for (const uint16_t value : {uint16_t{0U}, uint16_t{1U},
              uint16_t{DSHOT_MAX_THROTTLE}, uint16_t{UINT16_MAX}}) {
@@ -2404,6 +2672,9 @@ TEST_F(Ft32DshotNoTelemetryTest, UnconfiguredAndBoundaryValuesKeepIndependentLan
         pwmWriteDshotInt(0U, value);
         EXPECT_EQ(value, dmaMotors[0].protocolControl.value);
         EXPECT_EQ(DSHOT_DMA_BUFFER_SIZE, shadowCount);
+        EXPECT_EQ(0U, enableCount);
+        EXPECT_FALSE(dmaEnabled);
+        pwmCompleteDshotMotorUpdate();
         EXPECT_EQ(1U, enableCount);
         EXPECT_TRUE(dmaEnabled);
         for (const DSHOT_DMA_BUFFER_UNIT canary : dshotDmaBuffer[1]) {
@@ -2516,6 +2787,7 @@ TEST_F(Ft32DshotDmaTest, DirectOutputInputOutputRecoversOneHundredTimesWithCanar
     dmaMotors[0].configured = true;
     dmaMotors[0].dshotTelemetryDeadtimeUs = 0U;
     dmaMotorTimers[0].timer = reinterpret_cast<timerResource_t *>(&timerRegs);
+    dmaMotorTimerCount = 1U;
     dshotMotorCount = 1U;
     useDshotTelemetry = true;
     useBurstDshot = false;
@@ -2526,6 +2798,8 @@ TEST_F(Ft32DshotDmaTest, DirectOutputInputOutputRecoversOneHundredTimesWithCanar
         events.clear();
         dmaEnabled = false;
         pwmWriteDshotInt(0U, static_cast<uint16_t>(100U + transition));
+        ASSERT_FALSE(dmaEnabled);
+        pwmCompleteDshotMotorUpdate();
         ASSERT_TRUE(dmaEnabled);
 
         SetTerminalFlags(true, false);

@@ -70,17 +70,6 @@ static bool pwmDshotDirectionRecoveryIsPending(const motorDmaOutput_t *motor)
 #endif
 
 #ifdef FT32F4
-static bool pwmDshotTryEnableMotor(motorDmaOutput_t *motor)
-{
-    DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)motor->dmaRef;
-    xDMA_Cmd(dmaRef, ENABLE);
-    if (!ft32DmaIsChannelEnabled(dmaRef)) {
-        ft32DmaRequestDisable(dmaRef);
-        return false;
-    }
-    return true;
-}
-
 #ifdef USE_DSHOT_DMAR
 static bool pwmDshotTryStopBurstMotor(const motorDmaOutput_t *motor)
 {
@@ -149,9 +138,9 @@ uint8_t getTimerIndex(void *timer)
 /**
  * Prepare to send dshot data for one motor
  *
- * Formats the value into the appropriate dma buffer and enables the dma channel.
- * The packet won't start transmitting until later since the dma requests from the timer
- * are disabled when this function is called.
+ * Formats the value into the appropriate DMA buffer and prepares the DMA channel.
+ * FT32 arms the channel at the synchronized update boundary; other platforms arm it
+ * here while timer requests remain disabled.
  *
  * @param index index of the motor that the data is to be sent to
  * @param value the dshot value to be sent
@@ -227,7 +216,7 @@ FAST_CODE void pwmWriteDshotInt(uint8_t index, uint16_t value)
         xLL_EX_DMA_EnableResource(motor->dmaRef);
 #else
 #ifdef FT32F4
-        if (bufferSize != motor->dmaInitStruct.BlockTransSize || !pwmDshotTryEnableMotor(motor)) {
+        if (bufferSize != motor->dmaInitStruct.BlockTransSize) {
             return;
         }
 #else
@@ -238,7 +227,7 @@ FAST_CODE void pwmWriteDshotInt(uint8_t index, uint16_t value)
 
 // XXX we can remove this ifdef if we add a new macro for the TRUE/ENABLE constants
 #if defined(FT32F4)
-        // The FT32 channel was enabled and checked before publishing timerDmaSources.
+        // FT32 publishes readiness here and arms the channel at updateComplete.
 #elif defined(AT32F435)
         xDMA_Cmd(motor->dmaRef, TRUE);
 #else

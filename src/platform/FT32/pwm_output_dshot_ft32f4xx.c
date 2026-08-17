@@ -256,6 +256,82 @@ static bool pwmDshotTryRearmBurst(DMA_ARCH_TYPE *dmaRef, uint16_t count, uint32_
     return true;
 }
 
+static void pwmDshotDmaArmBarrier(void)
+{
+#ifdef UNIT_TEST
+    __asm__ volatile ("" ::: "memory");
+#else
+    __DMB();
+#endif
+}
+
+static void pwmDshotDisableTimerChannels(const motorDmaTimer_t *motorTimer, uint16_t timerDmaSources)
+{
+    for (unsigned i = 0; i < dshotMotorCount; i++) {
+        motorDmaOutput_t *motor = &dmaMotors[i];
+        if (!motor->configured || motor->timer != motorTimer || !(timerDmaSources & motor->timerDmaSource)) {
+            continue;
+        }
+
+        DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)motor->dmaRef;
+        ft32DmaRequestDisable(dmaRef);
+        (void)ft32DmaIsChannelEnabled(dmaRef);
+    }
+}
+
+static uint16_t pwmDshotConfiguredTimerSources(const motorDmaTimer_t *motorTimer)
+{
+    uint16_t timerDmaSources = 0U;
+
+    for (unsigned i = 0; i < dshotMotorCount; i++) {
+        const motorDmaOutput_t *motor = &dmaMotors[i];
+        if (motor->configured && motor->timer == motorTimer) {
+            timerDmaSources |= motor->timerDmaSource;
+        }
+    }
+    return timerDmaSources;
+}
+
+static bool pwmDshotTryArmTimerChannels(const motorDmaTimer_t *motorTimer, uint16_t timerDmaSources)
+{
+    uint16_t armedSources = 0U;
+    bool channelsReady = true;
+
+    pwmDshotDmaArmBarrier();
+    for (unsigned i = 0; i < dshotMotorCount; i++) {
+        motorDmaOutput_t *motor = &dmaMotors[i];
+        if (!motor->configured || motor->timer != motorTimer || !(timerDmaSources & motor->timerDmaSource)) {
+            continue;
+        }
+
+#ifdef USE_DSHOT_TELEMETRY
+        if (motor->isInput || pwmDshotDirectionRecoveryIsPending(motor)) {
+            channelsReady = false;
+            continue;
+        }
+#endif
+
+        DMA_ARCH_TYPE *dmaRef = (DMA_ARCH_TYPE *)motor->dmaRef;
+        if (ft32DmaIsChannelEnabled(dmaRef)) {
+            channelsReady = false;
+            continue;
+        }
+
+        xDMA_Cmd(dmaRef, ENABLE);
+        if (!ft32DmaIsChannelEnabled(dmaRef)) {
+            channelsReady = false;
+            continue;
+        }
+        armedSources |= motor->timerDmaSource;
+    }
+
+    if (!channelsReady || armedSources != timerDmaSources) {
+        pwmDshotDisableTimerChannels(motorTimer, timerDmaSources);
+        return false;
+    }
+    return true;
+}
+
 #if defined(USE_DSHOT_DMAR) && defined(USE_DSHOT_TELEMETRY)
 static bool pwmDshotBurstTimerRecoveryIsPending(const motorDmaTimer_t *motorTimer)
 {
@@ -310,12 +386,23 @@ void pwmCompleteDshotMotorUpdate(void)
 #endif
         {
             TIM_TypeDef *tim = (TIM_TypeDef *)dmaMotorTimers[i].timer;
+            const uint16_t timerDmaSources = dmaMotorTimers[i].timerDmaSources;
+            dmaMotorTimers[i].timerDmaSources = 0U;
+            if (!timerDmaSources) {
+                continue;
+            }
+            if (timerDmaSources != pwmDshotConfiguredTimerSources(&dmaMotorTimers[i])) {
+                pwmDshotDisableTimerChannels(&dmaMotorTimers[i], timerDmaSources);
+                continue;
+            }
+            if (!pwmDshotTryArmTimerChannels(&dmaMotorTimers[i], timerDmaSources)) {
+                continue;
+            }
             TIM_ARRPreloadConfig(tim, DISABLE);
             tim->ARR = dmaMotorTimers[i].outputPeriod;
             TIM_ARRPreloadConfig(tim, ENABLE);
             TIM_SetCounter(tim, 0);
-            TIM_DMACmd(tim, dmaMotorTimers[i].timerDmaSources, ENABLE);
-            dmaMotorTimers[i].timerDmaSources = 0;
+            TIM_DMACmd(tim, timerDmaSources, ENABLE);
         }
     }
 }
