@@ -292,6 +292,64 @@ static uint16_t pwmDshotConfiguredTimerSources(const motorDmaTimer_t *motorTimer
     return timerDmaSources;
 }
 
+static uint16_t pwmDshotTimerOutputSources(const motorDmaTimer_t *motorTimer)
+{
+    uint16_t timerDmaSources = 0U;
+
+    for (unsigned i = 0; i < dshotMotorCount; i++) {
+        const motorDmaOutput_t *motor = &dmaMotors[i];
+        if (!motor->configured || motor->timer != motorTimer) {
+            continue;
+        }
+#ifdef USE_DSHOT_TELEMETRY
+        if (motor->isInput) {
+            continue;
+        }
+#endif
+        timerDmaSources |= motor->timerDmaSource;
+    }
+    return timerDmaSources;
+}
+
+static uint32_t pwmDshotTimerEventFlags(uint16_t timerDmaSources)
+{
+    uint32_t timerFlags = TIM_FLAG_Update;
+
+    if (timerDmaSources & TIM_DMA_CC1) {
+        timerFlags |= TIM_FLAG_CC1;
+    }
+    if (timerDmaSources & TIM_DMA_CC2) {
+        timerFlags |= TIM_FLAG_CC2;
+    }
+    if (timerDmaSources & TIM_DMA_CC3) {
+        timerFlags |= TIM_FLAG_CC3;
+    }
+    if (timerDmaSources & TIM_DMA_CC4) {
+        timerFlags |= TIM_FLAG_CC4;
+    }
+    return timerFlags;
+}
+
+static void pwmDshotQuiesceTimer(motorDmaTimer_t *motorTimer, uint16_t timerDmaSources)
+{
+    TIM_TypeDef *tim = (TIM_TypeDef *)motorTimer->timer;
+
+    TIM_DMACmd(tim, timerDmaSources, DISABLE);
+    TIM_Cmd(tim, DISABLE);
+    tim->ARR = motorTimer->outputPeriod;
+
+    for (unsigned i = 0; i < dshotMotorCount; i++) {
+        const motorDmaOutput_t *motor = &dmaMotors[i];
+        if (motor->configured && motor->timer == motorTimer) {
+            *timerChCCR(motor->timerHardware) = 0U;
+        }
+    }
+
+    TIM_GenerateEvent(tim, TIM_EventSource_Update);
+    TIM_SetCounter(tim, 0U);
+    TIM_ClearFlag(tim, pwmDshotTimerEventFlags(timerDmaSources));
+}
+
 static bool pwmDshotTryArmTimerChannels(const motorDmaTimer_t *motorTimer, uint16_t timerDmaSources)
 {
     uint16_t armedSources = 0U;
@@ -388,21 +446,28 @@ void pwmCompleteDshotMotorUpdate(void)
             TIM_TypeDef *tim = (TIM_TypeDef *)dmaMotorTimers[i].timer;
             const uint16_t timerDmaSources = dmaMotorTimers[i].timerDmaSources;
             dmaMotorTimers[i].timerDmaSources = 0U;
+            const uint16_t configuredTimerSources = pwmDshotConfiguredTimerSources(&dmaMotorTimers[i]);
             if (!timerDmaSources) {
+                const uint16_t outputTimerSources = pwmDshotTimerOutputSources(&dmaMotorTimers[i]);
+                if (configuredTimerSources && outputTimerSources) {
+                    pwmDshotQuiesceTimer(&dmaMotorTimers[i], configuredTimerSources);
+                    pwmDshotDisableTimerChannels(&dmaMotorTimers[i], outputTimerSources);
+                }
                 continue;
             }
-            if (timerDmaSources != pwmDshotConfiguredTimerSources(&dmaMotorTimers[i])) {
+            if (!configuredTimerSources) {
+                continue;
+            }
+            pwmDshotQuiesceTimer(&dmaMotorTimers[i], configuredTimerSources);
+            if (timerDmaSources != configuredTimerSources) {
                 pwmDshotDisableTimerChannels(&dmaMotorTimers[i], timerDmaSources);
                 continue;
             }
             if (!pwmDshotTryArmTimerChannels(&dmaMotorTimers[i], timerDmaSources)) {
                 continue;
             }
-            TIM_ARRPreloadConfig(tim, DISABLE);
-            tim->ARR = dmaMotorTimers[i].outputPeriod;
-            TIM_ARRPreloadConfig(tim, ENABLE);
-            TIM_SetCounter(tim, 0);
             TIM_DMACmd(tim, timerDmaSources, ENABLE);
+            TIM_Cmd(tim, ENABLE);
         }
     }
 }
@@ -589,6 +654,7 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
     motor->timer = &dmaMotorTimers[timerIndex];
     motor->index = motorIndex;
     motor->timerHardware = timerHardware;
+    motor->timer->outputPeriod = (pwmProtocolType == MOTOR_PROTOCOL_PROSHOT1000 ? MOTOR_NIBBLE_LENGTH_PROSHOT : MOTOR_BITLENGTH) - 1;
 
     const IO_t motorIO = IOGetByTag(timerHardware->tag);
 
@@ -611,7 +677,7 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
         TIM_Cmd(timer, DISABLE);
 
         TIM_TimeBaseStructure.TIM_Prescaler = (uint16_t)(lrintf((float) timerClock(timerHardware) / getDshotHz(pwmProtocolType) + 0.01f) - 1);
-        TIM_TimeBaseStructure.TIM_Period = (pwmProtocolType == MOTOR_PROTOCOL_PROSHOT1000 ? (MOTOR_NIBBLE_LENGTH_PROSHOT) : MOTOR_BITLENGTH) - 1;
+        TIM_TimeBaseStructure.TIM_Period = motor->timer->outputPeriod;
         TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
         TIM_TimeBaseStructure.TIM_RepetitionCounter = 0;
         TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
@@ -693,7 +759,6 @@ bool pwmDshotMotorHardwareConfig(const timerHardware_t *timerHardware, uint8_t m
     pwmDshotDirectionRecoveryClear(motor);
     motor->dshotTelemetryDeadtimeUs = DSHOT_TELEMETRY_DEADTIME_US + 1000000 *
         (16 * MOTOR_BITLENGTH) / getDshotHz(pwmProtocolType);
-    motor->timer->outputPeriod = (pwmProtocolType == MOTOR_PROTOCOL_PROSHOT1000 ? (MOTOR_NIBBLE_LENGTH_PROSHOT) : MOTOR_BITLENGTH) - 1;
     if (!pwmDshotTrySetDirectionOutputInternal(motor, &OCINIT, &DMAINIT)) {
         return false;
     }
