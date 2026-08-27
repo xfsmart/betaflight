@@ -363,6 +363,15 @@ void configClearFlags(void)
 #endif
 }
 
+#if defined(FT32F4) && defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
+#define FT32_CONFIG_CACHE_STATE_ICACHE        (1U << 0)
+#define FT32_CONFIG_CACHE_STATE_DCACHE        (1U << 1)
+#define FT32_CONFIG_CACHE_TRANSITION_TIMEOUT  1000000U
+#define FT32_CONFIG_CACHE_CS_DISABLED         (0U << CACHE_SR_CS_Pos)
+#define FT32_CONFIG_CACHE_CS_ENABLED          (2U << CACHE_SR_CS_Pos)
+#define FT32_CONFIG_CACHE_IRQ_ERROR_MASK      (CACHE_IRQSTAT_POWERR_Msk | CACHE_IRQSTAT_MANINVERR_Msk)
+#endif
+
 #if defined(FT32F4)
 RAM_CODE NOINLINE __attribute__((noipa))
 #endif
@@ -517,9 +526,35 @@ configStreamerResult_e configWriteWord(uintptr_t address, config_streamer_buffer
 
 #if defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
     // Flash data/code may be resident in the FT32 D/I caches.  Disable both
-    // while this SRAM routine changes Flash; re-enabling in automatic mode
-    // invalidates them before execution returns to Flash.
-    cacheState = ft32CacheDisable();
+    // with a call-free SRAM sequence while this routine changes Flash.
+    if ((ICACHE->ICACHE_CTRL & CACHE_CTRL_CEN_Msk) != 0U) {
+        cacheState |= FT32_CONFIG_CACHE_STATE_ICACHE;
+    }
+    if ((DCACHE->DCACHE_CTRL & CACHE_CTRL_CEN_Msk) != 0U) {
+        cacheState |= FT32_CONFIG_CACHE_STATE_DCACHE;
+    }
+
+    DCACHE->DCACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
+    ICACHE->ICACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
+    __DSB();
+
+    timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+    while ((ICACHE->ICACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED && timeout != 0U) {
+        timeout--;
+    }
+    if ((ICACHE->ICACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED) {
+        goto ft32FlashReset;
+    }
+
+    timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+    while ((DCACHE->DCACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED && timeout != 0U) {
+        timeout--;
+    }
+    if ((DCACHE->DCACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED) {
+        goto ft32FlashReset;
+    }
+
+    __ISB();
 #endif
 
     timeout = FLASH_ER_PRG_TIMEOUT;
@@ -602,7 +637,125 @@ configStreamerResult_e configWriteWord(uintptr_t address, config_streamer_buffer
 
 ft32FlashRestorePrimask:
 #if defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
-    ft32CacheRestore(cacheState);
+    if (cacheState != 0U) {
+        bool cacheRestoreSucceeded = true;
+
+        // Re-establish the disabled state before invalidation and re-enable.
+        DCACHE->DCACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
+        ICACHE->ICACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
+        __DSB();
+
+        timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+        while ((ICACHE->ICACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED && timeout != 0U) {
+            timeout--;
+        }
+        if ((ICACHE->ICACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED) {
+            goto ft32FlashReset;
+        }
+
+        timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+        while ((DCACHE->DCACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED && timeout != 0U) {
+            timeout--;
+        }
+        if ((DCACHE->DCACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED) {
+            goto ft32FlashReset;
+        }
+
+        timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+        while ((((ICACHE->ICACHE_CTRL & CACHE_CTRL_INV_Msk) != 0U)
+            || ((ICACHE->ICACHE_SR & CACHE_SR_INVST_Msk) != 0U)) && timeout != 0U) {
+            timeout--;
+        }
+        if (((ICACHE->ICACHE_CTRL & CACHE_CTRL_INV_Msk) != 0U)
+            || ((ICACHE->ICACHE_SR & CACHE_SR_INVST_Msk) != 0U)) {
+            cacheRestoreSucceeded = false;
+        }
+
+        timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+        while ((((DCACHE->DCACHE_CTRL & CACHE_CTRL_INV_Msk) != 0U)
+            || ((DCACHE->DCACHE_SR & CACHE_SR_INVST_Msk) != 0U)) && timeout != 0U) {
+            timeout--;
+        }
+        if (((DCACHE->DCACHE_CTRL & CACHE_CTRL_INV_Msk) != 0U)
+            || ((DCACHE->DCACHE_SR & CACHE_SR_INVST_Msk) != 0U)) {
+            cacheRestoreSucceeded = false;
+        }
+
+        if (cacheRestoreSucceeded) {
+            ICACHE->ICACHE_IRQSTAT = FT32_CONFIG_CACHE_IRQ_ERROR_MASK;
+            DCACHE->DCACHE_IRQSTAT = FT32_CONFIG_CACHE_IRQ_ERROR_MASK;
+            __DSB();
+
+            if (((ICACHE->ICACHE_IRQSTAT | DCACHE->DCACHE_IRQSTAT)
+                & FT32_CONFIG_CACHE_IRQ_ERROR_MASK) != 0U) {
+                cacheRestoreSucceeded = false;
+            }
+        }
+
+        if (cacheRestoreSucceeded) {
+            if ((cacheState & FT32_CONFIG_CACHE_STATE_DCACHE) != 0U) {
+                DCACHE->DCACHE_CTRL |= CACHE_CTRL_CEN_Msk;
+            }
+            if ((cacheState & FT32_CONFIG_CACHE_STATE_ICACHE) != 0U) {
+                ICACHE->ICACHE_CTRL |= CACHE_CTRL_CEN_Msk;
+            }
+            __DSB();
+
+            if ((cacheState & FT32_CONFIG_CACHE_STATE_DCACHE) != 0U) {
+                timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+                while ((DCACHE->DCACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_ENABLED && timeout != 0U) {
+                    timeout--;
+                }
+                if ((DCACHE->DCACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_ENABLED) {
+                    cacheRestoreSucceeded = false;
+                }
+            }
+
+            if ((cacheState & FT32_CONFIG_CACHE_STATE_ICACHE) != 0U) {
+                timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+                while ((ICACHE->ICACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_ENABLED && timeout != 0U) {
+                    timeout--;
+                }
+                if ((ICACHE->ICACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_ENABLED) {
+                    cacheRestoreSucceeded = false;
+                }
+            }
+
+            if (((ICACHE->ICACHE_IRQSTAT | DCACHE->DCACHE_IRQSTAT)
+                & FT32_CONFIG_CACHE_IRQ_ERROR_MASK) != 0U) {
+                cacheRestoreSucceeded = false;
+            }
+        }
+
+        if (!cacheRestoreSucceeded) {
+            // Return to Flash only after both controllers are confirmed off.
+            DCACHE->DCACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
+            ICACHE->ICACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
+            __DSB();
+
+            timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+            while ((ICACHE->ICACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED && timeout != 0U) {
+                timeout--;
+            }
+            if ((ICACHE->ICACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED) {
+                goto ft32FlashReset;
+            }
+
+            timeout = FT32_CONFIG_CACHE_TRANSITION_TIMEOUT;
+            while ((DCACHE->DCACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED && timeout != 0U) {
+                timeout--;
+            }
+            if ((DCACHE->DCACHE_SR & CACHE_SR_CS_Msk) != FT32_CONFIG_CACHE_CS_DISABLED) {
+                goto ft32FlashReset;
+            }
+
+            ICACHE->ICACHE_IRQSTAT = FT32_CONFIG_CACHE_IRQ_ERROR_MASK;
+            DCACHE->DCACHE_IRQSTAT = FT32_CONFIG_CACHE_IRQ_ERROR_MASK;
+            __DSB();
+        }
+    }
+
+    __ISB();
 #endif
     __DSB();
     __set_PRIMASK(savedPrimask);

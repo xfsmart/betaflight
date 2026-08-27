@@ -44,8 +44,6 @@ void SetSysClock(void);
 
 #if defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
 
-#define FT32_CACHE_STATE_ICACHE        (1U << 0)
-#define FT32_CACHE_STATE_DCACHE        (1U << 1)
 #define FT32_CACHE_TRANSITION_TIMEOUT  1000000U
 #define FT32_CACHE_CS_DISABLED         (0U << CACHE_SR_CS_Pos)
 #define FT32_CACHE_CS_ENABLED          (2U << CACHE_SR_CS_Pos)
@@ -59,7 +57,7 @@ void SetSysClock(void);
                                         | CACHE_CTRL_MAN_POW_Msk | CACHE_CTRL_MAN_INV_Msk \
                                         | CACHE_CTRL_SET_PREFETCH_Msk)
 
-static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheWaitForState(
+static bool ft32CacheWaitForState(
     volatile const uint32_t *statusRegister, uint32_t expectedState)
 {
     uint32_t timeout = FT32_CACHE_TRANSITION_TIMEOUT;
@@ -73,7 +71,7 @@ static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheWaitForState(
     return false;
 }
 
-static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheWaitForInvalidationIdle(
+static bool ft32CacheWaitForInvalidationIdle(
     volatile const uint32_t *controlRegister, volatile const uint32_t *statusRegister)
 {
     uint32_t timeout = FT32_CACHE_TRANSITION_TIMEOUT;
@@ -88,7 +86,7 @@ static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheWaitForInvalidatio
     return false;
 }
 
-static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheClearErrors(void)
+static bool ft32CacheClearErrors(void)
 {
     // Error status is W1C and blocks CEN from being set until it is cleared.
     ICACHE->ICACHE_IRQSTAT = FT32_CACHE_IRQ_ERROR_MASK;
@@ -98,12 +96,12 @@ static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheClearErrors(void)
     return ((ICACHE->ICACHE_IRQSTAT | DCACHE->DCACHE_IRQSTAT) & FT32_CACHE_IRQ_ERROR_MASK) == 0U;
 }
 
-static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheErrorsAreClear(void)
+static bool ft32CacheErrorsAreClear(void)
 {
     return ((ICACHE->ICACHE_IRQSTAT | DCACHE->DCACHE_IRQSTAT) & FT32_CACHE_IRQ_ERROR_MASK) == 0U;
 }
 
-static RAM_CODE NOINLINE __attribute__((noipa, noreturn)) void ft32CacheTransitionFailureReset(void)
+static __attribute__((noreturn)) void ft32CacheTransitionFailureReset(void)
 {
     __disable_irq();
 
@@ -118,7 +116,7 @@ static RAM_CODE NOINLINE __attribute__((noipa, noreturn)) void ft32CacheTransiti
     __builtin_unreachable();
 }
 
-static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheDisableControllers(void)
+static bool ft32CacheDisableControllers(void)
 {
     DCACHE->DCACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
     ICACHE->ICACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
@@ -136,10 +134,10 @@ static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheDisableControllers
  * and MAN_INV clear), leave cache-local prefetch disabled so CEN is the only
  * performance variable, and preserve the reset-enabled statistics bit.
  *
- * These routines execute from SRAM so the same disable/restore sequence can
- * safely bracket internal Flash erase/program operations.
+ * This boot-time routine remains in Flash.  Internal Flash self-programming
+ * uses a separate call-free SRAM sequence in configWriteWord.
  */
-RAM_CODE NOINLINE __attribute__((noipa)) void ft32CacheEnable(void)
+NOINLINE __attribute__((noipa)) void ft32CacheEnable(void)
 {
     __DSB();
 
@@ -181,81 +179,6 @@ RAM_CODE NOINLINE __attribute__((noipa)) void ft32CacheEnable(void)
 
     if (!iCacheEnabled || !dCacheEnabled || !ft32CacheErrorsAreClear()) {
         // Preserve firmware operation by falling back to cache-off if enabling fails.
-        if (!ft32CacheDisableControllers()) {
-            ft32CacheTransitionFailureReset();
-        }
-        (void)ft32CacheClearErrors();
-    }
-
-    __ISB();
-}
-
-RAM_CODE NOINLINE __attribute__((noipa)) uint32_t ft32CacheDisable(void)
-{
-    uint32_t state = 0U;
-
-    __DSB();
-
-    if ((ICACHE->ICACHE_CTRL & CACHE_CTRL_CEN_Msk) != 0U) {
-        state |= FT32_CACHE_STATE_ICACHE;
-    }
-    if ((DCACHE->DCACHE_CTRL & CACHE_CTRL_CEN_Msk) != 0U) {
-        state |= FT32_CACHE_STATE_DCACHE;
-    }
-
-    if (!ft32CacheDisableControllers()) {
-        ft32CacheTransitionFailureReset();
-    }
-
-    __ISB();
-
-    return state;
-}
-
-RAM_CODE NOINLINE __attribute__((noipa)) void ft32CacheRestore(uint32_t state)
-{
-    __DSB();
-
-    if (state == 0U) {
-        __ISB();
-        return;
-    }
-
-    if (!ft32CacheDisableControllers()) {
-        ft32CacheTransitionFailureReset();
-    }
-
-    const bool iCacheInvalidationIdle = ft32CacheWaitForInvalidationIdle(
-        &ICACHE->ICACHE_CTRL, &ICACHE->ICACHE_SR);
-    const bool dCacheInvalidationIdle = ft32CacheWaitForInvalidationIdle(
-        &DCACHE->DCACHE_CTRL, &DCACHE->DCACHE_SR);
-
-    if (!iCacheInvalidationIdle || !dCacheInvalidationIdle || !ft32CacheClearErrors()) {
-        __ISB();
-        return;
-    }
-
-    if ((state & FT32_CACHE_STATE_DCACHE) != 0U) {
-        DCACHE->DCACHE_CTRL |= CACHE_CTRL_CEN_Msk;
-    }
-    if ((state & FT32_CACHE_STATE_ICACHE) != 0U) {
-        ICACHE->ICACHE_CTRL |= CACHE_CTRL_CEN_Msk;
-    }
-
-    __DSB();
-
-    bool restoreSucceeded = true;
-
-    if ((state & FT32_CACHE_STATE_DCACHE) != 0U) {
-        restoreSucceeded = ft32CacheWaitForState(&DCACHE->DCACHE_SR, FT32_CACHE_CS_ENABLED);
-    }
-    if ((state & FT32_CACHE_STATE_ICACHE) != 0U) {
-        restoreSucceeded = ft32CacheWaitForState(&ICACHE->ICACHE_SR, FT32_CACHE_CS_ENABLED)
-            && restoreSucceeded;
-    }
-
-    if (!restoreSucceeded || !ft32CacheErrorsAreClear()) {
-        // Returning to Flash is safe only after both controllers are confirmed off.
         if (!ft32CacheDisableControllers()) {
             ft32CacheTransitionFailureReset();
         }

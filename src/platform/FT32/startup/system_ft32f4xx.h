@@ -21,12 +21,9 @@ extern void systemClockSetHSEValue(uint32_t frequency);
 extern int SystemSYSCLKSource(void);
 extern int SystemPLLSource(void);
 
-/* FT32 private I-code/D-code cache controller support.  Restore accepts only
- * the state token returned by the immediately preceding disable call. */
+/* Boot-time FT32 private I-code/D-code cache controller support. */
 #if defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
 extern void ft32CacheEnable(void);
-extern uint32_t ft32CacheDisable(void);
-extern void ft32CacheRestore(uint32_t state);
 #endif
 
 #ifdef __cplusplus
