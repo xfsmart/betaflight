@@ -1793,13 +1793,13 @@ typedef struct
 typedef struct
 {
   //---DCACHE
-  __IO    uint32_t  DCACHE_CTRL     ;  // 0x4003E020
-  __IO    uint32_t  DCACHE_SR       ;  // 0x4003E024
-  __IO    uint32_t  DCACHE_IRQMASK  ;  // 0X4003E028
-  __IO    uint32_t  DCACHE_IRQSTAT  ;  // 0X4003E02c
-  __IO    uint32_t  DCACHE_TYPE     ;  // 0x4003E030
-  __IO    uint32_t  DCACHE_CSHR     ;  // 0x4003E034
-  __IO    uint32_t  DCACHE_CSMR     ;  // 0x4003E038
+  __IO    uint32_t  DCACHE_CTRL     ;  // 0x4002E020
+  __IO    uint32_t  DCACHE_SR       ;  // 0x4002E024
+  __IO    uint32_t  DCACHE_IRQMASK  ;  // 0X4002E028
+  __IO    uint32_t  DCACHE_IRQSTAT  ;  // 0X4002E02c
+  __IO    uint32_t  DCACHE_TYPE     ;  // 0x4002E030
+  __IO    uint32_t  DCACHE_CSHR     ;  // 0x4002E034
+  __IO    uint32_t  DCACHE_CSMR     ;  // 0x4002E038
 }DCACHE_TypeDef;
 
 //******************** RNG register define*******************************
@@ -1991,6 +1991,7 @@ typedef struct
 #define OTG_FS_BASE           (AHB2_BASE + 0UL)
 #define OTG_HS_BASE           (AHB1_BASE + 0x20000UL)
 #define ETH_BASE              (AHB1_BASE + 0x8000UL)
+/* FT32F405 and FT32F407 use the same contiguous I/D cache window. */
 #define ICACHE_BASE           (AHB1_BASE + 0xE000UL)
 #define DCACHE_BASE           (AHB1_BASE + 0xE020UL)
 

@@ -142,6 +142,9 @@ DEVICE_FLAGS    += -DUSE_MSP_PUSH_OVER_VCP
 
 ifeq ($(TARGET_MCU),FT32F405)
 DEVICE_FLAGS    += -DFT32F405xE -DFT32F405
+# Keep the formal F405 release cache-enabled.  Set FT32_CACHE_ENABLE=0 only
+# when producing an explicit cache-off diagnostic image.
+FT32_CACHE_ENABLE ?= 1
 LD_SCRIPT       = $(LINKER_DIR)/ft32_flash_f405.ld
 STARTUP_SRC     = FT32/startup/gcc/startup_ft32f405xx.s
 MCU_FLASH_SIZE  := 512
@@ -150,6 +153,11 @@ DEVICE_FLAGS    += -finline-limit=20
 
 else ifeq ($(TARGET_MCU),FT32F407)
 DEVICE_FLAGS    += -DFT32F407xx -DFT32F407
+
+# Enable the FT32 I-code and D-code cache controllers by default.  Set
+# FT32_CACHE_ENABLE=0 on the make command line to build a cache-off image.
+FT32_CACHE_ENABLE ?= 1
+
 LD_SCRIPT       = $(LINKER_DIR)/ft32_flash_f407.ld
 STARTUP_SRC     = FT32/startup/gcc/startup_ft32f407xx.s
 MCU_FLASH_SIZE  := 512
@@ -159,6 +167,10 @@ DEVICE_FLAGS    += -finline-limit=20
 else
 $(error TARGET_MCU [$(TARGET_MCU)] is not supported)
 endif
+
+# Both FT32F405 and FT32F407 expose the same cache register window and enable
+# it by default.
+DEVICE_FLAGS    += -DFT32_CACHE_ENABLE=$(FT32_CACHE_ENABLE)
 
 # FT32F4xx Standard Peripheral Library I2C Driver
 FT32_I2C_STD_SRC = \

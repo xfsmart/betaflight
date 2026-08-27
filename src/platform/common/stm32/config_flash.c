@@ -490,6 +490,9 @@ configStreamerResult_e configWriteWord(uintptr_t address, config_streamer_buffer
     const uint32_t operationMask = FLASH_WRC_PG | FLASH_WRC_PER | FLASH_WRC_MER | FLASH_WRC_STRT
         | FLASH_WRC_PNB_Msk | FLASH_WRC_ESIZE_0 | FLASH_WRC_ESIZE_1;
     configStreamerResult_e result = CONFIG_RESULT_SUCCESS;
+#if defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
+    uint32_t cacheState = 0U;
+#endif
 
     if ((address & (sizeof(uint32_t) - 1U)) != 0U
         || address < configStart
@@ -511,6 +514,13 @@ configStreamerResult_e configWriteWord(uintptr_t address, config_streamer_buffer
     __disable_irq();
     __DSB();
     __ISB();
+
+#if defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
+    // Flash data/code may be resident in the FT32 D/I caches.  Disable both
+    // while this SRAM routine changes Flash; re-enabling in automatic mode
+    // invalidates them before execution returns to Flash.
+    cacheState = ft32CacheDisable();
+#endif
 
     timeout = FLASH_ER_PRG_TIMEOUT;
     while ((FLASH->FR & FLASH_FR_BSY) != 0U && timeout != 0U) {
@@ -591,6 +601,9 @@ configStreamerResult_e configWriteWord(uintptr_t address, config_streamer_buffer
     }
 
 ft32FlashRestorePrimask:
+#if defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
+    ft32CacheRestore(cacheState);
+#endif
     __DSB();
     __set_PRIMASK(savedPrimask);
     __ISB();

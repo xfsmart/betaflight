@@ -42,6 +42,231 @@ void SetSysClock(void);
 #define FT32_CCM_BASE                  0x10000000U
 #define FT32_CCM_END                   0x10010000U
 
+#if defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
+
+#define FT32_CACHE_STATE_ICACHE        (1U << 0)
+#define FT32_CACHE_STATE_DCACHE        (1U << 1)
+#define FT32_CACHE_TRANSITION_TIMEOUT  1000000U
+#define FT32_CACHE_CS_DISABLED         (0U << CACHE_SR_CS_Pos)
+#define FT32_CACHE_CS_ENABLED          (2U << CACHE_SR_CS_Pos)
+#define FT32_CACHE_IRQ_ERROR_MASK      (CACHE_IRQSTAT_POWERR_Msk | CACHE_IRQSTAT_MANINVERR_Msk)
+
+#if ICACHE_BASE != 0x4002E000UL || DCACHE_BASE != 0x4002E020UL
+#error "Unexpected FT32F405/407 cache register map"
+#endif
+
+#define FT32_CACHE_CTRL_CONFIG_MASK    (CACHE_CTRL_CEN_Msk | CACHE_CTRL_POW_Msk \
+                                        | CACHE_CTRL_MAN_POW_Msk | CACHE_CTRL_MAN_INV_Msk \
+                                        | CACHE_CTRL_SET_PREFETCH_Msk)
+
+static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheWaitForState(
+    volatile const uint32_t *statusRegister, uint32_t expectedState)
+{
+    uint32_t timeout = FT32_CACHE_TRANSITION_TIMEOUT;
+
+    while (timeout-- != 0U) {
+        if ((*statusRegister & CACHE_SR_CS_Msk) == expectedState) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheWaitForInvalidationIdle(
+    volatile const uint32_t *controlRegister, volatile const uint32_t *statusRegister)
+{
+    uint32_t timeout = FT32_CACHE_TRANSITION_TIMEOUT;
+
+    while (timeout-- != 0U) {
+        if (((*controlRegister & CACHE_CTRL_INV_Msk) == 0U)
+            && ((*statusRegister & CACHE_SR_INVST_Msk) == 0U)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheClearErrors(void)
+{
+    // Error status is W1C and blocks CEN from being set until it is cleared.
+    ICACHE->ICACHE_IRQSTAT = FT32_CACHE_IRQ_ERROR_MASK;
+    DCACHE->DCACHE_IRQSTAT = FT32_CACHE_IRQ_ERROR_MASK;
+    __DSB();
+
+    return ((ICACHE->ICACHE_IRQSTAT | DCACHE->DCACHE_IRQSTAT) & FT32_CACHE_IRQ_ERROR_MASK) == 0U;
+}
+
+static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheErrorsAreClear(void)
+{
+    return ((ICACHE->ICACHE_IRQSTAT | DCACHE->DCACHE_IRQSTAT) & FT32_CACHE_IRQ_ERROR_MASK) == 0U;
+}
+
+static RAM_CODE NOINLINE __attribute__((noipa, noreturn)) void ft32CacheTransitionFailureReset(void)
+{
+    __disable_irq();
+
+    const uint32_t priorityGroup = SCB->AIRCR & SCB_AIRCR_PRIGROUP_Msk;
+
+    __DSB();
+    SCB->AIRCR = priorityGroup
+        | (0x5FAUL << SCB_AIRCR_VECTKEY_Pos)
+        | SCB_AIRCR_SYSRESETREQ_Msk;
+    __DSB();
+    __asm volatile ("1: b 1b" ::: "memory");
+    __builtin_unreachable();
+}
+
+static RAM_CODE NOINLINE __attribute__((noipa)) bool ft32CacheDisableControllers(void)
+{
+    DCACHE->DCACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
+    ICACHE->ICACHE_CTRL &= ~CACHE_CTRL_CEN_Msk;
+    __DSB();
+
+    const bool iCacheDisabled = ft32CacheWaitForState(&ICACHE->ICACHE_SR, FT32_CACHE_CS_DISABLED);
+    const bool dCacheDisabled = ft32CacheWaitForState(&DCACHE->DCACHE_SR, FT32_CACHE_CS_DISABLED);
+
+    return iCacheDisabled && dCacheDisabled;
+}
+
+/*
+ * The FT32 cache controllers are separate AHB peripherals, not Cortex-M4
+ * SCB caches.  Keep automatic SRAM power and invalidation selected (MAN_POW
+ * and MAN_INV clear), leave cache-local prefetch disabled so CEN is the only
+ * performance variable, and preserve the reset-enabled statistics bit.
+ *
+ * These routines execute from SRAM so the same disable/restore sequence can
+ * safely bracket internal Flash erase/program operations.
+ */
+RAM_CODE NOINLINE __attribute__((noipa)) void ft32CacheEnable(void)
+{
+    __DSB();
+
+    // Controller configuration may only be changed while SR.CS is disabled.
+    if (!ft32CacheDisableControllers()) {
+        ft32CacheTransitionFailureReset();
+    }
+
+    // INV_REQ is hardware-cleared only; never try to clear it with an APB write.
+    const bool iCacheInvalidationIdle = ft32CacheWaitForInvalidationIdle(
+        &ICACHE->ICACHE_CTRL, &ICACHE->ICACHE_SR);
+    const bool dCacheInvalidationIdle = ft32CacheWaitForInvalidationIdle(
+        &DCACHE->DCACHE_CTRL, &DCACHE->DCACHE_SR);
+
+    if (!iCacheInvalidationIdle || !dCacheInvalidationIdle) {
+        __ISB();
+        return;
+    }
+
+    RCC->RAMCTL &= ~(RCC_RAMCTL_ICHRAMSEL | RCC_RAMCTL_DCHRAMSEL);
+
+    if (!ft32CacheClearErrors()) {
+        __ISB();
+        return;
+    }
+
+    ICACHE->ICACHE_CTRL &= ~FT32_CACHE_CTRL_CONFIG_MASK;
+    DCACHE->DCACHE_CTRL &= ~FT32_CACHE_CTRL_CONFIG_MASK;
+    __DSB();
+
+    ICACHE->ICACHE_CTRL |= CACHE_CTRL_CEN_Msk;
+    DCACHE->DCACHE_CTRL |= CACHE_CTRL_CEN_Msk;
+
+    __DSB();
+
+    // In automatic power/invalidate mode, CS=2 means both operations finished.
+    const bool iCacheEnabled = ft32CacheWaitForState(&ICACHE->ICACHE_SR, FT32_CACHE_CS_ENABLED);
+    const bool dCacheEnabled = ft32CacheWaitForState(&DCACHE->DCACHE_SR, FT32_CACHE_CS_ENABLED);
+
+    if (!iCacheEnabled || !dCacheEnabled || !ft32CacheErrorsAreClear()) {
+        // Preserve firmware operation by falling back to cache-off if enabling fails.
+        if (!ft32CacheDisableControllers()) {
+            ft32CacheTransitionFailureReset();
+        }
+        (void)ft32CacheClearErrors();
+    }
+
+    __ISB();
+}
+
+RAM_CODE NOINLINE __attribute__((noipa)) uint32_t ft32CacheDisable(void)
+{
+    uint32_t state = 0U;
+
+    __DSB();
+
+    if ((ICACHE->ICACHE_CTRL & CACHE_CTRL_CEN_Msk) != 0U) {
+        state |= FT32_CACHE_STATE_ICACHE;
+    }
+    if ((DCACHE->DCACHE_CTRL & CACHE_CTRL_CEN_Msk) != 0U) {
+        state |= FT32_CACHE_STATE_DCACHE;
+    }
+
+    if (!ft32CacheDisableControllers()) {
+        ft32CacheTransitionFailureReset();
+    }
+
+    __ISB();
+
+    return state;
+}
+
+RAM_CODE NOINLINE __attribute__((noipa)) void ft32CacheRestore(uint32_t state)
+{
+    __DSB();
+
+    if (state == 0U) {
+        __ISB();
+        return;
+    }
+
+    if (!ft32CacheDisableControllers()) {
+        ft32CacheTransitionFailureReset();
+    }
+
+    const bool iCacheInvalidationIdle = ft32CacheWaitForInvalidationIdle(
+        &ICACHE->ICACHE_CTRL, &ICACHE->ICACHE_SR);
+    const bool dCacheInvalidationIdle = ft32CacheWaitForInvalidationIdle(
+        &DCACHE->DCACHE_CTRL, &DCACHE->DCACHE_SR);
+
+    if (!iCacheInvalidationIdle || !dCacheInvalidationIdle || !ft32CacheClearErrors()) {
+        __ISB();
+        return;
+    }
+
+    if ((state & FT32_CACHE_STATE_DCACHE) != 0U) {
+        DCACHE->DCACHE_CTRL |= CACHE_CTRL_CEN_Msk;
+    }
+    if ((state & FT32_CACHE_STATE_ICACHE) != 0U) {
+        ICACHE->ICACHE_CTRL |= CACHE_CTRL_CEN_Msk;
+    }
+
+    __DSB();
+
+    bool restoreSucceeded = true;
+
+    if ((state & FT32_CACHE_STATE_DCACHE) != 0U) {
+        restoreSucceeded = ft32CacheWaitForState(&DCACHE->DCACHE_SR, FT32_CACHE_CS_ENABLED);
+    }
+    if ((state & FT32_CACHE_STATE_ICACHE) != 0U) {
+        restoreSucceeded = ft32CacheWaitForState(&ICACHE->ICACHE_SR, FT32_CACHE_CS_ENABLED)
+            && restoreSucceeded;
+    }
+
+    if (!restoreSucceeded || !ft32CacheErrorsAreClear()) {
+        // Returning to Flash is safe only after both controllers are confirmed off.
+        if (!ft32CacheDisableControllers()) {
+            ft32CacheTransitionFailureReset();
+        }
+        (void)ft32CacheClearErrors();
+    }
+
+    __ISB();
+}
+
+#endif
+
 void systemReset(void)
 {
     __disable_irq();
@@ -200,6 +425,11 @@ void systemInit(void)
 
     // Configure system clock (HSE/HSI -> PLL -> 210MHz default)
     SetSysClock();
+
+#if defined(FT32_CACHE_ENABLE) && FT32_CACHE_ENABLE
+    // Enable both FT32 cache controllers before peripheral/DMA setup.
+    ft32CacheEnable();
+#endif
 
     // Configure NVIC preempt/priority groups. CMSIS shifts the raw FT32
     // priority-group value before updating AIRCR; the FT32 StdPeriph helper
