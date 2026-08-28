@@ -260,7 +260,6 @@ FT32_MSP_UNUSED_LINK_SEAM(getEstimatedAltitudeCm);
 FT32_MSP_UNUSED_LINK_SEAM(getGyroDetectedFlags);
 FT32_MSP_UNUSED_LINK_SEAM(getLegacyBatteryVoltage);
 FT32_MSP_UNUSED_LINK_SEAM(getMAhDrawn);
-FT32_MSP_UNUSED_LINK_SEAM(getMcuTypeId);
 FT32_MSP_UNUSED_LINK_SEAM(getMcuTypeName);
 FT32_MSP_UNUSED_LINK_SEAM(getMotorCount);
 FT32_MSP_UNUSED_LINK_SEAM(getRebootRequired);
@@ -313,7 +312,9 @@ FT32_MSP_UNUSED_LINK_SEAM(rxRuntimeState);
 FT32_MSP_UNUSED_LINK_SEAM(sbufWriteBuildInfoFlags);
 FT32_MSP_UNUSED_LINK_SEAM(sensors);
 FT32_MSP_UNUSED_LINK_SEAM(serialConfig_System);
-FT32_MSP_UNUSED_LINK_SEAM(serialFindPortConfigurationMutable);
+FT32_MSP_UNUSED_LINK_SEAM(serialPortIdentifiers);
+FT32_MSP_UNUSED_LINK_SEAM(serialSynthesizeFunctionMask);
+FT32_MSP_UNUSED_LINK_SEAM(serialSynthesizePortBaud);
 FT32_MSP_UNUSED_LINK_SEAM(serialIsPortAvailable);
 FT32_MSP_UNUSED_LINK_SEAM(serializeBoxNameFn);
 FT32_MSP_UNUSED_LINK_SEAM(serializeBoxPermanentIdFn);
@@ -550,9 +551,9 @@ TEST(FT32MspSizeEquivalence, RealDispatcherResponseAndStateTrace)
 
     std::printf("FT32_MSP_TRACE cases=%u digest=%" PRIu64 "\n", caseCount, digest);
 
-    // Frozen from the first reviewed -O2 run.  The identical constant must
-    // pass unchanged in both the -O2 and -Os executables.
-    EXPECT_EQ(UINT64_C(13245422755985777579), digest)
+    // Rebaselined after the feature-owned serial-PG protocol update. The
+    // identical constant must pass unchanged in both optimization variants.
+    EXPECT_EQ(UINT64_C(147799516388391320), digest)
         << "candidate trace digest=" << digest;
 }
 

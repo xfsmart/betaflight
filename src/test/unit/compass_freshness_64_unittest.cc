@@ -8,13 +8,13 @@ TEST_F(CompassInitTest, Simulator64ExactBoundaryFailureDoesNotRefreshAndNextSamp
     publishMagSample(publishedAt, 11, 22, 33);
 
     testTimeUs = publishedAt + 499999U;
-    ASSERT_TRUE(compassIsHealthy());
+    ASSERT_TRUE(compassEnabledAndCalibrated());
 
     magReadResults.push_back({false, {0, 0, 0}});
     testTimeUs = publishedAt + 500000U;
     EXPECT_EQ(1000U, compassUpdate(testTimeUs));
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 
     publishMagSample(publishedAt + 700000U, 44, 55, 66);
-    EXPECT_TRUE(compassIsHealthy());
+    EXPECT_TRUE(compassEnabledAndCalibrated());
 }

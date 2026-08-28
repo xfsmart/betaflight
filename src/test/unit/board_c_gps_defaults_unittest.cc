@@ -28,19 +28,24 @@ extern "C" {
     #include "drivers/serial.h"
     #include "drivers/serial_softserial.h"
     #include "drivers/serial_uart.h"
+    #include "drivers/system.h"
 
     #include "io/gps.h"
     #include "io/serial.h"
 
     #include "pg/gps.h"
+    #include "pg/msp.h"
     #include "pg/pg.h"
     #include "pg/pg_ids.h"
     #include "pg/rx.h"
 
     #include "rx/rx.h"
+    #include "sensors/esc_sensor.h"
 
+    extern const pgRegistry_t mspConfig_Registry;
     extern const pgRegistry_t serialConfig_Registry;
     extern const pgRegistry_t rxConfig_Registry;
+    extern const escSensorConfig_t pgResetTemplate_escSensorConfig;
     extern const gpsConfig_t pgResetTemplate_gpsConfig;
     extern const featureConfig_t pgResetTemplate_featureConfig;
 
@@ -57,11 +62,6 @@ void resetWithFunction(const pgRegistry_t &registry)
     registry.reset.fn(registry.address);
 }
 
-const serialPortConfig_t *portConfig(serialPortIdentifier_e identifier)
-{
-    return serialFindPortConfiguration(identifier);
-}
-
 } // namespace
 
 TEST(BoardCGpsDefaultsTest, PreservesGlobalGpsFallbacksOrAppliesBoardOverrides)
@@ -69,66 +69,39 @@ TEST(BoardCGpsDefaultsTest, PreservesGlobalGpsFallbacksOrAppliesBoardOverrides)
 #ifdef BOARD_C_DEFAULTS_VARIANT
     EXPECT_EQ(GPS_NMEA, pgResetTemplate_gpsConfig.provider);
     EXPECT_EQ(GPS_AUTOCONFIG_OFF, pgResetTemplate_gpsConfig.autoConfig);
+    EXPECT_EQ(SERIAL_PORT_UART5, pgResetTemplate_gpsConfig.gps_uart);
+    EXPECT_EQ(BAUD_38400, pgResetTemplate_gpsConfig.gps_baud);
 #else
     EXPECT_EQ(GPS_UBLOX, pgResetTemplate_gpsConfig.provider);
     EXPECT_EQ(GPS_AUTOCONFIG_ON, pgResetTemplate_gpsConfig.autoConfig);
+    EXPECT_EQ(SERIAL_PORT_NONE, pgResetTemplate_gpsConfig.gps_uart);
+    EXPECT_EQ(BAUD_57600, pgResetTemplate_gpsConfig.gps_baud);
 #endif
     EXPECT_EQ(GPS_AUTOBAUD_OFF, pgResetTemplate_gpsConfig.autoBaud);
 }
 
-TEST(BoardCGpsDefaultsTest, ResetsSerialPortsWithoutTupleCollisions)
+TEST(BoardCGpsDefaultsTest, ResetsFeatureOwnedSerialAssignmentsWithoutCollisions)
 {
     resetWithFunction(serialConfig_Registry);
-
-    for (int index = 0; index < SERIAL_PORT_COUNT; index++) {
-        const serialPortConfig_t &config = serialConfig()->portConfigs[index];
-        EXPECT_EQ(serialPortIdentifiers[index], config.identifier);
-        EXPECT_EQ(BAUD_115200, config.msp_baudrateIndex);
-        baudRate_e expectedGpsBaudrate = BAUD_57600;
-#ifdef BOARD_C_DEFAULTS_VARIANT
-        if (config.identifier == SERIAL_PORT_UART5) {
-            expectedGpsBaudrate = BAUD_38400;
-        }
-#endif
-        EXPECT_EQ(expectedGpsBaudrate, config.gps_baudrateIndex);
-        EXPECT_EQ(BAUD_AUTO, config.telemetry_baudrateIndex);
-        EXPECT_EQ(BAUD_115200, config.blackbox_baudrateIndex);
-
-        serialPortFunction_e expectedFunction = FUNCTION_NONE;
-        if (config.identifier == SERIAL_PORT_USB_VCP) {
-            expectedFunction = FUNCTION_MSP;
-        }
-#ifdef BOARD_C_DEFAULTS_VARIANT
-        else if (config.identifier == SERIAL_PORT_UART5) {
-            expectedFunction = FUNCTION_GPS;
-        } else if (config.identifier == SERIAL_PORT_USART2) {
-            expectedFunction = FUNCTION_RX_SERIAL;
-        } else if (config.identifier == SERIAL_PORT_USART3) {
-            expectedFunction = FUNCTION_ESC_SENSOR;
-        }
-#endif
-        EXPECT_EQ(expectedFunction, config.functionMask);
-    }
-
     EXPECT_EQ('R', serialConfig()->reboot_character);
     EXPECT_EQ(100, serialConfig()->serial_update_rate_hz);
 
-    ASSERT_NE(nullptr, portConfig(SERIAL_PORT_USB_VCP));
-    EXPECT_EQ(FUNCTION_MSP, portConfig(SERIAL_PORT_USB_VCP)->functionMask);
+    resetWithFunction(mspConfig_Registry);
+    EXPECT_EQ(SERIAL_PORT_USB_VCP, mspConfig()->msp_uart[0]);
+    EXPECT_EQ(BAUD_115200, mspConfig()->msp_baud[0]);
+    for (unsigned slot = 1; slot < MAX_MSP_PORT_COUNT; slot++) {
+        EXPECT_EQ(SERIAL_PORT_NONE, mspConfig()->msp_uart[slot]);
+        EXPECT_EQ(BAUD_115200, mspConfig()->msp_baud[slot]);
+    }
 
 #ifdef BOARD_C_DEFAULTS_VARIANT
-    ASSERT_NE(nullptr, portConfig(SERIAL_PORT_UART5));
-    EXPECT_EQ(FUNCTION_GPS, portConfig(SERIAL_PORT_UART5)->functionMask);
-
-    ASSERT_NE(nullptr, portConfig(SERIAL_PORT_USART2));
-    EXPECT_EQ(FUNCTION_RX_SERIAL, portConfig(SERIAL_PORT_USART2)->functionMask);
-
-    ASSERT_NE(nullptr, portConfig(SERIAL_PORT_USART3));
-    EXPECT_EQ(FUNCTION_ESC_SENSOR, portConfig(SERIAL_PORT_USART3)->functionMask);
+    EXPECT_EQ(SERIAL_PORT_UART5, pgResetTemplate_gpsConfig.gps_uart);
+    EXPECT_EQ(BAUD_38400, pgResetTemplate_gpsConfig.gps_baud);
+    EXPECT_EQ(SERIAL_PORT_USART3, pgResetTemplate_escSensorConfig.esc_sensor_uart);
 #else
-    EXPECT_EQ(nullptr, findSerialPortConfig(FUNCTION_GPS));
-    EXPECT_EQ(nullptr, findSerialPortConfig(FUNCTION_RX_SERIAL));
-    EXPECT_EQ(nullptr, findSerialPortConfig(FUNCTION_ESC_SENSOR));
+    EXPECT_EQ(SERIAL_PORT_NONE, pgResetTemplate_gpsConfig.gps_uart);
+    EXPECT_EQ(BAUD_57600, pgResetTemplate_gpsConfig.gps_baud);
+    EXPECT_EQ(SERIAL_PORT_NONE, pgResetTemplate_escSensorConfig.esc_sensor_uart);
 #endif
 }
 
@@ -138,9 +111,11 @@ TEST(BoardCGpsDefaultsTest, ResetsReceiverAndFeatureDefaults)
 
 #ifdef BOARD_C_DEFAULTS_VARIANT
     EXPECT_EQ(SERIALRX_SBUS, rxConfig()->serialrx_provider);
+    EXPECT_EQ(SERIAL_PORT_USART2, rxConfig()->rx_uart);
     const uint32_t expectedFeatures = FEATURE_RX_SERIAL | FEATURE_ANTI_GRAVITY | FEATURE_AIRMODE | FEATURE_GPS;
 #else
     EXPECT_EQ(SERIALRX_CRSF, rxConfig()->serialrx_provider);
+    EXPECT_EQ(SERIAL_PORT_NONE, rxConfig()->rx_uart);
     const uint32_t expectedFeatures = FEATURE_RX_SERIAL | FEATURE_ANTI_GRAVITY | FEATURE_AIRMODE;
 #endif
     EXPECT_EQ(0, rxConfig()->serialrx_inverted);
@@ -155,8 +130,8 @@ void parseRcChannels(const char *, rxConfig_t *) {}
 
 void delay(uint32_t) {}
 bool isSerialTransmitBufferEmpty(const serialPort_t *) { return true; }
-void systemResetToBootloader(void) {}
-bool telemetryCheckRxPortShared(const serialPortConfig_t *) { return false; }
+void systemResetToBootloader(bootloaderRequestType_e) {}
+bool telemetryCheckRxPortShared(serialPortIdentifier_e, SerialRXType) { return false; }
 uint32_t serialRxBytesWaiting(const serialPort_t *) { return 0; }
 uint8_t serialRead(serialPort_t *) { return 0; }
 void serialWrite(serialPort_t *, uint8_t) {}

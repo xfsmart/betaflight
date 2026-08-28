@@ -128,7 +128,7 @@ void pgResetFn_gyroConfig(gyroConfig_t *gyroConfig)
         // NOTE: dynamic lpf is enabled by default so this setting is actually
         // overridden and the static lowpass 1 is disabled. We can't set this
         // value to 0 otherwise Configurator versions 10.4 and earlier will also
-        // reset the lowpass filter type to PT1 overriding the desired BIQUAD setting.
+        // reset the lowpass filter type to PT1 overriding the desired Butterworth setting.
     gyroConfig->gyro_lpf2_type = FILTER_PT1;
     gyroConfig->gyro_lpf2_static_hz = GYRO_LPF2_HZ_DEFAULT;
     gyroConfig->gyro_high_fsr = false;
@@ -487,7 +487,7 @@ FAST_CODE void gyroUpdate(void)
 
 #define GYRO_FILTER_FUNCTION_NAME filterGyroDebug
 #define GYRO_FILTER_DEBUG_SET DEBUG_SET
-#define GYRO_FILTER_AXIS_DEBUG_SET(axis, mode, index, value) if (axis == (int)gyro.gyroDebugAxis) DEBUG_SET(mode, index, value)
+#define GYRO_FILTER_AXIS_DEBUG_SET(axis, mode, index, value) if (axis == gyro.gyroDebugAxis) DEBUG_SET(mode, index, value)
 #include "gyro_filter_impl.c"
 #undef GYRO_FILTER_FUNCTION_NAME
 #undef GYRO_FILTER_DEBUG_SET
@@ -689,9 +689,10 @@ void dynLpfGyroUpdate(float throttle)
                 pt1FilterUpdateCutoff(&gyro.lowpassFilter[axis].pt1FilterState, pt1FilterGain(cutoffFreq, gyroDt));
             }
             break;
-        case DYN_LPF_BIQUAD:
+        case DYN_LPF_SVF:
+            cutoffFreq = MIN(cutoffFreq, 0.475f / gyroDt); // constrain to be below the nyquist
             for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
-                biquadFilterUpdateLPF(&gyro.lowpassFilter[axis].biquadFilterState, cutoffFreq, gyro.targetLooptime);
+                svfLowpassFilterUpdate(&gyro.lowpassFilter[axis].svfLowpassFilterState, cutoffFreq, gyroDt);
             }
             break;
         case  DYN_LPF_PT2:

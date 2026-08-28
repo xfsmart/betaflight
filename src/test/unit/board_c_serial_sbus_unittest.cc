@@ -56,11 +56,8 @@ constexpr unsigned DEBUG_SBUS_FRAME_TIME_TEST = 2;
 timeUs_t fakeNowUs;
 timeUs_t nextTestEpochUs;
 serialPort_t fakeSerialPort;
-serialPortConfig_t fakePortConfig;
-const serialPortConfig_t *findPortResult;
 bool openSucceeds;
 bool sharedPortResult;
-unsigned findPortCalls;
 unsigned openCalls;
 unsigned sharedPortCalls;
 serialReceiveCallbackPtr capturedRxCallback;
@@ -120,17 +117,10 @@ timeUs_t microsISR(void)
     return fakeNowUs;
 }
 
-const serialPortConfig_t *findSerialPortConfig(serialPortFunction_e function)
-{
-    findPortCalls++;
-    EXPECT_EQ(FUNCTION_RX_SERIAL, function);
-    return findPortResult;
-}
-
-bool telemetryCheckRxPortShared(const serialPortConfig_t *portConfig, const SerialRXType serialrxProvider)
+bool telemetryCheckRxPortShared(serialPortIdentifier_e identifier, const SerialRXType serialrxProvider)
 {
     sharedPortCalls++;
-    EXPECT_EQ(findPortResult, portConfig);
+    EXPECT_EQ(SERIAL_PORT_USART2, identifier);
     EXPECT_EQ(SERIALRX_SBUS, serialrxProvider);
     return sharedPortResult;
 }
@@ -171,13 +161,8 @@ protected:
         testEpochUs = nextTestEpochUs;
         fakeNowUs = testEpochUs;
         fakeSerialPort = {};
-        fakePortConfig = {};
-        fakePortConfig.identifier = SERIAL_PORT_USART2;
-        fakePortConfig.functionMask = FUNCTION_RX_SERIAL;
-        findPortResult = &fakePortConfig;
         openSucceeds = true;
         sharedPortResult = false;
-        findPortCalls = 0;
         openCalls = 0;
         sharedPortCalls = 0;
         capturedRxCallback = nullptr;
@@ -192,6 +177,7 @@ protected:
         debugMode = DEBUG_NONE;
 
         rxConfig.midrc = 1500;
+        rxConfig.rx_uart = SERIAL_PORT_USART2;
         runtime.serialrxProvider = SERIALRX_SBUS;
     }
 
@@ -211,15 +197,18 @@ protected:
     void sendFrame(
         const std::array<uint8_t, SBUS_WIRE_FRAME_SIZE> &frame,
         timeUs_t startAtUs,
-        timeDelta_t finalByteDeltaUs = 0)
+        timeDelta_t interByteUs = 120,
+        size_t gapBeforeIndex = SBUS_WIRE_FRAME_SIZE,
+        timeDelta_t gapUs = 0)
     {
         ASSERT_NE(nullptr, capturedRxCallback);
         fakeNowUs = startAtUs;
-        for (size_t index = 0; index + 1 < frame.size(); index++) {
+        for (size_t index = 0; index < frame.size(); index++) {
+            if (index != 0) {
+                fakeNowUs += index == gapBeforeIndex ? gapUs : interByteUs;
+            }
             capturedRxCallback(frame[index], capturedRxCallbackData);
         }
-        fakeNowUs = startAtUs + finalByteDeltaUs;
-        capturedRxCallback(frame.back(), capturedRxCallbackData);
     }
 
     void forceParserIdleBeforeClockJump()
@@ -234,7 +223,6 @@ TEST_F(BoardCSerialSbusTest, InitSelectsNormalAndFastBaudWithBoardCSerialOptions
 {
     ASSERT_TRUE(initialize());
     assertOpenContract();
-    EXPECT_EQ(1U, findPortCalls);
     EXPECT_EQ(1U, sharedPortCalls);
     EXPECT_EQ(1U, openCalls);
     EXPECT_EQ(SBUS_NORMAL_BAUD, capturedBaudRate);
@@ -247,13 +235,11 @@ TEST_F(BoardCSerialSbusTest, InitSelectsNormalAndFastBaudWithBoardCSerialOptions
     rxConfig.halfDuplex = true;
     rxConfig.rssi_src_frame_errors = true;
     sharedPortResult = true;
-    findPortCalls = 0;
     sharedPortCalls = 0;
     openCalls = 0;
 
     ASSERT_TRUE(initialize());
     assertOpenContract();
-    EXPECT_EQ(1U, findPortCalls);
     EXPECT_EQ(1U, sharedPortCalls);
     EXPECT_EQ(1U, openCalls);
     EXPECT_EQ(SBUS_FAST_BAUD, capturedBaudRate);
@@ -265,9 +251,8 @@ TEST_F(BoardCSerialSbusTest, InitSelectsNormalAndFastBaudWithBoardCSerialOptions
 
 TEST_F(BoardCSerialSbusTest, MissingPortAndOpenFailureRemainFailClosed)
 {
-    findPortResult = nullptr;
+    rxConfig.rx_uart = SERIAL_PORT_NONE;
     EXPECT_FALSE(initialize());
-    EXPECT_EQ(1U, findPortCalls);
     EXPECT_EQ(0U, sharedPortCalls);
     EXPECT_EQ(0U, openCalls);
     EXPECT_EQ(SBUS_MAX_CHANNEL, runtime.channelCount);
@@ -275,15 +260,13 @@ TEST_F(BoardCSerialSbusTest, MissingPortAndOpenFailureRemainFailClosed)
     ASSERT_NE(nullptr, runtime.rcFrameStatusFn);
     EXPECT_FLOAT_EQ(1500.0f, runtime.rcReadRawFn(&runtime, 0));
 
-    findPortResult = &fakePortConfig;
+    rxConfig.rx_uart = SERIAL_PORT_USART2;
     openSucceeds = false;
     sharedPortResult = true;
     rxConfig.rssi_src_frame_errors = true;
-    findPortCalls = 0;
 
     EXPECT_FALSE(initialize());
     assertOpenContract();
-    EXPECT_EQ(1U, findPortCalls);
     EXPECT_EQ(1U, sharedPortCalls);
     EXPECT_EQ(1U, openCalls);
     EXPECT_EQ(nullptr, telemetrySharedPort);
@@ -342,24 +325,24 @@ TEST_F(BoardCSerialSbusTest, SignalLossFailsafeAndBothFlagsPreserveLastGoodFrame
     EXPECT_EQ(173, runtime.channelData[0]);
 }
 
-TEST_F(BoardCSerialSbusTest, FrameDurationBoundaryAccepts3499And3500ButResynchronizesAt3501)
+TEST_F(BoardCSerialSbusTest, InterByteBoundaryAccepts600ButResynchronizesAt601)
 {
     ASSERT_TRUE(initialize());
     const std::array<uint16_t, 16> analog = channelPattern();
     const auto frame = makeSbusFrame(analog, 0);
 
     const timeUs_t firstStart = testEpochUs + 10000U;
-    sendFrame(frame, firstStart, 3499);
+    sendFrame(frame, firstStart, 120, 12, 600);
     EXPECT_EQ(RX_FRAME_COMPLETE, runtime.rcFrameStatusFn(&runtime));
     EXPECT_EQ(firstStart, runtime.lastRcFrameTimeUs);
 
     const timeUs_t secondStart = firstStart + 10000U;
-    sendFrame(frame, secondStart, 3500);
+    sendFrame(frame, secondStart, 120, 12, 600);
     EXPECT_EQ(RX_FRAME_COMPLETE, runtime.rcFrameStatusFn(&runtime));
     EXPECT_EQ(secondStart, runtime.lastRcFrameTimeUs);
 
     const timeUs_t rejectedStart = secondStart + 10000U;
-    sendFrame(frame, rejectedStart, 3501);
+    sendFrame(frame, rejectedStart, 120, 12, 601);
     EXPECT_EQ(RX_FRAME_PENDING, runtime.rcFrameStatusFn(&runtime));
     EXPECT_EQ(secondStart, runtime.lastRcFrameTimeUs);
 
@@ -382,11 +365,14 @@ TEST_F(BoardCSerialSbusTest, NoiseAndTruncationRequireFreshSyncBeforeRecovery)
     const timeUs_t partialStart = testEpochUs + 10000U;
     fakeNowUs = partialStart;
     for (size_t index = 0; index < 12; index++) {
+        if (index != 0) {
+            fakeNowUs += 120;
+        }
         capturedRxCallback(frame[index], capturedRxCallbackData);
     }
     EXPECT_EQ(RX_FRAME_PENDING, runtime.rcFrameStatusFn(&runtime));
 
-    fakeNowUs = partialStart + 3501U;
+    fakeNowUs += 601U;
     capturedRxCallback(0x55, capturedRxCallbackData);
     EXPECT_EQ(RX_FRAME_PENDING, runtime.rcFrameStatusFn(&runtime));
 
@@ -404,8 +390,8 @@ TEST_F(BoardCSerialSbusTest, CompleteFrameIgnoresImmediateTrailingByteAndPublish
     const auto frame = makeSbusFrame(channelPattern(), flags);
     const timeUs_t frameStart = testEpochUs + 10000U;
 
-    sendFrame(frame, frameStart, 2500U);
-    EXPECT_EQ(2500, debug[DEBUG_SBUS_FRAME_TIME_TEST]);
+    sendFrame(frame, frameStart);
+    EXPECT_EQ(2880, debug[DEBUG_SBUS_FRAME_TIME_TEST]);
 
     fakeNowUs = frameStart + 3000U;
     capturedRxCallback(0x55, capturedRxCallbackData);
@@ -421,20 +407,20 @@ TEST_F(BoardCSerialSbusTest, CompleteFrameIgnoresImmediateTrailingByteAndPublish
     EXPECT_EQ(recoveryStart, runtime.lastRcFrameTimeUs);
 }
 
-TEST_F(BoardCSerialSbusTest, FrameDurationBoundaryUsesWrapSafeTimeArithmetic)
+TEST_F(BoardCSerialSbusTest, InterByteBoundaryUsesWrapSafeTimeArithmetic)
 {
     ASSERT_TRUE(initialize());
     forceParserIdleBeforeClockJump();
     const auto frame = makeSbusFrame(channelPattern(), 0);
     const timeUs_t frameStart = UINT32_MAX - 1000U;
 
-    sendFrame(frame, frameStart, 3500);
+    sendFrame(frame, frameStart);
 
     EXPECT_EQ(RX_FRAME_COMPLETE, runtime.rcFrameStatusFn(&runtime));
     EXPECT_EQ(frameStart, runtime.lastRcFrameTimeUs);
     EXPECT_EQ(RX_FRAME_PENDING, runtime.rcFrameStatusFn(&runtime));
 
-    fakeNowUs = frameStart + 3501U;
+    fakeNowUs = frameStart + 24U * 120U + 601U;
     capturedRxCallback(0x55, capturedRxCallbackData);
     EXPECT_EQ(RX_FRAME_PENDING, runtime.rcFrameStatusFn(&runtime));
 }

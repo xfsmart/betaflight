@@ -42,10 +42,8 @@
 
 float autopilotAngle[RP_AXIS_COUNT];
 
-void resetPositionControl(const gpsLocation_t *initialTargetLocation, unsigned taskRateHz)
+void resetPositionControl(unsigned taskRateHz)
 {
-    // from pos_hold.c (or other client) when initiating position hold at target location
-    UNUSED(initialTargetLocation);
     UNUSED(taskRateHz);
 }
 
@@ -56,16 +54,12 @@ void autopilotInit(void)
 void resetAltitudeControl (void) {
 }
 
-void altitudeControl(float targetAltitudeCm, float taskIntervalS, float targetAltitudeStep)
+void altitudeControl(float targetAltitudeCm, float taskIntervalS, float targetAltitudeVelCmS, float velLimitCmS)
 {
     UNUSED(targetAltitudeCm);
     UNUSED(taskIntervalS);
-    UNUSED(targetAltitudeStep);
-}
-
-void setSticksActiveStatus(bool areSticksActive)
-{
-    UNUSED(areSticksActive);
+    UNUSED(targetAltitudeVelCmS);
+    UNUSED(velLimitCmS);
 }
 
 bool positionControl(void)
@@ -86,6 +80,37 @@ float getAutopilotThrottle(void)
 bool isAutopilotInControl(void)
 {
     return false;
+}
+
+float autopilotGetYawRate(void)
+{
+    return 0.0f;
+}
+
+bool autopilotYawControlActive(void)
+{
+    return false;
+}
+
+void autopilotSetYawRateLimit(float rateLimitDps)
+{
+    UNUSED(rateLimitDps);
+}
+
+void autopilotSetNavHeadingOverride(bool valid, float headingDeg)
+{
+    UNUSED(valid);
+    UNUSED(headingDeg);
+}
+
+void autopilotForceLevelPark(bool request)
+{
+    UNUSED(request);
+}
+
+void pitchForwardOverride(bool request)
+{
+    UNUSED(request);
 }
 
 #endif // USE_WING

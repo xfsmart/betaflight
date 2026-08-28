@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include <limits.h>
 
@@ -29,31 +30,67 @@ extern "C" {
 
     #include "io/serial.h"
 
+    #include "rx/rx.h"
+
     #include "pg/pg.h"
     #include "pg/pg_ids.h"
     #include "pg/rx.h"
+    #include "pg/msp.h"
 
     void serialInit(bool softserialEnabled);
 
     PG_REGISTER(rxConfig_t, rxConfig, PG_RX_CONFIG, 0);
+    PG_REGISTER(mspConfig_t, mspConfig, PG_MSP_CONFIG, 0);
     PG_REGISTER(serialPinConfig_t, serialPinConfig, PG_SERIAL_PIN_CONFIG, 0);
 }
 
 #include "unittest_macros.h"
 #include "gtest/gtest.h"
 
-TEST(IoSerialTest, TestFindPortConfig)
+static uint32_t stubbedFunctionMask[SERIAL_PORT_COUNT];
+
+static void setStubbedFunctionMask(serialPortIdentifier_e identifier, uint32_t mask)
 {
-    // given
-    serialInit(false);
-
-    // when
-    const serialPortConfig_t *portConfig = findSerialPortConfig(FUNCTION_MSP);
-
-    // then
-    EXPECT_EQ(NULL, portConfig);
+    stubbedFunctionMask[findSerialPortIndexByIdentifier(identifier)] = mask;
 }
 
+TEST(IoSerialTest, TestPortSharing)
+{
+    // given
+    memset(stubbedFunctionMask, 0, sizeof(stubbedFunctionMask));
+    serialInit(false);
+
+    // then nothing claims a port, so no function is in use
+    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(SERIAL_PORT_UART1, FUNCTION_MSP));
+    EXPECT_FALSE(isSerialPortShared(SERIAL_PORT_UART1, FUNCTION_MSP, FUNCTION_BLACKBOX));
+
+    // when a single function claims the port
+    setStubbedFunctionMask(SERIAL_PORT_UART1, FUNCTION_MSP);
+
+    // then
+    EXPECT_EQ(PORTSHARING_NOT_SHARED, determinePortSharing(SERIAL_PORT_UART1, FUNCTION_MSP));
+    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(SERIAL_PORT_UART1, FUNCTION_BLACKBOX));
+    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(SERIAL_PORT_UART2, FUNCTION_MSP));
+    EXPECT_FALSE(isSerialPortShared(SERIAL_PORT_UART1, FUNCTION_MSP, FUNCTION_BLACKBOX));
+
+    // when a second function joins it
+    setStubbedFunctionMask(SERIAL_PORT_UART1, FUNCTION_MSP | FUNCTION_BLACKBOX);
+
+    // then
+    EXPECT_EQ(PORTSHARING_SHARED, determinePortSharing(SERIAL_PORT_UART1, FUNCTION_MSP));
+    EXPECT_EQ(PORTSHARING_SHARED, determinePortSharing(SERIAL_PORT_UART1, FUNCTION_BLACKBOX));
+    EXPECT_TRUE(isSerialPortShared(SERIAL_PORT_UART1, FUNCTION_MSP, FUNCTION_BLACKBOX));
+
+    // and SERIAL_PORT_NONE is never in use
+    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(SERIAL_PORT_NONE, FUNCTION_MSP));
+    EXPECT_FALSE(isSerialPortShared(SERIAL_PORT_NONE, FUNCTION_MSP, FUNCTION_BLACKBOX));
+}
+
+
+struct ResetCalled {};
+static const serialPort_t *hostPort = NULL;
+static uint32_t fakeMillis = 0;
+static int plusToSend = 0;
 
 // STUBS
 extern "C" {
@@ -63,11 +100,14 @@ extern "C" {
 
     void systemResetToBootloader(void) {}
 
-    bool telemetryCheckRxPortShared(const serialPortConfig_t *) { return false; }
+    bool telemetryCheckRxPortShared(serialPortIdentifier_e, SerialRXType) { return false; }
 
-    uint32_t serialRxBytesWaiting(const serialPort_t *) { return 0; }
-    uint8_t serialRead(serialPort_t *) { return 0; }
+    uint32_t serialRxBytesWaiting(const serialPort_t *p) { return p == hostPort ? plusToSend : 0; }
+    uint8_t serialRead(serialPort_t *) { plusToSend--; return '+'; }
     void serialWrite(serialPort_t *, uint8_t) {}
+
+    uint32_t millis(void) { return fakeMillis += 1000; }  // advance so the "+++" idle guard always passes
+    void systemReset(void) { throw ResetCalled(); }
 
     serialPort_t *usbVcpOpen(void) { return NULL; }
 
@@ -86,65 +126,97 @@ extern "C" {
     void serialSetBaudRateCb(serialPort_t *, void (*)(serialPort_t *context, uint32_t baud), serialPort_t *) {}
 
     void pinioSet(int, bool) {}
+
+    // serial_feature_map is exercised by its own unit test; stub here so
+    // determinePortSharing/isSerialPortShared can be driven directly.
+    uint32_t serialSynthesizeFunctionMask(serialPortIdentifier_e identifier) {
+        const int index = findSerialPortIndexByIdentifier(identifier);
+        return index < 0 ? 0 : stubbedFunctionMask[index];
+    }
 }
 
-TEST(IoSerialTest, EnumeratesDuplicateFunctionsAndClassifiesSharingBoundaries)
+TEST(IoSerialTest, TestFunctionsConflict)
 {
-    *serialConfigMutable() = {};
-    serialConfigMutable()->portConfigs[0].identifier = SERIAL_PORT_USB_VCP;
-    serialConfigMutable()->portConfigs[0].functionMask = FUNCTION_MSP;
-    serialConfigMutable()->portConfigs[1].identifier = SERIAL_PORT_USART1;
-    serialConfigMutable()->portConfigs[1].functionMask = FUNCTION_GPS | FUNCTION_BLACKBOX;
-    serialConfigMutable()->portConfigs[2].identifier = SERIAL_PORT_USART2;
-    serialConfigMutable()->portConfigs[2].functionMask = FUNCTION_GPS;
+    memset(stubbedFunctionMask, 0, sizeof(stubbedFunctionMask));
 
-    const serialPortConfig_t *firstGps = findSerialPortConfig(FUNCTION_GPS);
-    ASSERT_EQ(&serialConfig()->portConfigs[1], firstGps);
-    EXPECT_EQ(PORTSHARING_SHARED, determinePortSharing(firstGps, FUNCTION_GPS));
-    EXPECT_TRUE(isSerialPortShared(firstGps, FUNCTION_BLACKBOX, FUNCTION_GPS));
-    EXPECT_FALSE(isSerialPortShared(firstGps, FUNCTION_RX_SERIAL, FUNCTION_GPS));
+    // a lone function never clashes with itself
+    setStubbedFunctionMask(SERIAL_PORT_UART1, FUNCTION_MSP);
+    EXPECT_FALSE(serialPortFunctionsConflict(SERIAL_PORT_UART1));
 
-    const serialPortConfig_t *secondGps = findNextSerialPortConfig(FUNCTION_GPS);
-    ASSERT_EQ(&serialConfig()->portConfigs[2], secondGps);
-    EXPECT_EQ(PORTSHARING_NOT_SHARED, determinePortSharing(secondGps, FUNCTION_GPS));
-    EXPECT_EQ(nullptr, findNextSerialPortConfig(FUNCTION_GPS));
-    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(nullptr, FUNCTION_GPS));
-    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(secondGps, FUNCTION_MSP));
+    // MSP sharing with what it is allowed to share with
+    setStubbedFunctionMask(SERIAL_PORT_UART1, FUNCTION_MSP | FUNCTION_BLACKBOX);
+    EXPECT_FALSE(serialPortFunctionsConflict(SERIAL_PORT_UART1));
+
+    // an MT rangefinder is heard over MSP on the port it declares
+    setStubbedFunctionMask(SERIAL_PORT_UART1, FUNCTION_MSP | FUNCTION_LIDAR);
+    EXPECT_FALSE(serialPortFunctionsConflict(SERIAL_PORT_UART1));
+
+    // MSP cannot share with serial RX
+    setStubbedFunctionMask(SERIAL_PORT_UART1, FUNCTION_MSP | FUNCTION_RX_SERIAL);
+    EXPECT_TRUE(serialPortFunctionsConflict(SERIAL_PORT_UART1));
+
+    // nor does an allowed pairing excuse a function outside the set
+    setStubbedFunctionMask(SERIAL_PORT_UART1, FUNCTION_MSP | FUNCTION_BLACKBOX | FUNCTION_RX_SERIAL);
+    EXPECT_TRUE(serialPortFunctionsConflict(SERIAL_PORT_UART1));
+
+    setStubbedFunctionMask(SERIAL_PORT_UART1, FUNCTION_MSP | FUNCTION_LIDAR | FUNCTION_GPS);
+    EXPECT_TRUE(serialPortFunctionsConflict(SERIAL_PORT_UART1));
+
+    memset(stubbedFunctionMask, 0, sizeof(stubbedFunctionMask));
+}
+
+TEST(IoSerialTest, TestPassthroughEscape)
+{
+    // given
+    serialPort_t left = {}, right = {};
+    right.identifier = SERIAL_PORT_UART1;   // non-USB host -> "+++" escape enabled
+    hostPort = &right;
+    fakeMillis = 0;
+    plusToSend = 3;
+    // when "+++" arrives after an idle gap, then it must reboot out of passthrough
+    EXPECT_THROW(serialPassthrough(&left, &right, NULL, NULL), ResetCalled);
+}
+
+TEST(IoSerialTest, ClassifiesSynthesizedFunctionsAndConfigurationUse)
+{
+    memset(stubbedFunctionMask, 0, sizeof(stubbedFunctionMask));
+    setStubbedFunctionMask(SERIAL_PORT_USART1, FUNCTION_GPS | FUNCTION_BLACKBOX);
+    setStubbedFunctionMask(SERIAL_PORT_USART2, FUNCTION_GPS);
+
+    EXPECT_EQ(PORTSHARING_SHARED, determinePortSharing(SERIAL_PORT_USART1, FUNCTION_GPS));
+    EXPECT_TRUE(isSerialPortShared(SERIAL_PORT_USART1, FUNCTION_BLACKBOX, FUNCTION_GPS));
+    EXPECT_FALSE(isSerialPortShared(SERIAL_PORT_USART1, FUNCTION_RX_SERIAL, FUNCTION_GPS));
+    EXPECT_EQ(PORTSHARING_NOT_SHARED, determinePortSharing(SERIAL_PORT_USART2, FUNCTION_GPS));
+    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(SERIAL_PORT_NONE, FUNCTION_GPS));
+    EXPECT_EQ(PORTSHARING_UNUSED, determinePortSharing(SERIAL_PORT_USART2, FUNCTION_MSP));
     EXPECT_TRUE(doesConfigurationUsePort(SERIAL_PORT_USART1));
     EXPECT_FALSE(doesConfigurationUsePort(SERIAL_PORT_USART3));
 }
 
 TEST(IoSerialTest, ValidationRejectsMissingMspUsbAndIllegalSharingCombinations)
 {
-    serialConfig_t *config = serialConfigMutable();
-
-    *config = {};
-    config->portConfigs[0].identifier = SERIAL_PORT_USB_VCP;
-    config->portConfigs[0].functionMask = FUNCTION_MSP;
-    EXPECT_TRUE(isSerialConfigValid(config));
-
-    config->portConfigs[0].functionMask = FUNCTION_MSP | FUNCTION_BLACKBOX;
-    EXPECT_TRUE(isSerialConfigValid(config));
-
-    config->portConfigs[0].functionMask = FUNCTION_NONE;
-    EXPECT_FALSE(isSerialConfigValid(config));
-
-    config->portConfigs[0].functionMask = FUNCTION_GPS;
-    EXPECT_FALSE(isSerialConfigValid(config));
-
-    *config = {};
-    config->portConfigs[0].identifier = SERIAL_PORT_USB_VCP;
-    config->portConfigs[0].functionMask = FUNCTION_MSP;
-    config->portConfigs[1].identifier = SERIAL_PORT_USART1;
-    config->portConfigs[1].functionMask = FUNCTION_GPS | FUNCTION_RX_SERIAL;
-    EXPECT_FALSE(isSerialConfigValid(config));
-
-    *config = {};
-    for (unsigned i = 0; i < 4; i++) {
-        config->portConfigs[i].identifier = serialPortIdentifiers[i];
-        config->portConfigs[i].functionMask = FUNCTION_MSP;
+    memset(stubbedFunctionMask, 0, sizeof(stubbedFunctionMask));
+    memset(mspConfigMutable(), 0, sizeof(*mspConfigMutable()));
+    for (unsigned slot = 0; slot < MAX_MSP_PORT_COUNT; slot++) {
+        mspConfigMutable()->msp_uart[slot] = SERIAL_PORT_NONE;
     }
-    EXPECT_FALSE(isSerialConfigValid(config));
+
+    mspConfigMutable()->msp_uart[0] = SERIAL_PORT_USB_VCP;
+    setStubbedFunctionMask(SERIAL_PORT_USB_VCP, FUNCTION_MSP);
+    EXPECT_TRUE(isSerialConfigValid());
+
+    setStubbedFunctionMask(SERIAL_PORT_USB_VCP, FUNCTION_MSP | FUNCTION_BLACKBOX);
+    EXPECT_TRUE(isSerialConfigValid());
+
+    setStubbedFunctionMask(SERIAL_PORT_USB_VCP, FUNCTION_NONE);
+    EXPECT_FALSE(isSerialConfigValid());
+
+    setStubbedFunctionMask(SERIAL_PORT_USB_VCP, FUNCTION_GPS);
+    EXPECT_FALSE(isSerialConfigValid());
+
+    setStubbedFunctionMask(SERIAL_PORT_USB_VCP, FUNCTION_MSP);
+    setStubbedFunctionMask(SERIAL_PORT_USART1, FUNCTION_GPS | FUNCTION_RX_SERIAL);
+    EXPECT_FALSE(isSerialConfigValid());
 }
 
 TEST(IoSerialTest, FailedOpenLeavesUsageUnclaimedAndExistingOwnerBlocksDuplicates)

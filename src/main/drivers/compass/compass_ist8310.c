@@ -222,7 +222,7 @@ static bool ist8310Init(magDev_t *magDev)
     return ack;
 }
 
-static bool ist8310Read(magDev_t * magDev, int16_t *magData)
+static bool ist8310Read(magDev_t *magDev, int16_t *magData)
 {
     extDevice_t *dev = &magDev->dev;
 

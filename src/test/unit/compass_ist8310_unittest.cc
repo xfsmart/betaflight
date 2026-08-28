@@ -174,7 +174,7 @@ TEST_F(Ist8310Test, InitTriggerFailureLeavesOdrUnavailable)
     EXPECT_EQ(std::make_pair(IST8310_REG_CNTRL1, static_cast<uint8_t>(0x01)), synchronousWrites.back());
 }
 
-TEST_F(Ist8310Test, ValidDataPublishesImmediatelyAndStartsNextTrigger)
+TEST_F(Ist8310Test, OfficialDrdyCyclePublishesImmediatelyAndStartsNextTrigger)
 {
     detectAndInitialize();
     queueStatus(0x01);
@@ -183,7 +183,11 @@ TEST_F(Ist8310Test, ValidDataPublishesImmediatelyAndStartsNextTrigger)
     int16_t sample[3] = {};
 
     EXPECT_FALSE(readAfterCompletion(sample));
+    ASSERT_EQ(1U, asynchronousReads.size());
+    EXPECT_EQ(IST8310_REG_STAT1, asynchronousReads[0]);
     EXPECT_FALSE(readAfterCompletion(sample));
+    ASSERT_EQ(2U, asynchronousReads.size());
+    EXPECT_EQ(IST8310_REG_DATA, asynchronousReads[1]);
     EXPECT_TRUE(readAfterCompletion(sample));
 
     EXPECT_EQ(0x0102 * 3, sample[0]);

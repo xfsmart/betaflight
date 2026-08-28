@@ -25,6 +25,8 @@ void pgResetFn_i2cConfig(i2cConfig_t *i2cConfig);
 #if !defined(USE_MAG_HMC5883) \
     || !defined(USE_MAG_SPI_HMC5883) \
     || !defined(USE_MAG_QMC5883) \
+    || !defined(USE_MAG_QMC5883L) \
+    || !defined(USE_MAG_QMC5883P) \
     || !defined(USE_MAG_LIS2MDL) \
     || !defined(USE_MAG_LIS3MDL) \
     || !defined(USE_MAG_AK8963) \
@@ -40,9 +42,9 @@ void pgResetFn_i2cConfig(i2cConfig_t *i2cConfig);
 
 namespace {
 
-std::string readBoardCConfig()
+std::string readFt32F405Config()
 {
-    std::ifstream input("../platform/FT32/config/configs/FT32F405_FT32/config.h");
+    std::ifstream input("../platform/FT32/target/FT32F405/config.h");
     std::ostringstream contents;
     contents << input.rdbuf();
     return contents.str();
@@ -74,14 +76,14 @@ std::vector<std::string> selectedMagDriverMacros(const std::string &source)
 
 } // namespace
 
-TEST(BoardCIst8310ConfigTest, GenericMagFallbackRemainsCompatible)
+TEST(Ft32F405Ist8310ConfigTest, GenericMagFallbackRemainsCompatible)
 {
     EXPECT_TRUE(true);
 }
 
-TEST(BoardCIst8310ConfigTest, BoardCSelectsOnlyIst8310OnI2c1)
+TEST(Ft32F405Ist8310ConfigTest, GenericTargetSelectsOnlyIst8310OnI2c1)
 {
-    const std::string config = readBoardCConfig();
+    const std::string config = readFt32F405Config();
 
     ASSERT_FALSE(config.empty());
     EXPECT_NE(std::string::npos, config.find("#define USE_MAG\n"));
@@ -98,7 +100,7 @@ TEST(BoardCIst8310ConfigTest, BoardCSelectsOnlyIst8310OnI2c1)
     EXPECT_EQ("USE_MAG_IST8310", selected.front());
 }
 
-TEST(BoardCIst8310ConfigTest, CompiledI2c1ResetDefaultIs400Khz)
+TEST(Ft32F405Ist8310ConfigTest, CompiledI2c1ResetDefaultIs400Khz)
 {
     i2cConfig_t config[I2CDEV_1 + 1] = {};
 

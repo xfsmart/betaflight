@@ -80,6 +80,14 @@ static void enableRxIrq(const uartHardware_t *hardware)
 #elif defined(APM32F4)
         DAL_NVIC_SetPriority(hardware->irqn, NVIC_PRIORITY_BASE(hardware->rxPriority), NVIC_PRIORITY_SUB(hardware->rxPriority));
         DAL_NVIC_EnableIRQ(hardware->irqn);
+#elif defined(X32M7)
+        NVIC_InitType nvicInit = {
+            .NVIC_IRQChannel = hardware->irqn,
+            .NVIC_IRQChannelPreemptionPriority = NVIC_PRIORITY_BASE(hardware->rxPriority),
+            .NVIC_IRQChannelSubPriority = NVIC_PRIORITY_SUB(hardware->rxPriority),
+            .NVIC_IRQChannelCmd = ENABLE,
+        };
+        NVIC_Init(&nvicInit);
 #else
 # error "Unhandled MCU type"
 #endif
@@ -113,16 +121,6 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
     s->port.txBufferSize = hardware->txBufferSize;
 
     s->USARTx = hardware->reg;
-
-#ifdef USE_HAL_DRIVER
-    {
-        const uartDeviceIdx_e uartDevIdx = uartDeviceIdxFromIdentifier(hardware->identifier);
-        s->halHandle = &uartHalHandles[uartDevIdx];
-        s->rxDmaHalHandle = &uartRxDmaHalHandles[uartDevIdx];
-        s->txDmaHalHandle = &uartTxDmaHalHandles[uartDevIdx];
-        s->halHandle->hal.Instance = (USART_TypeDef *)hardware->reg;
-    }
-#endif
 
     s->checkUsartTxOutput = checkUsartTxOutput;
 
@@ -160,7 +158,7 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
         const bool pushPull = serialOptions_pushPull(options);
         // pull direction
         const serialPullMode_t pull = serialOptions_pull(options);
-#if defined(STM32F7) || defined(STM32H7) || defined(STM32G4) || defined(STM32N6) || defined(APM32F4)
+#if defined(STM32F7) || defined(STM32H5) || defined(STM32C5) || defined(STM32H7) || defined(STM32G4) || defined(STM32N6) || defined(APM32F4) || defined(X32M7)
         // Note: APM32F4 is different from STM32F4 here
         const ioConfig_t ioCfg = IO_CONFIG(
             pushPull ? GPIO_MODE_AF_PP : GPIO_MODE_AF_OD,
@@ -179,7 +177,7 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
         // External inverter in bidir mode would be quite problematic anyway
         const ioConfig_t ioCfg = IO_CONFIG(
             GPIO_Mode_AF,
-            GPIO_Speed_50MHz,
+            GPIO_Low_Speed,  // TODO: should use stronger drive
             pushPull ? GPIO_OType_PP : GPIO_OType_OD,
             ((const unsigned[]){GPIO_PuPd_NOPULL, GPIO_PuPd_DOWN, GPIO_PuPd_UP})[pull]
         );
@@ -233,13 +231,7 @@ uartPort_t *serialUART(uartDevice_t *uartdev, uint32_t baudRate, portMode_e mode
         }
     }
 
-    if (true
-#ifdef USE_DMA
-        && !s->rxDMAResource  // do not enable IRW if using rxDMA
-#endif
-        ) {
-        enableRxIrq(hardware);
-    }
+    enableRxIrq(hardware);
     return s;
 }
 
@@ -348,13 +340,15 @@ void uartConfigureDma(uartDevice_t *uartdev)
 void uartEnableTxInterrupt(uartPort_t *uartPort)
 {
 #if defined(USE_HAL_DRIVER)
-    __HAL_UART_ENABLE_IT(&uartPort->halHandle->hal, UART_IT_TXE);
+    LL_USART_EnableIT_TXE((USART_TypeDef *)uartPort->USARTx);
 #elif defined(USE_ATBSP_DRIVER)
     usart_interrupt_enable((usart_type *)uartPort->USARTx, USART_TDBE_INT, TRUE);
 #elif defined(FT32F4)
     USART_TypeDef *USARTx = (USART_TypeDef *)uartPort->USARTx;
     ft32UartTXEN_Cmd(USARTx, ENABLE);
     ft32UartITConfig(USARTx, USART_IT_TXRDY, ENABLE);
+#elif defined(X32M7)
+    USART_ConfigInt((USART_TypeDef *)uartPort->USARTx, USART_INT_TXDE, ENABLE);
 #else
     USART_ITConfig((USART_TypeDef *)uartPort->USARTx, USART_IT_TXE, ENABLE);
 #endif

@@ -349,4 +349,9 @@ uint8_t usbVcpIsConnected(void)
 {
     return usbIsConnected();
 }
+
+uint8_t usbVcpIsActive(void)
+{
+    return usbIsConnected() && usbIsConfigured();
+}
 #endif

@@ -300,6 +300,12 @@ spiDevice_e spiDeviceByInstance(const spiResource_t *instance)
     }
 #endif
 
+#ifdef USE_SPI_DEVICE_7
+    if (instance == (const spiResource_t *)SPI7) {
+        return SPIDEV_7;
+    }
+#endif
+
     return SPIINVALID;
 }
 
@@ -339,6 +345,10 @@ bool spiInit(spiDevice_e device)
 
 #if !defined(USE_SPI_DEVICE_6)
     case SPIDEV_6:
+#endif
+
+#if !defined(USE_SPI_DEVICE_7)
+    case SPIDEV_7:
 #endif
         return false;
     default:
@@ -677,6 +687,9 @@ uint8_t spiGetRegisteredDeviceCount(void)
 
 uint8_t spiGetExtDeviceCount(const extDevice_t *dev)
 {
+    if (!dev || !dev->bus) {
+        return 0;
+    }
     return dev->bus->deviceCount;
 }
 
@@ -875,6 +888,11 @@ FAST_IRQ_HANDLER void spiIrqHandler(const extDevice_t *dev)
     busSegment_t *nextSegment;
     bool repeatSegment = false;
 
+    // Captured before the callback, which rewinds curSegment to repeat a segment on BUS_BUSY. When
+    // the repeated segment is the first of the list that leaves curSegment pointing in front of the
+    // array, so negateCS can no longer be read from it once the callback has run.
+    const bool negateCS = bus->curSegment->negateCS;
+
     if (bus->curSegment->callback) {
         switch(bus->curSegment->callback(dev->callbackArg)) {
         case BUS_BUSY:
@@ -912,8 +930,6 @@ FAST_IRQ_HANDLER void spiIrqHandler(const extDevice_t *dev)
         }
     } else {
         // Do as much processing as possible before asserting CS to avoid violating minimum high time
-        bool negateCS = bus->curSegment->negateCS;
-
         bus->curSegment = nextSegment;
 
         // A repeated segment must replace the cached descriptor for its successor.

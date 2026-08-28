@@ -30,7 +30,7 @@
 #include "drivers/persistent.h"
 
 // External declaration from common system code
-extern uint32_t cachedRccCsrValue;
+extern uint32_t cachedResetFlags;
 extern void cycleCounterInit(void);
 
 // Clock configuration from startup/system_ft32f4xx.c
@@ -332,7 +332,7 @@ void enableGPIOPowerUsageAndNoiseReductions(void)
 
 bool isMPUSoftReset(void)
 {
-    if (cachedRccCsrValue & RCC_CSR_SFTRSTF)
+    if (cachedResetFlags & RCC_CSR_SFTRSTF)
         return true;
     else
         return false;
@@ -361,7 +361,7 @@ void systemInit(void)
     NVIC_SetPriorityGrouping(NVIC_PRIORITY_GROUPING);
 
     // Cache RCC->CSR value for isMPUSoftReset()
-    cachedRccCsrValue = RCC->CSR;
+    cachedResetFlags = RCC->CSR;
 
     // Clear reset flags by setting RMVF bit
     RCC->CSR |= RCC_CSR_RMVF;

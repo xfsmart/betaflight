@@ -62,6 +62,7 @@
 #include "io/gps.h"
 #include "io/ledstrip.h"
 #include "io/serial.h"
+#include "io/serial_feature_map.h"
 #include "io/vtx.h"
 
 #include "msp/msp_box.h"
@@ -80,6 +81,9 @@
 #include "pg/rx_spi.h"
 #include "pg/sdcard.h"
 #include "pg/vtx_table.h"
+#if ENABLE_FLIGHT_PLAN
+#include "pg/flight_plan.h"
+#endif
 
 #include "rx/rx.h"
 #include "rx/rx_spi.h"
@@ -89,7 +93,10 @@
 #include "sensors/acceleration.h"
 #include "sensors/battery.h"
 #include "sensors/compass.h"
+#include "sensors/esc_sensor.h"
 #include "sensors/gyro.h"
+
+#include "telemetry/telemetry.h"
 
 #include "config.h"
 
@@ -224,17 +231,28 @@ static void validateAndFixConfig(void)
     }
 #endif
 
-    if (!isSerialConfigValid(serialConfigMutable())) {
-        PG_RESET(serialConfig);
+#ifdef USE_TELEMETRY
+    telemetryValidateProviders();
+#endif
+
+    if (!isSerialConfigValid()) {
+        // Give up only the claims that actually clash before falling back to the
+        // board-wide reset, which would cost the user every other port they had
+        // assigned to settle a single bad one.
+        serialDropConflictingAssignments();
+
+        if (!isSerialConfigValid()) {
+            serialResetFeatureAssignments();
+        }
     }
 
 #if defined(USE_GPS)
-    const serialPortConfig_t *gpsSerial = findSerialPortConfig(FUNCTION_GPS);
-    if ((gpsConfig()->provider == GPS_MSP || gpsConfig()->provider == GPS_VIRTUAL) && gpsSerial) {
-        serialRemovePort(gpsSerial->identifier);
+    const serialPortIdentifier_e gpsSerial = gpsConfig()->gps_uart;
+    if (GPS_PROVIDER_REQUIRES_NO_SERIAL_PORT(gpsConfig()->provider) && gpsSerial != SERIAL_PORT_NONE) {
+        serialRemovePort(gpsSerial);
     }
 
-    if (gpsConfig()->provider != GPS_MSP && gpsConfig()->provider != GPS_VIRTUAL && !gpsSerial) {
+    if (!GPS_PROVIDER_REQUIRES_NO_SERIAL_PORT(gpsConfig()->provider) && gpsSerial == SERIAL_PORT_NONE) {
         featureDisableImmediate(FEATURE_GPS);
     }
 #endif
@@ -311,31 +329,46 @@ static void validateAndFixConfig(void)
     }
 #endif // USE_ACC
 
-    if (!(featureIsConfigured(FEATURE_RX_PARALLEL_PWM) || featureIsConfigured(FEATURE_RX_PPM) || featureIsConfigured(FEATURE_RX_SERIAL) || featureIsConfigured(FEATURE_RX_MSP) || featureIsConfigured(FEATURE_RX_SPI))) {
+    bool hasConfiguredRxFeature =
+        featureIsConfigured(FEATURE_RX_PARALLEL_PWM) ||
+        featureIsConfigured(FEATURE_RX_PPM) ||
+        featureIsConfigured(FEATURE_RX_SERIAL) ||
+        featureIsConfigured(FEATURE_RX_MSP) ||
+        featureIsConfigured(FEATURE_RX_SPI);
+#if ENABLE_RX_UDP
+    hasConfiguredRxFeature = hasConfiguredRxFeature || featureIsConfigured(FEATURE_RX_UDP);
+#endif
+    if (!hasConfiguredRxFeature) {
         featureEnableImmediate(DEFAULT_RX_FEATURE);
     }
 
     if (featureIsConfigured(FEATURE_RX_PPM)) {
-        featureDisableImmediate(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_MSP | FEATURE_RX_SPI);
+        featureDisableImmediate(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_MSP | FEATURE_RX_SPI | FEATURE_RX_UDP);
     }
 
     if (featureIsConfigured(FEATURE_RX_MSP)) {
-        featureDisableImmediate(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_PPM | FEATURE_RX_SPI);
+        featureDisableImmediate(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_PPM | FEATURE_RX_SPI | FEATURE_RX_UDP);
     }
 
     if (featureIsConfigured(FEATURE_RX_SERIAL)) {
-        featureDisableImmediate(FEATURE_RX_PARALLEL_PWM | FEATURE_RX_MSP | FEATURE_RX_PPM | FEATURE_RX_SPI);
+        featureDisableImmediate(FEATURE_RX_PARALLEL_PWM | FEATURE_RX_MSP | FEATURE_RX_PPM | FEATURE_RX_SPI | FEATURE_RX_UDP);
     }
 
 #ifdef USE_RX_SPI
     if (featureIsConfigured(FEATURE_RX_SPI)) {
-        featureDisableImmediate(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_PPM | FEATURE_RX_MSP);
+        featureDisableImmediate(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_PPM | FEATURE_RX_MSP | FEATURE_RX_UDP);
     }
 #endif // USE_RX_SPI
 
     if (featureIsConfigured(FEATURE_RX_PARALLEL_PWM)) {
-        featureDisableImmediate(FEATURE_RX_SERIAL | FEATURE_RX_MSP | FEATURE_RX_PPM | FEATURE_RX_SPI);
+        featureDisableImmediate(FEATURE_RX_SERIAL | FEATURE_RX_MSP | FEATURE_RX_PPM | FEATURE_RX_SPI | FEATURE_RX_UDP);
     }
+
+#if ENABLE_RX_UDP
+    if (featureIsConfigured(FEATURE_RX_UDP)) {
+        featureDisableImmediate(FEATURE_RX_SERIAL | FEATURE_RX_PARALLEL_PWM | FEATURE_RX_PPM | FEATURE_RX_MSP | FEATURE_RX_SPI);
+    }
+#endif // ENABLE_RX_UDP
 
 #if defined(USE_ADC)
     if (featureIsConfigured(FEATURE_RSSI_ADC)) {
@@ -362,6 +395,9 @@ static void validateAndFixConfig(void)
             failsafeConfigMutable()->failsafe_procedure = FAILSAFE_PROCEDURE_DROP_IT;
         }
 #endif
+        if (failsafeConfig()->failsafe_procedure >= FAILSAFE_PROCEDURE_COUNT) {
+            failsafeConfigMutable()->failsafe_procedure = FAILSAFE_PROCEDURE_DROP_IT;
+        }
 
         if (isModeActivationConditionPresent(BOXGPSRESCUE)) {
             removeModeActivationCondition(BOXGPSRESCUE);
@@ -369,7 +405,9 @@ static void validateAndFixConfig(void)
     }
 
 #if defined(USE_ESC_SENSOR)
-    if (!findSerialPortConfig(FUNCTION_ESC_SENSOR)) {
+    // DroneCAN ESC telemetry feeds escSensorData[] without a serial port, so
+    // only a serial-sourced sensor requires one.
+    if (escSensorConfig()->esc_sensor_uart == SERIAL_PORT_NONE && !isMotorProtocolDronecan()) {
         featureDisableImmediate(FEATURE_ESC_SENSOR);
     }
 #endif
@@ -543,16 +581,24 @@ static void validateAndFixConfig(void)
     }
 
 #ifdef USE_MSP_DISPLAYPORT
-    // Find the first serial port on which MSP Displayport is enabled
+    // Find the serial port the MSP display port is drawn over.  The OSD's own
+    // assignment names it; an MSP VTX with no OSD port set is the legacy way of
+    // saying the same thing, so its UART stands in when the OSD names none.
     displayPortMspSetSerial(SERIAL_PORT_NONE);
 
-    for (const serialPortConfig_t *portConfig = serialConfig()->portConfigs;
-         portConfig < ARRAYEND(serialConfig()->portConfigs);
-         portConfig++) {
-        if ((portConfig->identifier != SERIAL_PORT_USB_VCP)
-            && ((portConfig->functionMask & (FUNCTION_VTX_MSP | FUNCTION_MSP)) == (FUNCTION_VTX_MSP | FUNCTION_MSP))) {
-            displayPortMspSetSerial(portConfig->identifier);
-            break;
+#ifdef USE_OSD
+    if (osdConfig()->displayPortDevice == OSD_DISPLAYPORT_DEVICE_MSP && osdConfig()->osd_uart != SERIAL_PORT_NONE) {
+        displayPortMspSetSerial(osdConfig()->osd_uart);
+    } else
+#endif
+    {
+        for (unsigned i = 0; i < ARRAYLEN(serialPortIdentifiers); i++) {
+            const serialPortIdentifier_e identifier = serialPortIdentifiers[i];
+            if ((identifier != SERIAL_PORT_USB_VCP)
+                && (serialSynthesizeFunctionMask(identifier) & FUNCTION_VTX_MSP)) {
+                displayPortMspSetSerial(identifier);
+                break;
+            }
         }
     }
 #endif
@@ -678,6 +724,12 @@ void validateAndFixGyroConfig(void)
         systemConfigMutable()->activeBatteryProfile = 0;
     }
     loadBatteryProfile();
+
+#if ENABLE_FLIGHT_PLAN
+    if (flightPlanConfigMutable()->waypointCount > MAX_WAYPOINTS) {
+        flightPlanConfigMutable()->waypointCount = 0;
+    }
+#endif
 }
 
 #ifdef USE_BLACKBOX

@@ -19,7 +19,7 @@
 extern "C" {
 
 // This is an actual preprocessor include, not a file-content probe.
-#include "../../platform/FT32/config/configs/FT32F405_FT32/config.h"
+#include "../../platform/FT32/target/FT32F405/config.h"
 #include "platform.h"
 
 #include "config/feature.h"
@@ -29,7 +29,9 @@ extern "C" {
 #include "io/gps.h"
 #include "io/serial.h"
 #include "pg/gps.h"
+#include "pg/msp.h"
 #include "pg/motor.h"
+#include "sensors/esc_sensor.h"
 
 extern const pgRegistry_t motorConfig_Registry;
 
@@ -44,11 +46,13 @@ extern const pgRegistry_t motorConfig_Registry;
 
 extern const pgRegistry_t adcConfig_Registry;
 extern const pgRegistry_t i2cConfig_Registry;
+extern const pgRegistry_t mspConfig_Registry;
 extern const pgRegistry_t rxConfig_Registry;
 extern const pgRegistry_t serialConfig_Registry;
 extern const pgRegistry_t serialPinConfig_Registry;
 extern const pgRegistry_t timerIOConfig_Registry;
 extern const featureConfig_t pgResetTemplate_featureConfig;
+extern const escSensorConfig_t pgResetTemplate_escSensorConfig;
 extern const gpsConfig_t pgResetTemplate_gpsConfig;
 #endif
 
@@ -93,6 +97,16 @@ void resetInto(const pgRegistry_t &registry, void *destination)
 
 #if defined(BOARD_C_TARGET_DEFAULTS_VARIANT)
 
+#define FT32_TARGET_STRINGIFY_IMPL(value) #value
+#define FT32_TARGET_STRINGIFY(value) FT32_TARGET_STRINGIFY_IMPL(value)
+
+TEST(BoardCResourceTargetDefaultsTest, PublishedIdentityIsGenericAndStable)
+{
+    EXPECT_STREQ("FT32F405_GENERIC", FT32_TARGET_STRINGIFY(BOARD_NAME));
+    EXPECT_STREQ("FOSS", FT32_TARGET_STRINGIFY(MANUFACTURER_ID));
+    EXPECT_STREQ("Betaflight FT32F405", USBD_PRODUCT_STRING);
+}
+
 struct PinOwner {
     ioTag_t tag;
     const char *owner;
@@ -135,16 +149,6 @@ std::vector<std::string> unexpectedPinAliases(const std::vector<PinOwner> &pins)
 void resetWithFunction(const pgRegistry_t &registry)
 {
     resetInto(registry, registry.address);
-}
-
-const serialPortConfig_t *findPort(const serialConfig_t &config, serialPortIdentifier_e identifier)
-{
-    for (const serialPortConfig_t &port : config.portConfigs) {
-        if (port.identifier == identifier) {
-            return &port;
-        }
-    }
-    return nullptr;
 }
 
 std::vector<PinOwner> declaredBoardCPins()
@@ -286,17 +290,16 @@ TEST(BoardCResourceTargetDefaultsTest, SerialPinsFunctionsRxAndGpsDefaultsAreExa
     EXPECT_EQ(IO_TAG(PD2), pins.ioTagRx[serialResourceIndex(SERIAL_PORT_UART5)]);
 
     resetWithFunction(serialConfig_Registry);
-    const serialConfig_t &serial = *serialConfig();
-    const serialPortConfig_t *uart2 = findPort(serial, SERIAL_PORT_USART2);
-    const serialPortConfig_t *uart5 = findPort(serial, SERIAL_PORT_UART5);
-    ASSERT_NE(nullptr, uart2);
-    ASSERT_NE(nullptr, uart5);
-    EXPECT_EQ(FUNCTION_RX_SERIAL, uart2->functionMask);
-    EXPECT_EQ(FUNCTION_GPS, uart5->functionMask);
-    EXPECT_EQ(BAUD_38400, uart5->gps_baudrateIndex);
+    EXPECT_EQ('R', serialConfig()->reboot_character);
+    EXPECT_EQ(100, serialConfig()->serial_update_rate_hz);
+
+    resetWithFunction(mspConfig_Registry);
+    EXPECT_EQ(SERIAL_PORT_USB_VCP, mspConfig()->msp_uart[0]);
+    EXPECT_EQ(BAUD_115200, mspConfig()->msp_baud[0]);
 
     resetWithFunction(rxConfig_Registry);
     EXPECT_EQ(SERIALRX_SBUS, rxConfig()->serialrx_provider);
+    EXPECT_EQ(SERIAL_PORT_USART2, rxConfig()->rx_uart);
     EXPECT_EQ(0, rxConfig()->halfDuplex);
     EXPECT_NE(0U, pgResetTemplate_featureConfig.enabledFeatures & FEATURE_RX_SERIAL);
     EXPECT_EQ(0U, pgResetTemplate_featureConfig.enabledFeatures & FEATURE_RX_PPM);
@@ -304,6 +307,9 @@ TEST(BoardCResourceTargetDefaultsTest, SerialPinsFunctionsRxAndGpsDefaultsAreExa
 
     EXPECT_EQ(GPS_NMEA, pgResetTemplate_gpsConfig.provider);
     EXPECT_EQ(GPS_AUTOCONFIG_OFF, pgResetTemplate_gpsConfig.autoConfig);
+    EXPECT_EQ(SERIAL_PORT_UART5, pgResetTemplate_gpsConfig.gps_uart);
+    EXPECT_EQ(BAUD_38400, pgResetTemplate_gpsConfig.gps_baud);
+    EXPECT_EQ(SERIAL_PORT_USART3, pgResetTemplate_escSensorConfig.esc_sensor_uart);
     EXPECT_EQ(IO_TAG(PA3), IO_TAG(RX_PPM_PIN));
     EXPECT_EQ(IO_TAG(UART2_RX_PIN), IO_TAG(RX_PPM_PIN));
 }

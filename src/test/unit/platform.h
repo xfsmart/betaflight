@@ -37,9 +37,11 @@
 #define NOINLINE
 #define FAST_CODE
 #define FAST_CODE_NOINLINE
+#define FAST_CODE_NOINLINE_CRITICAL
 #define FAST_CODE_PREF
 #define FAST_DATA_ZERO_INIT
 #define FAST_DATA
+#define RAM_CODE
 
 
 #define PID_PROFILE_COUNT 4
@@ -108,7 +110,6 @@ typedef struct
 #define NVIC_PRIORITY_BASE(prio) (((prio)>>(4-(7-(NVIC_PRIORITY_GROUPING>>8))))>>4)
 #define NVIC_PRIORITY_SUB(prio) (((prio)>>4)&(0x0f>>(7-(NVIC_PRIORITY_GROUPING>>8))))
 
-#define MCU_TYPE_ID   99
 #define MCU_TYPE_NAME "UNIT_TEST"
 
 #include "target.h"

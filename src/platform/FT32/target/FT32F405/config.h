@@ -25,10 +25,10 @@
  */
 #define FC_TARGET_MCU              FT32F405
 
-#define BOARD_NAME                 FT32F405_FT32
-#define MANUFACTURER_ID            RALI
+#define BOARD_NAME                 FT32F405_GENERIC
+#define MANUFACTURER_ID            FOSS
 #define TARGET_BOARD_IDENTIFIER    "FT405"
-#define USBD_PRODUCT_STRING        "FT32F405_FT32"
+#define USBD_PRODUCT_STRING        "Betaflight FT32F405"
 
 #define USE_ACC
 #define USE_ACC_SPI_ICM42688P

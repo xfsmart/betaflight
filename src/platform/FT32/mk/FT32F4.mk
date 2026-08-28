@@ -3,6 +3,8 @@
 # FMD (Fremont Micro Devices) FT32F4xx series
 #
 
+PLATFORM_SDK := arm
+
 # CMSIS
 CMSIS_DIR       := $(LIB_MAIN_DIR)/FT32F4/Drivers/CMSIS
 
@@ -179,9 +181,9 @@ FT32_I2C_STD_SRC = \
 
 VPATH := $(VPATH):$(STDPERIPH_DIR)/Src
 
-MCU_COMMON_SRC = \
-        common/stm32/system.c \
-        common/stm32/io_impl.c \
+include $(PLATFORM_DIR)/common/stm32/mcu_common_src.mk
+
+MCU_COMMON_SRC += \
         common/stm32/mco.c \
         FT32/startup/system_ft32f4xx.c \
         FT32/system_ft32f4xx.c \
@@ -205,25 +207,13 @@ MCU_COMMON_SRC = \
         FT32/pwm_output_dshot_ft32f4xx.c \
         FT32/dshot_bitbang.c \
         FT32/dshot_bitbang_stdperiph.c \
-        common/stm32/dshot_dpwm.c \
-        common/stm32/pwm_output_dshot_shared.c \
-        common/stm32/dshot_bitbang_shared.c \
-        common/stm32/config_flash.c \
-        common/stm32/debug_pin.c \
         FT32/debug.c \
-        common/stm32/serial_uart_hw.c \
-        common/stm32/serial_uart_pinconfig.c \
-        common/stm32/adc_impl.c \
-        common/stm32/ledstrip_ws2811_stm32.c \
-        common/stm32/pwm_output_beeper.c \
         common/stm32/rx_pwm_hw.c \
         drivers/adc.c \
         drivers/bus_spi_config.c \
         drivers/serial_pinconfig.c \
         drivers/inverter.c \
         drivers/serial_escserial.c \
-        common/stm32/bus_i2c_pinconfig.c \
-        common/stm32/bus_spi_pinconfig.c \
         common/stm32/bus_spi_hw.c \
         drivers/bus_i2c_timing.c \
         drivers/dshot_bitbang_decode.c \

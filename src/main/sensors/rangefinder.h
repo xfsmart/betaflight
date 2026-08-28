@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "drivers/rangefinder/rangefinder.h"
@@ -42,11 +43,13 @@ typedef enum {
     RANGEFINDER_NOOPLOOP_F    = 12,
     RANGEFINDER_NOOPLOOP_FP   = 13,
     RANGEFINDER_NOOPLOOP_F2MINI = 14,
+    RANGEFINDER_UPT1          = 15,
     RANGEFINDER_HARDWARE_COUNT,
 } rangefinderType_e;
 
 typedef struct rangefinderConfig_s {
     uint8_t rangefinder_hardware;
+    int8_t rangefinder_uart;  // serialPortIdentifier_e; SERIAL_PORT_NONE = unassigned. Driver selected by rangefinder_hardware.
 } rangefinderConfig_t;
 
 PG_DECLARE(rangefinderConfig_t, rangefinderConfig);
@@ -62,6 +65,21 @@ typedef struct rangefinder_s {
     int32_t dynamicDistanceThreshold;
     int16_t snr;
 } rangefinder_t;
+
+// True when the device reports by pushing MSP frames rather than being read
+// over a port its own driver opens, so the port needs an MSP port opening on it.
+static inline bool rangefinderTypeUsesMsp(uint8_t type)
+{
+    switch (type) {
+    case RANGEFINDER_MTF01:
+    case RANGEFINDER_MTF02:
+    case RANGEFINDER_MTF01P:
+    case RANGEFINDER_MTF02P:
+        return true;
+    default:
+        return false;
+    }
+}
 
 void rangefinderResetDynamicThreshold(void);
 bool rangefinderInit(void);

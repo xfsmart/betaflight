@@ -52,9 +52,6 @@
 #include "pg/motor.h"
 #include "pg/pinio.h"
 
-// Maximum time to wait for telemetry reception to complete
-#define DSHOT_TELEMETRY_TIMEOUT 2000
-
 // For MCUs that use MPU to control DMA coherency, there might be a performance hit
 // on manipulating input buffer content especially if it is read multiple times,
 // as the buffer region is attributed as not cachable.
@@ -137,6 +134,7 @@ static void bbInvalidatePort(bbPort_t *bbPort)
     bbInputSetActive(bbPort, false);
 #ifdef USE_DSHOT_TELEMETRY
     bbPort->telemetryPending = false;
+    bbPort->telemetryAborted = false;
 #endif
 }
 
@@ -581,22 +579,29 @@ static bool bbMotorConfig(IO_t io, uint8_t motorIndex, motorProtocolTypes_e pwmP
 
 static bool bbTelemetryWait(void)
 {
-    bool telemetryPending;
+    // Abort a late input frame without polling in TASK_RX.  The next update
+    // verifies FT32 CHEN convergence before reloading or arming the channel.
     bool telemetryWait = false;
-    const timeUs_t startTimeUs = micros();
 
-    do {
-        telemetryPending = false;
-        for (int i = 0; i < usedMotorPorts; i++) {
-            telemetryPending |= bbPorts[i].telemetryPending;
+    for (int i = 0; i < usedMotorPorts; i++) {
+        bbPort_t *bbPort = &bbPorts[i];
+        if (!bbPort->telemetryPending) {
+            continue;
         }
 
-        telemetryWait |= telemetryPending;
-
-        if (cmpTimeUs(micros(), startTimeUs) > DSHOT_TELEMETRY_TIMEOUT) {
-            break;
+        bbTIM_DMACmd(bbPort->timhw->tim, bbPort->dmaSource, DISABLE);
+        ATOMIC_BLOCK(NVIC_PRIO_DSHOT_DMA) {
+            if (bbPort->telemetryPending) {
+                ft32DmaRequestDisable((DMA_ARCH_TYPE *)bbPort->dmaResource);
+                bbPort->telemetryPending = false;
+                // Never decode the partial buffer, even if a terminal IRQ was
+                // already pending when the abort request was issued.
+                bbPort->telemetryAborted = true;
+                bbInputSetActive(bbPort, false);
+                telemetryWait = true;
+            }
         }
-    } while (telemetryPending);
+    }
 
     if (telemetryWait) {
         DEBUG_SET(DEBUG_DSHOT_TELEMETRY_COUNTS, 2, debug[2] + 1);
@@ -644,6 +649,9 @@ static bool bbDecodeTelemetry(void)
 #endif
 
         for (int motorIndex = 0; motorIndex < MAX_SUPPORTED_MOTORS && motorIndex < dshotMotorCount; motorIndex++) {
+            if (bbMotors[motorIndex].bbPort->telemetryAborted) {
+                continue;
+            }
             if (!bbInputIsActive(bbMotors[motorIndex].bbPort)) {
                 continue;
             }
@@ -678,6 +686,7 @@ static bool bbDecodeTelemetry(void)
 
         for (int portIndex = 0; portIndex < usedMotorPorts; portIndex++) {
             bbInputSetActive(&bbPorts[portIndex], false);
+            bbPorts[portIndex].telemetryAborted = false;
         }
 
         dshotTelemetryState.rawValueState = DSHOT_RAW_VALUE_STATE_NOT_PROCESSED;
@@ -933,6 +942,7 @@ static void bbQuiescePostInitFailure(void)
         bbInputSetActive(bbPort, false);
 #ifdef USE_DSHOT_TELEMETRY
         bbPort->telemetryPending = false;
+        bbPort->telemetryAborted = false;
 #endif
 
         if (!bbTryQuiesceDma(dmaRef)) {

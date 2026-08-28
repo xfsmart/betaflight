@@ -25,6 +25,8 @@ extern "C" {
 
 #include "fc/runtime_config.h"
 
+#include "flight/imu.h"
+
 #include "io/beeper.h"
 
 #include "sensors/acceleration.h"
@@ -98,12 +100,14 @@ void configureCompass()
     std::memset(&magDev, 0, sizeof(magDev));
     std::memset(&mag, 0, sizeof(mag));
     std::memset(compassConfigMutable(), 0, sizeof(*compassConfigMutable()));
+    std::memset(imuConfigMutable(), 0, sizeof(*imuConfigMutable()));
 
     compassConfigMutable()->mag_alignment = ALIGN_DEFAULT;
     compassConfigMutable()->mag_hardware = MAG_IST8310;
     compassConfigMutable()->mag_busType = BUS_TYPE_I2C;
     compassConfigMutable()->mag_i2c_device = I2C_DEV_TO_CFG(I2CDEV_1);
     compassConfigMutable()->mag_i2c_address = 0;
+    imuConfigMutable()->trust_mag = true;
     detectedSensors[SENSOR_INDEX_MAG] = MAG_NONE;
 
     gyroInitResult = true;
@@ -185,7 +189,7 @@ TEST_F(CompassInitTest, NoPublishedSampleIsUnhealthy)
 {
     ASSERT_TRUE(compassInit());
 
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 }
 
 TEST_F(CompassInitTest, SampleExpiresAtExactFreshnessBoundary)
@@ -194,10 +198,10 @@ TEST_F(CompassInitTest, SampleExpiresAtExactFreshnessBoundary)
     publishMagSample(1000, 11, 22, 33);
 
     testTimeUs = 500999;
-    EXPECT_TRUE(compassIsHealthy());
+    EXPECT_TRUE(compassEnabledAndCalibrated());
 
     testTimeUs = 501000;
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 }
 
 #if !defined(USE_64BIT_TIME)
@@ -208,10 +212,10 @@ TEST_F(CompassInitTest, FreshnessAgeIsWrapSafeForUint32Time)
     publishMagSample(publishedAt, 11, 22, 33);
 
     testTimeUs = publishedAt + 499999U;
-    EXPECT_TRUE(compassIsHealthy());
+    EXPECT_TRUE(compassEnabledAndCalibrated());
 
     testTimeUs = publishedAt + 500000U;
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 }
 
 TEST_F(CompassInitTest, HalfRangeOldSampleCannotAppearFresh)
@@ -220,7 +224,7 @@ TEST_F(CompassInitTest, HalfRangeOldSampleCannotAppearFresh)
     publishMagSample(1000, 11, 22, 33);
 
     testTimeUs = 1000U + 0x80000000U;
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 }
 
 TEST_F(CompassInitTest, ExpiredSampleCannotResurrectAfterFullUint32Wrap)
@@ -229,13 +233,13 @@ TEST_F(CompassInitTest, ExpiredSampleCannotResurrectAfterFullUint32Wrap)
     publishMagSample(1000, 11, 22, 33);
 
     testTimeUs = 501000;
-    ASSERT_FALSE(compassIsHealthy());
+    ASSERT_FALSE(compassEnabledAndCalibrated());
 
     testTimeUs = 1001;
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 
     publishMagSample(2000, 44, 55, 66);
-    EXPECT_TRUE(compassIsHealthy());
+    EXPECT_TRUE(compassEnabledAndCalibrated());
 }
 #endif
 
@@ -244,11 +248,11 @@ TEST_F(CompassInitTest, ReinitializationClearsPreviousFreshnessEvenOnFailure)
     ASSERT_TRUE(compassInit());
     publishMagSample(1000, 11, 22, 33);
     testTimeUs = 1001;
-    ASSERT_TRUE(compassIsHealthy());
+    ASSERT_TRUE(compassEnabledAndCalibrated());
 
     magInitResult = false;
     EXPECT_FALSE(compassInit());
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 }
 
 TEST_F(CompassInitTest, BusyAndCompletionErrorDoNotRefreshFreshness)
@@ -259,7 +263,7 @@ TEST_F(CompassInitTest, BusyAndCompletionErrorDoNotRefreshFreshness)
 
     testTimeUs = 400000;
     EXPECT_EQ(500U, compassUpdate(testTimeUs));
-    EXPECT_TRUE(compassIsHealthy());
+    EXPECT_TRUE(compassEnabledAndCalibrated());
 
     testTimeUs = 450000;
     EXPECT_EQ(1000U, compassUpdate(testTimeUs));
@@ -267,7 +271,7 @@ TEST_F(CompassInitTest, BusyAndCompletionErrorDoNotRefreshFreshness)
     EXPECT_TRUE(observedReadErrors.back());
 
     testTimeUs = 501000;
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 }
 
 TEST_F(CompassInitTest, FirstSuccessfulSampleRestoresHealthAfterStaleness)
@@ -275,10 +279,10 @@ TEST_F(CompassInitTest, FirstSuccessfulSampleRestoresHealthAfterStaleness)
     ASSERT_TRUE(compassInit());
     publishMagSample(1000, 11, 22, 33);
     testTimeUs = 501000;
-    ASSERT_FALSE(compassIsHealthy());
+    ASSERT_FALSE(compassEnabledAndCalibrated());
 
     publishMagSample(700000, 44, 55, 66);
-    EXPECT_TRUE(compassIsHealthy());
+    EXPECT_TRUE(compassEnabledAndCalibrated());
 }
 
 TEST_F(CompassInitTest, FreshSampleWithZeroAxisRetainsLegacyUnhealthyResult)
@@ -286,7 +290,33 @@ TEST_F(CompassInitTest, FreshSampleWithZeroAxisRetainsLegacyUnhealthyResult)
     ASSERT_TRUE(compassInit());
     publishMagSample(1000, 0, 22, -33);
 
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
+}
+
+TEST_F(CompassInitTest, FreshSampleRequiresOfficialTrustMagGate)
+{
+    ASSERT_TRUE(compassInit());
+    publishMagSample(1000, 11, 22, 33);
+    ASSERT_TRUE(compassEnabledAndCalibrated());
+
+    imuConfigMutable()->trust_mag = false;
+    EXPECT_FALSE(compassEnabledAndCalibrated());
+
+    imuConfigMutable()->trust_mag = true;
+    EXPECT_TRUE(compassEnabledAndCalibrated());
+}
+
+TEST_F(CompassInitTest, FreshSampleRequiresEnabledMagSensor)
+{
+    ASSERT_TRUE(compassInit());
+    publishMagSample(1000, 11, 22, 33);
+    ASSERT_TRUE(compassEnabledAndCalibrated());
+
+    sensorsClear(SENSOR_MAG);
+    EXPECT_FALSE(compassEnabledAndCalibrated());
+
+    sensorsSet(SENSOR_MAG);
+    EXPECT_TRUE(compassEnabledAndCalibrated());
 }
 
 #if defined(USE_64BIT_TIME)
@@ -298,16 +328,18 @@ TEST_F(CompassInitTest, Simulator64FreshnessRetainsTimestampUpperBits)
     publishMagSample(publishedAt, 11, 22, 33);
 
     testTimeUs = publishedAt + 499999;
-    EXPECT_TRUE(compassIsHealthy());
+    EXPECT_TRUE(compassEnabledAndCalibrated());
 
     testTimeUs = publishedAt + 500000;
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 }
 #endif
 
 extern "C" {
 
 gyro_t gyro;
+imuConfig_t imuConfig_System;
+imuConfig_t imuConfig_Copy;
 int16_t debug[DEBUG16_VALUE_COUNT];
 uint8_t debugMode;
 
@@ -377,6 +409,11 @@ uint32_t sensorsMask(void)
     return sensorMask;
 }
 
+bool sensors(uint32_t mask)
+{
+    return (sensorMask & mask) != 0;
+}
+
 void buildRotationMatrixFromAngles(matrix33_t *, const sensorAlignment_t *)
 {
     rotationBuildCount++;
@@ -429,14 +466,14 @@ TEST_F(CompassInitTest, Exact499999And500000FailureDoesNotRefreshAndNextSampleRe
     publishMagSample(publishedAt, 11, 22, 33);
 
     testTimeUs = publishedAt + 499999U;
-    ASSERT_TRUE(compassIsHealthy());
+    ASSERT_TRUE(compassEnabledAndCalibrated());
 
     magReadResults.push_back({false, {0, 0, 0}});
     testTimeUs = publishedAt + 500000U;
     EXPECT_EQ(1000U, compassUpdate(testTimeUs));
-    EXPECT_FALSE(compassIsHealthy());
+    EXPECT_FALSE(compassEnabledAndCalibrated());
 
     publishMagSample(publishedAt + 700000U, 44, 55, 66);
-    EXPECT_TRUE(compassIsHealthy());
+    EXPECT_TRUE(compassEnabledAndCalibrated());
 }
 #endif
