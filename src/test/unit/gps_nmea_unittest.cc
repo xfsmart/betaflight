@@ -87,7 +87,6 @@ struct FakeSerialState {
 
 FakeSerialState fakeSerial;
 serialPort_t fakeGpsPort;
-serialPortConfig_t fakeGpsPortConfig;
 timeMs_t fakeNowMs;
 uint32_t fakeSensorMask;
 unsigned fakeBeeperCount;
@@ -159,11 +158,6 @@ void resetFakeSerial()
     fakeGpsPort = {};
     fakeGpsPort.vTable = &fakeSerialVTable;
     fakeGpsPort.identifier = SERIAL_PORT_UART5;
-
-    fakeGpsPortConfig = {};
-    fakeGpsPortConfig.identifier = SERIAL_PORT_UART5;
-    fakeGpsPortConfig.functionMask = FUNCTION_GPS;
-    fakeGpsPortConfig.gps_baudrateIndex = BAUD_38400;
 }
 
 void queueSerialRx(const std::string &data)
@@ -205,9 +199,14 @@ timeMs_t millis(void)
     return fakeNowMs;
 }
 
-const serialPortConfig_t *findSerialPortConfig(serialPortFunction_e function)
+uint32_t getCycleCounter(void)
 {
-    return function == FUNCTION_GPS ? &fakeGpsPortConfig : nullptr;
+    return 0;
+}
+
+uint32_t clockMicrosToCycles(uint32_t micros)
+{
+    return micros;
 }
 
 serialType_e serialType(serialPortIdentifier_e identifier)
@@ -326,6 +325,8 @@ protected:
         gpsConfigMutable()->provider = GPS_NMEA;
         gpsConfigMutable()->autoConfig = GPS_AUTOCONFIG_OFF;
         gpsConfigMutable()->autoBaud = GPS_AUTOBAUD_OFF;
+        gpsConfigMutable()->gps_uart = SERIAL_PORT_UART5;
+        gpsConfigMutable()->gps_baud = BAUD_38400;
 
         *gpsRescueConfigMutable() = {};
         gpsRescueConfigMutable()->minSats = UINT8_MAX;

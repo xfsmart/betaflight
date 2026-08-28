@@ -220,12 +220,17 @@ void uartTxMonitor(uartPort_t *s)
 
 static void handleUsartTxDma(uartPort_t *s)
 {
-    uartDevice_t *uart = container_of(s, uartDevice_t, port);
+    uartTryRecoverTxDMA(s);
+}
 
-    uartTryStartTxDMA(s);
+void uartDmaService(void)
+{
+    for (unsigned index = 0; index < UARTDEV_COUNT; index++) {
+        uartPort_t *s = &uartDevice[index].port;
 
-    if (s->txDMAEmpty && (uart->txPinState != TX_PIN_IGNORE)) {
-        uartTxMonitor(s);
+        if (s->txDMAResource && s->txDMARecoveryPending) {
+            handleUsartTxDma(s);
+        }
     }
 }
 
@@ -234,23 +239,36 @@ void uartDmaIrqHandler(dmaChannelDescriptor_t *descriptor)
     uartPort_t *s = &(((uartDevice_t *)(descriptor->userParam))->port);
     const bool transferPending = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_TFR) != RESET;
     const bool errorPending = DMA_GET_FLAG_STATUS(descriptor, DMA_IT_ERR) != RESET;
+    uint32_t terminalMask = 0U;
 
+    if (transferPending) {
+        terminalMask |= DMA_IT_TFR;
+    }
     if (errorPending) {
-        // ERR owns a co-pending completion. The active chunk left the ring
-        // when it started and is abandoned; only the queued suffix is rearmed.
-        xDMA_Cmd(s->txDMAResource, DISABLE);
-        DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR | DMA_IT_BLOCK | DMA_IT_SRC | DMA_IT_DST | DMA_IT_ERR);
-        xDMA_SetCurrDataCounter(s->txDMAResource, 0);
-        handleUsartTxDma(s);
+        terminalMask |= DMA_IT_ERR;
+    }
+    if (terminalMask == 0U) {
         return;
     }
 
-    if (transferPending) {
-        DMA_CLEAR_FLAG(descriptor, DMA_IT_TFR);
-        xDMA_Cmd(s->txDMAResource, DISABLE);
-        xDMA_SetCurrDataCounter(s->txDMAResource, 0);
-        handleUsartTxDma(s);
+    // ERR owns a co-pending completion. The active chunk already left the
+    // ring, so both terminal outcomes resume only the queued suffix.
+    ft32UartDMATxEnable_Cmd((USART_TypeDef *)s->USARTx, DISABLE);
+    __DMB();
+    ft32DmaRequestDisable((DMA_ARCH_TYPE *)s->txDMAResource);
+    __DMB();
+    s->txDMARecoveryPending = true;
+    __DMB();
+
+    if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
+        DMA_CLEAR_FLAG(descriptor, terminalMask);
+        return;
     }
+
+    // A stopped channel does not clear DesignWare terminal status. Acknowledge
+    // the exact snapshot before a queued suffix can enable the channel again.
+    DMA_CLEAR_FLAG(descriptor, terminalMask);
+    handleUsartTxDma(s);
 }
 
 void uartIrqHandler(uartPort_t *s)

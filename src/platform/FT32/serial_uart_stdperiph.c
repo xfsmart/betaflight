@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifndef FT32_UART_DMA_RECOVERY_UNIT_TEST
 #include "platform.h"
 
 #ifdef USE_UART
@@ -130,9 +131,24 @@ static void ft32UartResetAndEnableTx(USART_TypeDef *USARTx)
     USARTx->CR = USART_CR_TXEN;
 }
 
-void uartReconfigure(uartPort_t *uartPort)
+static void ft32UartRestoreTxStateAfterReset(uartPort_t *uartPort);
+static void ft32UartPauseCheckedTxForMode(uartPort_t *uartPort);
+
+static void uartReconfigureInternal(uartPort_t *uartPort)
 {
     USART_TypeDef *USARTx = (USART_TypeDef *)uartPort->USARTx;
+
+#ifdef USE_DMA
+    if (uartPort->txDMAResource) {
+        uartPort->txDMARecoveryPending = true;
+        __DMB();
+        ft32UartDMATxEnable_Cmd(USARTx, DISABLE);
+        __DMB();
+        ft32DmaRequestDisable((DMA_ARCH_TYPE *)uartPort->txDMAResource);
+        __DMB();
+        ft32UartPauseCheckedTxForMode(uartPort);
+    }
+#endif
 
     // 8-bit character length applies to every frame format on this USART;
     // parity is selected by the PAR field and is independent of CHRL.
@@ -175,9 +191,7 @@ void uartReconfigure(uartPort_t *uartPort)
         USART_Cmd(USARTx, ENABLE);
     }
 
-    if ((uartPort->port.mode & MODE_TX) && !(uartPort->port.options & SERIAL_CHECK_TX)) {
-        ft32UartResetAndEnableTx(USARTx);
-    }
+    ft32UartRestoreTxStateAfterReset(uartPort);
 
     // Receive DMA or IRQ
     if (uartPort->port.mode & MODE_RX) {
@@ -243,7 +257,6 @@ void uartReconfigure(uartPort_t *uartPort)
             ft32_dma_init.ReloadSrc = DISABLE;
             ft32DmaSetDstRequest(&ft32_dma_init, uartPort->txDMAResource, uartPort->txDMAChannel);
 
-            ft32UartDMATxEnable_Cmd(USARTx, DISABLE);
             xDMA_Cmd(uartPort->txDMAResource, DISABLE);
             if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)uartPort->txDMAResource)) {
                 return;
@@ -254,8 +267,7 @@ void uartReconfigure(uartPort_t *uartPort)
                 return;
             }
             xDMA_ITConfig(uartPort->txDMAResource, DMA_IT_TFR | DMA_IT_ERR, ENABLE);
-            ft32UartDMATxEnable_Cmd(USARTx, ENABLE);
-            xDMA_SetCurrDataCounter(uartPort->txDMAResource, 0);
+            uartTryRecoverTxDMA(uartPort);
         } else
 #endif
         {
@@ -272,53 +284,180 @@ void uartReconfigure(uartPort_t *uartPort)
             ft32UartTXEN_Cmd(USARTx, ENABLE);
         }
     }
+
+#ifdef USE_DMA
+    if (uartPort->txDMAResource && !(uartPort->port.mode & MODE_TX)) {
+        uartTryRecoverTxDMA(uartPort);
+    }
+#endif
+}
+
+void uartReconfigure(uartPort_t *uartPort)
+{
+#ifdef USE_DMA
+    if (uartPort->txDMAResource) {
+        ATOMIC_BLOCK(NVIC_PRIO_SERIALUART_TXDMA) {
+            uartReconfigureInternal(uartPort);
+        }
+        return;
+    }
+#endif
+
+    uartReconfigureInternal(uartPort);
+}
+
+#endif // USE_UART
+#endif // FT32_UART_DMA_RECOVERY_UNIT_TEST
+
+#ifdef USE_UART
+
+static void ft32UartPauseCheckedTxForMode(uartPort_t *uartPort)
+{
+    if (!(uartPort->port.mode & MODE_TX) &&
+        (uartPort->port.options & SERIAL_CHECK_TX)) {
+        // Discard the software-active state as soon as the producer is off.
+        // A later MODE_TX restore must sample the shared line again, even when
+        // a sticky DMA channel delays completion of the stop transaction.
+        uartTxMonitor(uartPort);
+    }
+}
+
+static void ft32UartRestoreTxStateAfterReset(uartPort_t *uartPort)
+{
+    if (!(uartPort->port.mode & MODE_TX)) {
+        return;
+    }
+
+    const uartDevice_t *uartDevice = container_of(uartPort, uartDevice_t, port);
+
+    // Reconfiguration resets the hardware transmitter. Keep an already active
+    // checked-TX port synchronized with its software pin state; monitored ports
+    // stay disabled until the line is sampled high.
+    if (!(uartPort->port.options & SERIAL_CHECK_TX) || uartDevice->txPinState == TX_PIN_ACTIVE) {
+        ft32UartResetAndEnableTx((USART_TypeDef *)uartPort->USARTx);
+    }
 }
 
 #ifdef USE_DMA
-void uartTryStartTxDMA(uartPort_t *s)
+static void uartTryStartTxDMAInternal(uartPort_t *s, bool recoveryOwner)
 {
-    // uartTryStartTxDMA must be protected, since it is called from
-    // uartWrite and handleUsartTxDma (an ISR).
-
     ATOMIC_BLOCK(NVIC_PRIO_SERIALUART_TXDMA) {
-        if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
+        const bool recoveryPending = s->txDMARecoveryPending;
+
+        if (recoveryPending != recoveryOwner) {
+            return;
+        }
+
+        if (!recoveryOwner && !s->txDMAEmpty) {
+            return;
+        }
+
+        if (!recoveryPending && ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
             // The active block owns the channel until its completion or error
             // handler schedules the queued suffix.
             return;
         }
 
         ft32UartDMATxEnable_Cmd((USART_TypeDef *)s->USARTx, DISABLE);
-        xDMA_Cmd(s->txDMAResource, DISABLE);
-        if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
+        __DMB();
+
+        if (!(s->port.mode & MODE_TX)) {
+            if (!ft32DmaTrySetCurrDataCounter((DMA_ARCH_TYPE *)s->txDMAResource, 0U)) {
+                s->txDMARecoveryPending = true;
+                __DMB();
+                return;
+            }
+
+            s->txDMAEmpty = s->port.txBufferHead == s->port.txBufferTail;
+            __DMB();
+            uartTxMonitor(s);
+            s->txDMARecoveryPending = false;
+            __DMB();
             return;
         }
 
         if (s->port.txBufferHead == s->port.txBufferTail) {
-            // No more data to transmit
+            if (!ft32DmaTrySetCurrDataCounter((DMA_ARCH_TYPE *)s->txDMAResource, 0U)) {
+                s->txDMARecoveryPending = true;
+                __DMB();
+                return;
+            }
+
+            // No more data to transmit. Publish the stopped state before
+            // releasing recovery ownership.
             s->txDMAEmpty = true;
+            __DMB();
+            uartTxMonitor(s);
+            s->txDMARecoveryPending = false;
+            __DMB();
             return;
         }
 
-        // Repoint the source to the current ring tail, which is the start of
-        // the next chunk, before advancing the tail. The channel is stopped at
-        // this point (counter is zero) so the source address is writable.
-        DMA_SetSrcAddress((DMA_Channel_TypeDef *)s->txDMAResource,
-                          (uint32_t)&s->port.txBuffer[s->port.txBufferTail]);
-
-        // Start a new transaction.
+        const uint16_t currentTail = s->port.txBufferTail;
+        uint16_t nextTail;
         unsigned chunk;
-        if (s->port.txBufferHead > s->port.txBufferTail) {
-            chunk = s->port.txBufferHead - s->port.txBufferTail;
-            s->port.txBufferTail = s->port.txBufferHead;
+        if (s->port.txBufferHead > currentTail) {
+            chunk = s->port.txBufferHead - currentTail;
+            nextTail = s->port.txBufferHead;
         } else {
-            chunk = s->port.txBufferSize - s->port.txBufferTail;
-            s->port.txBufferTail = 0;
+            chunk = s->port.txBufferSize - currentTail;
+            nextTail = 0U;
         }
-        s->txDMAEmpty = false;
-        xDMA_SetCurrDataCounter(s->txDMAResource, chunk);
+
+        if (!ft32DmaTrySetCurrDataCounter((DMA_ARCH_TYPE *)s->txDMAResource, chunk)) {
+            s->txDMARecoveryPending = true;
+            __DMB();
+            return;
+        }
+
+        if (s->port.options & SERIAL_CHECK_TX) {
+            const uartDevice_t *uartDevice = container_of(s, uartDevice_t, port);
+
+            // A monitored line must be sampled by thread mode before DMA owns
+            // the suffix. ISR recovery leaves one bounded retry to TASK_MAIN
+            // or to a polling caller. TX_PIN_IGNORE is not a configured TX
+            // output and must never arm DMA with the transmitter disabled.
+            if (uartDevice->txPinState != TX_PIN_ACTIVE &&
+                (__get_IPSR() != 0U || uartDevice->txPinState != TX_PIN_MONITOR ||
+                 !s->checkUsartTxOutput || !s->checkUsartTxOutput(s))) {
+                s->txDMAEmpty = false;
+                __DMB();
+                s->txDMARecoveryPending = true;
+                __DMB();
+                return;
+            }
+        }
+
+        DMA_SetSrcAddress((DMA_Channel_TypeDef *)s->txDMAResource,
+                          (uint32_t)&s->port.txBuffer[currentTail]);
         xDMA_Cmd(s->txDMAResource, ENABLE);
+        __DMB();
+        if (!ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
+            s->txDMAEmpty = false;
+            __DMB();
+            s->txDMARecoveryPending = true;
+            __DMB();
+            return;
+        }
+
+        s->port.txBufferTail = nextTail;
+        s->txDMAEmpty = false;
+        __DMB();
+        s->txDMARecoveryPending = false;
+        __DMB();
         ft32UartDMATxEnable_Cmd((USART_TypeDef *)s->USARTx, ENABLE);
     }
+}
+
+void uartTryStartTxDMA(uartPort_t *s)
+{
+    // Ordinary writers cannot consume a pending terminal recovery.
+    uartTryStartTxDMAInternal(s, false);
+}
+
+void uartTryRecoverTxDMA(uartPort_t *s)
+{
+    uartTryStartTxDMAInternal(s, true);
 }
 #endif
 

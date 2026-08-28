@@ -66,6 +66,3 @@ eeprom.bin
 AGENTS.md
 CLAUDE.md
 /tasks
-
-# Local FT32F405 comparison baseline; the generic target is the release profile.
-/src/platform/FT32/config/configs/FT32F405_FT32/config.h

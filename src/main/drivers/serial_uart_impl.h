@@ -123,7 +123,7 @@ typedef struct uartHardware_s {
 #ifdef USE_DMA
     dmaResource_t *txDMAResource;
     dmaResource_t *rxDMAResource;
-    // For H7 and G4  , {tx|rx}DMAChannel are DMAMUX input index for  peripherals (DMA_REQUEST_xxx); H7:RM0433 Table 110, G4:RM0440 Table 80.
+    // For H7 and G4, {tx|rx}DMAChannel stores the peripheral DMAMUX input index (DMA_REQUEST_xxx).
     // For F4 and F7, these are 32-bit channel identifiers (DMA_CHANNEL_x)
     // For at32f435/7 DmaChannel is the dmamux, need to call dmamuxenable using dmamuxid
 #if DMA_TRAIT_CHANNEL
@@ -192,6 +192,11 @@ uartDevice_t* uartDeviceFromIdentifier(serialPortIdentifier_e identifier);
 extern const struct serialPortVTable uartVTable[];
 
 void uartTryStartTxDMA(uartPort_t *s);
+
+#if defined(FT32F4) && defined(USE_DMA)
+void uartDmaService(void);
+void uartTryRecoverTxDMA(uartPort_t *s);
+#endif
 
 uartPort_t *serialUART(uartDevice_t *uart, uint32_t baudRate, portMode_e mode, portOptions_e options);
 

@@ -26,7 +26,7 @@
  * Flash Layout:
  * 0x08000000 - 0x08003FFF : 16K ISR vector, startup code
  * 0x08004000 - 0x08007FFF : 16K Config storage
- * 0x08008000 - 0x0807FFFF : 448K Firmware
+ * 0x08008000 - 0x0807FFFF : 480K Firmware
  */
 
 /* Specify the memory areas */
@@ -34,7 +34,7 @@ MEMORY
 {
     FLASH (rx)        : ORIGIN = 0x08000000, LENGTH = 16K
     FLASH_CONFIG (r)  : ORIGIN = 0x08004000, LENGTH = 16K
-    FLASH1 (rx)       : ORIGIN = 0x08008000, LENGTH = 448K
+    FLASH1 (rx)       : ORIGIN = 0x08008000, LENGTH = 480K
     SYSTEM_MEMORY (rx): ORIGIN = 0x1FFF1000, LENGTH = 30K
     RAM (rwx)         : ORIGIN = 0x20000000, LENGTH = 128K
     CCM (rwx)         : ORIGIN = 0x10000000, LENGTH = 64K

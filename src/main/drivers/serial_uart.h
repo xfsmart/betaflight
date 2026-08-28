@@ -44,6 +44,9 @@ typedef struct uartPort_s {
 
     uint32_t txDMAPeripheralBaseAddr;
     uint32_t rxDMAPeripheralBaseAddr;
+#if defined(FT32F4)
+    volatile bool txDMARecoveryPending;
+#endif
 #endif // USE_DMA
 
     usartResource_t *USARTx;

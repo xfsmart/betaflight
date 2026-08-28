@@ -40,6 +40,10 @@
 #include "drivers/compass/compass.h"
 #include "drivers/sensor.h"
 #include "drivers/serial.h"
+#if defined(FT32F4) && defined(USE_DMA) && defined(USE_UART)
+#include "drivers/serial_uart.h"
+#include "drivers/serial_uart_impl.h"
+#endif
 #include "drivers/serial_usb_vcp.h"
 #include "drivers/stack_check.h"
 #include "drivers/transponder_ir.h"
@@ -134,6 +138,10 @@ static void taskMain(timeUs_t currentTimeUs)
 
 #ifdef USE_SPI
     spiDmaService();
+#endif
+
+#if defined(FT32F4) && defined(USE_DMA) && defined(USE_UART)
+    uartDmaService();
 #endif
 
 #ifdef USE_SDCARD

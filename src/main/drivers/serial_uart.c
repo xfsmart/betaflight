@@ -33,6 +33,7 @@
 
 #ifdef USE_UART
 
+#include "build/atomic.h"
 #include "build/build_config.h"
 
 #include <common/maths.h>
@@ -42,10 +43,15 @@
 
 #include "drivers/dma.h"
 #include "drivers/dma_reqmap.h"
+#include "drivers/nvic.h"
 #include "drivers/serial.h"
 #include "drivers/serial_impl.h"
 #include "drivers/serial_uart.h"
 #include "drivers/serial_uart_impl.h"
+
+#if defined(FT32F4) && defined(USE_DMA)
+#include "serial_uart_dma_recovery_impl.h"
+#endif
 
 #include "pg/serial_uart.h"
 
@@ -314,8 +320,8 @@ serialPort_t *uartOpen(serialPortIdentifier_e identifier, serialReceiveCallbackP
     }
     // A UART can be compiled in (USE_UARTx) yet have no usable pins for the
     // configured port - e.g. a config assigns a pin that is missing from the
-    // hardware table. uartPinConfigure() then leaves ->hardware NULL, and
-    // serialUART() would dereference it and hard fault. Bail out cleanly.
+    // hardware table. Pin configuration then leaves ->hardware NULL, so stop
+    // before the initializer reads the missing table entry.
     if (!uartDevice->hardware) {
         return NULL;
     }
@@ -347,6 +353,16 @@ static void uartSetBaudRate(serialPort_t *instance, uint32_t baudRate)
 {
     uartPort_t *uartPort = (uartPort_t *)instance;
     uartDevice_t *uartDevice = container_of(uartPort, uartDevice_t, port);
+#if defined(FT32F4) && defined(USE_DMA)
+    if (uartPort->txDMAResource) {
+        ATOMIC_BLOCK(NVIC_PRIO_SERIALUART_TXDMA) {
+            uartPort->port.mode = uartSanitizeMode(uartDevice, uartPort->port.mode, uartPort->port.options);
+            uartPort->port.baudRate = baudRate;
+            uartReconfigure(uartPort);
+        }
+        return;
+    }
+#endif
     uartPort->port.mode = uartSanitizeMode(uartDevice, uartPort->port.mode, uartPort->port.options);
     uartPort->port.baudRate = baudRate;
     uartReconfigure(uartPort);
@@ -356,6 +372,15 @@ static void uartSetMode(serialPort_t *instance, portMode_e mode)
 {
     uartPort_t *uartPort = (uartPort_t *)instance;
     uartDevice_t *uartDevice = container_of(uartPort, uartDevice_t, port);
+#if defined(FT32F4) && defined(USE_DMA)
+    if (uartPort->txDMAResource) {
+        ATOMIC_BLOCK(NVIC_PRIO_SERIALUART_TXDMA) {
+            uartPort->port.mode = uartSanitizeMode(uartDevice, mode, uartPort->port.options);
+            uartReconfigure(uartPort);
+        }
+        return;
+    }
+#endif
     uartPort->port.mode = uartSanitizeMode(uartDevice, mode, uartPort->port.options);
     uartReconfigure(uartPort);
 }
@@ -385,9 +410,33 @@ static uint32_t uartTotalRxBytesWaiting(const serialPort_t *instance)
     }
 }
 
+#if defined(FT32F4) && defined(USE_DMA)
+static void uartPollTxDMARecovery(uartPort_t *uartPort)
+{
+    // Some serial callers poll without yielding to TASK_MAIN. Keep exception
+    // contexts read-only and give each thread-mode query one bounded attempt.
+    if (__get_IPSR() != 0U || !uartPort->txDMAResource) {
+        return;
+    }
+
+    ATOMIC_BLOCK(NVIC_PRIO_SERIALUART_TXDMA) {
+        if (uartPort->txDMARecoveryPending) {
+            uartTryRecoverTxDMA(uartPort);
+        }
+    }
+}
+#endif
+
 static uint32_t uartTotalTxBytesFree(const serialPort_t *instance)
 {
     const uartPort_t *uartPort = (const uartPort_t*)instance;
+
+#if defined(FT32F4) && defined(USE_DMA)
+    uartPollTxDMARecovery((uartPort_t *)uartPort);
+    if (uartPort->txDMARecoveryPending) {
+        return 0U;
+    }
+#endif
 
     uint32_t bytesUsed;
 
@@ -419,20 +468,38 @@ static uint32_t uartTotalTxBytesFree(const serialPort_t *instance)
     }
 #endif
 
-    return (uartPort->port.txBufferSize - 1) - bytesUsed;
+    const uint32_t bytesFree = (uartPort->port.txBufferSize - 1) - bytesUsed;
+#if defined(FT32F4) && defined(USE_DMA)
+    if (uartPort->txDMARecoveryPending) {
+        return 0U;
+    }
+#endif
+    return bytesFree;
 }
 
 static bool isUartTransmitBufferEmpty(const serialPort_t *instance)
 {
     const uartPort_t *uartPort = (const uartPort_t *)instance;
+#if defined(FT32F4) && defined(USE_DMA)
+    uartPollTxDMARecovery((uartPort_t *)uartPort);
+    if (uartPort->txDMARecoveryPending) {
+        return false;
+    }
+#endif
+    bool empty;
 #ifdef USE_DMA
     if (uartPort->txDMAResource) {
-        return uartPort->txDMAEmpty;
+        empty = uartPort->txDMAEmpty;
     } else
 #endif
     {
-        return uartPort->port.txBufferTail == uartPort->port.txBufferHead;
+        empty = uartPort->port.txBufferTail == uartPort->port.txBufferHead;
     }
+#if defined(FT32F4) && defined(USE_DMA)
+    return !uartPort->txDMARecoveryPending && empty;
+#else
+    return empty;
+#endif
 }
 
 static uint8_t uartRead(serialPort_t *instance)
@@ -517,8 +584,17 @@ static void uartWriteBuf(serialPort_t *instance, const void *data, int count)
 
     // Test if checkUsartTxOutput() detected TX line being pulled low by an unpowered peripheral
     if (uart->txPinState == TX_PIN_MONITOR) {
-        // TX line is being pulled low, so don't transmit
-        return;
+#if defined(FT32F4) && defined(USE_DMA)
+        if (uartPort->txDMAResource && ft32UartDmaWriteBufferReady(uartPort)) {
+            // The previous DMA completion can enter MONITOR after beginWrite.
+            // A high line reactivates here; a later completion is closed by
+            // endWrite through the DMA scheduler.
+        } else
+#endif
+        {
+            // TX line is being pulled low, so don't transmit
+            return;
+        }
     }
 
     while (count > 0) {
@@ -545,6 +621,16 @@ static void uartEndWrite(serialPort_t *instance)
     if (!uartCanWrite(uartPort)) {
         return;
     }
+
+#if defined(FT32F4) && defined(USE_DMA)
+    if (uartPort->txDMAResource) {
+        // Always close a buffered write through the scheduler. A previous DMA
+        // completion can switch checked TX to MONITOR before the new head is
+        // published; the scheduler resamples the line and retains ownership.
+        ft32UartDmaFinishWriteBuffer(uartPort);
+        return;
+    }
+#endif
 
     // Check if the TX line is being pulled low by an unpowered peripheral
     if (uart->txPinState == TX_PIN_MONITOR) {

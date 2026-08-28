@@ -71,6 +71,16 @@ atomic_unittest_SRC := \
 ft32_nvic_priority_unittest_SRC := \
 		$(USER_DIR)/common/encoding.c
 
+ft32_uart_dma_unittest_SRC := \
+		$(USER_DIR)/common/encoding.c
+
+ft32_uart_dma_liveness_unittest_SRC := \
+		$(TEST_DIR)/ft32_uart_dma_recovery_test_support.c \
+		$(USER_DIR)/common/encoding.c
+
+ft32_uart_dma_liveness_unittest_FLAGS := \
+		-Wno-pointer-to-int-cast
+
 ft32_usb_ep0_unittest_SRC := \
 		$(TEST_DIR)/ft32_usb_ep0_test_support.c \
 		$(TEST_DIR)/ft32_usb_ep0_usb_source.c \
