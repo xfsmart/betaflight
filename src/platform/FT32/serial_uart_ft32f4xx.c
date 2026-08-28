@@ -39,6 +39,12 @@
 #include "drivers/serial_uart.h"
 #include "drivers/serial_uart_impl.h"
 
+#if defined(UNIT_TEST) && !defined(__arm__) && !defined(__thumb__)
+#define FT32_UART_DMA_BARRIER() __asm__ volatile ("" ::: "memory")
+#else
+#define FT32_UART_DMA_BARRIER() __DMB()
+#endif
+
 /*
  * GPIO AF mapping:
  *   AF7 = USART1/2/3, UART7
@@ -254,11 +260,11 @@ void uartDmaIrqHandler(dmaChannelDescriptor_t *descriptor)
     // ERR owns a co-pending completion. The active chunk already left the
     // ring, so both terminal outcomes resume only the queued suffix.
     ft32UartDMATxEnable_Cmd((USART_TypeDef *)s->USARTx, DISABLE);
-    __DMB();
+    FT32_UART_DMA_BARRIER();
     ft32DmaRequestDisable((DMA_ARCH_TYPE *)s->txDMAResource);
-    __DMB();
+    FT32_UART_DMA_BARRIER();
     s->txDMARecoveryPending = true;
-    __DMB();
+    FT32_UART_DMA_BARRIER();
 
     if (ft32DmaIsChannelEnabled((DMA_ARCH_TYPE *)s->txDMAResource)) {
         DMA_CLEAR_FLAG(descriptor, terminalMask);
