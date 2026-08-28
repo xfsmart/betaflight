@@ -244,8 +244,6 @@ DSP_LIB := $(LIB_MAIN_DIR)/CMSIS/DSP
 DEVICE_FLAGS += -DARM_MATH_MATRIX_CHECK -DARM_MATH_ROUNDING -DUNALIGNED_SUPPORT_DISABLE -DARM_MATH_CM4
 
 # USB VCP Source
-# usbd_usr.c remains excluded: it uses the legacy STM32 USBD_Usr_cb_TypeDef user
-# callback model which the FT32 USB middleware does not provide.
 # usb_cdc_hid_ft32f4.c is now compiled: it forwards HID reports through the FT32
 # composite USB stack (USBD_HID_SendReport) when USE_USB_CDC_HID is enabled.
 VCP_SRC = \
